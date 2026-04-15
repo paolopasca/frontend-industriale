@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { CheckCircle2, Loader2, AlertTriangle } from 'lucide-react';
 import { type SolverMethod } from './SolverMethodSelect';
 import { type SetupData } from './SetupPage';
-import { solveLLMOnly, solveTemplate, pipelineStart, pipelineAdvance, pipelineRespond, pipelineResults } from '@/lib/api';
+import { solveLLMOnly, solveTemplate, autoLogin, pipelineStart, pipelineAdvance, pipelineRespond, pipelineResults } from '@/lib/api';
 
 // Phases shown for each method
 const METHOD_PHASES: Record<SolverMethod, { label: string; duration: number }[]> = {
@@ -182,10 +182,22 @@ export function OptimizationLoader({
             return;
           }
 
+          // Auto-login for pipeline (needs JWT auth)
+          if (companySlug) {
+            const loggedIn = await autoLogin(companySlug);
+            if (!loggedIn) {
+              addLog('Login fallito — pipeline richiede autenticazione');
+              setError('Autenticazione fallita');
+              return;
+            }
+            addLog('Autenticato come demo user');
+          }
+
           // Start pipeline session
           const startRes = await pipelineStart(
             setupData.companyName,
             `Ottimizza produzione per ${setupData.companyName}`,
+            'compose',  // Use Arm C compose pipeline
           );
           addLog(`Sessione: ${startRes.session_id} — stato: ${startRes.state}`);
 

@@ -1,9 +1,9 @@
 /**
  * DAINO Backend API client.
- * Talks to daino-backend-cp running on localhost:8000.
+ * Talks to daino-backend-cp running on localhost:8001.
  */
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = 'http://localhost:8001';
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -138,10 +138,12 @@ export async function solveTemplate(slug: string, problemType?: string, rules?: 
 export async function pipelineStart(
   companyName: string,
   description: string,
+  solverMethod: string = 'compose',
 ): Promise<PipelineStateResponse> {
   const form = new FormData();
   form.append('company_name', companyName);
   form.append('description', description);
+  form.append('solver_method', solverMethod);
   const res = await fetch(`${API_BASE}/api/analysis/start`, {
     method: 'POST',
     headers: authHeaders(),
@@ -184,6 +186,15 @@ export async function optimizeShifts(month: string, strategy?: string) {
 
 export async function getRun(runId: number) {
   return apiFetch(`/api/runs/${runId}`, { headers: authHeaders() });
+}
+
+export async function autoLogin(tenantSlug: string): Promise<boolean> {
+  try {
+    await login(tenantSlug, 'demo', 'demo');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ── Health ───────────────────────────────────────────────────────────
