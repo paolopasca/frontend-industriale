@@ -223,7 +223,7 @@ export function OptimizationLoader({
             setDone(true);
             setTimeout(() => onComplete(results), 1500);
           } else {
-            setError(`Pipeline terminata in stato: ${state.state}`);
+            setError(state.message || `Pipeline terminata in stato: ${state.state}`);
           }
 
         } else if (method === 'deterministic-json') {
