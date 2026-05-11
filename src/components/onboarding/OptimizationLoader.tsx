@@ -195,7 +195,7 @@ export function OptimizationLoader({
 
           // Start pipeline session
           const startRes = await pipelineStart(
-            setupData.companyName,
+            companySlug,
             `Ottimizza produzione per ${setupData.companyName}`,
             'compose',  // Use Arm C compose pipeline
           );
