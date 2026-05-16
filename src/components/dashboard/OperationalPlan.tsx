@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 
 export function OperationalPlan() {
-  const { machines, operators, operations } = useDashboard();
+  const { machines, operators, operations, timeConfig } = useDashboard();
   const [expanded, setExpanded] = useState<string | null>(machines.length > 0 ? machines[0].id : null);
 
   return (
@@ -71,8 +71,8 @@ export function OperationalPlan() {
                             <td className="px-4 py-2 text-muted-foreground">{operator?.name || op.operatorId}</td>
                             <td className="px-4 py-2 text-right font-mono text-muted-foreground">{op.setupMinutes} min</td>
                             <td className="px-4 py-2 text-right font-mono text-foreground">{op.processingMinutes} min</td>
-                            <td className="px-4 py-2 font-mono text-muted-foreground">{minutesToTimeStr(op.startMinute)}</td>
-                            <td className="px-4 py-2 font-mono text-muted-foreground">{minutesToTimeStr(op.startMinute + op.setupMinutes + op.processingMinutes)}</td>
+                            <td className="px-4 py-2 font-mono text-muted-foreground">{minutesToTimeStr(op.startMinute, timeConfig, op.startDatetime)}</td>
+                            <td className="px-4 py-2 font-mono text-muted-foreground">{minutesToTimeStr(op.startMinute + op.setupMinutes + op.processingMinutes, timeConfig, op.endDatetime)}</td>
                           </tr>
                         );
                       })}

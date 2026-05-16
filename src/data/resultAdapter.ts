@@ -5,6 +5,18 @@
 import type { Machine, Operator, Operation, Order, MaintenanceWindow, KeyDecision, Priority, OrderStatus, Shift } from './mockData';
 import { JOB_COLORS } from './mockData';
 
+// Backend "model time" anchor — operations carry start_min relative to
+// company opening (06:00 in the demo). day_length_min is 960 (16h),
+// not 1440. The adapter forwards this so the UI can convert correctly.
+export interface TimeConfig {
+  company_start_hour: number;
+  company_end_hour: number;
+  day_length_min: number;
+  start_date: string;        // "YYYY-MM-DD" — schedule day 0
+  start_weekday: number;     // 0=Mon … 6=Sun
+  machine_windows?: Record<string, { start: number; end: number }>;
+}
+
 export interface DashboardData {
   machines: Machine[];
   operators: Operator[];
@@ -25,10 +37,53 @@ export interface DashboardData {
     ordersOnTime: number;
     ordersLate: number;
     totalOrders: number;
+    // Cost KPIs in € — populated from the FJSP solver objective
+    // (costo_totale_operatori / costo_totale_setup). 0 when the solver
+    // path doesn't expose them (legacy llm-only).
+    costoOperatori: number;
+    costoSetup: number;
+    costoTotale: number;
   };
   narrative: string;
   method: string;
   costUsd: number;
+  timeConfig?: TimeConfig;
+}
+
+// Backend encodes priority as int (1=bassa, 2=media, 5=alta) per
+// _PRIORITY_MAP in daino/data_normalizer.py. Some legacy paths still
+// emit strings — accept both.
+function normalizePriority(raw: unknown): Priority {
+  if (typeof raw === 'string') {
+    const s = raw.toLowerCase();
+    if (s === 'alta' || s === 'high' || s === 'urgente') return 'alta';
+    if (s === 'bassa' || s === 'low') return 'bassa';
+    return 'media';
+  }
+  if (typeof raw === 'number') {
+    if (raw >= 4) return 'alta';
+    if (raw <= 1) return 'bassa';
+    return 'media';
+  }
+  return 'media';
+}
+
+const WEEKDAY_IT = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom'];
+
+// Convert solver "model minutes" into a real wall-clock string using the
+// time_config the backend emits. Falls back to a minute counter when no
+// config is available (mock data path).
+export function formatModelMinute(min: number, tc?: TimeConfig): string {
+  if (!tc) {
+    const h = Math.floor(min / 60);
+    return `min ${min} (~${h}h)`;
+  }
+  const dayIdx = Math.floor(min / tc.day_length_min);
+  const minInDay = min % tc.day_length_min;
+  const hour = tc.company_start_hour + Math.floor(minInDay / 60);
+  const mm = minInDay % 60;
+  const wd = WEEKDAY_IT[(tc.start_weekday + dayIdx) % 7];
+  return `g${dayIdx} ${wd} ${String(hour).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
 
 // ── FJSP Template result (apex-toy, demo-commesse) ──────────────────
@@ -38,8 +93,15 @@ function adaptFJSP(raw: Record<string, unknown>): DashboardData {
     operazione: string; macchina: string; operatore: string;
     start_min: number; end_min: number; processing_min: number;
     setup_min: number; costo_operatore?: number; costo_setup?: number;
-  }>; ritardo_min?: number; completamento_min?: number; scadenza_min?: number; priorita?: string }>;
+    start_datetime?: string; end_datetime?: string;
+  }>; ritardo_min?: number; completamento_min?: number; scadenza_min?: number;
+       priorita?: string | number }>;
   const rawKpis = (raw.kpis ?? {}) as Record<string, number>;
+  const timeConfig = (raw.time_config as TimeConfig | undefined) ?? undefined;
+  const maintenance = (raw.maintenance as Record<string, number[]> | undefined) ?? undefined;
+  const operatorConfig = (raw.operator_config as Array<{
+    operatore_id: string; turno?: string; macchine?: string[];
+  }> | undefined) ?? undefined;
 
   // Extract unique machines and operators
   const machineSet = new Map<string, Machine>();
@@ -54,7 +116,7 @@ function adaptFJSP(raw: Record<string, unknown>): DashboardData {
     const completionMin = lastFase?.end_min ?? 0;
     const deadlineMin = job.scadenza_min ?? 999999;
     const ritardo = job.ritardo_min ?? Math.max(0, completionMin - deadlineMin);
-    const priorita = (job.priorita ?? 'media') as Priority;
+    const priorita = normalizePriority(job.priorita);
 
     orders.push({
       id: jobId,
@@ -62,7 +124,7 @@ function adaptFJSP(raw: Record<string, unknown>): DashboardData {
       quantity: 1,
       priority: priorita,
       priorityWeight: priorita === 'alta' ? 5 : priorita === 'media' ? 2 : 1,
-      deadline: deadlineMin < 999999 ? `Min ${deadlineMin}` : 'N/A',
+      deadline: deadlineMin < 999999 ? formatModelMinute(deadlineMin, timeConfig) : 'N/A',
       deadlineMinute: deadlineMin,
       completionMinute: completionMin,
       status: (ritardo > 0 ? 'in-ritardo' : 'in-tempo') as OrderStatus,
@@ -106,8 +168,48 @@ function adaptFJSP(raw: Record<string, unknown>): DashboardData {
         startMinute: fase.start_min,
         sequence: seq + 1,
         description: fase.operazione,
+        startDatetime: fase.start_datetime,
+        endDatetime: fase.end_datetime,
       });
     });
+  }
+
+  // Hydrate operator shifts + qualifications from the backend's
+  // operator_config when available. Without this every operator was
+  // displayed with a hard-coded "Mattina" shift, which contradicted the
+  // schedule for any "pomeriggio" worker (OP-03/05/07 in the demo).
+  if (operatorConfig) {
+    for (const oc of operatorConfig) {
+      const op = operatorSet.get(oc.operatore_id);
+      if (!op) continue;
+      const turno = (oc.turno ?? '').toLowerCase();
+      op.shift = turno.startsWith('pom') ? 'Pomeriggio' : 'Mattina';
+      if (Array.isArray(oc.macchine)) op.qualifiedMachines = [...oc.macchine];
+    }
+  }
+
+  // Maintenance windows: backend gives us {macchina_id: [weekday_int]}
+  // (0=Mon … 6=Sun). Materialise one MaintenanceWindow per occurrence in
+  // the planning horizon so MachineGantt can shade the down-days.
+  const maintenanceWindows: MaintenanceWindow[] = [];
+  if (maintenance && timeConfig) {
+    const horizonDays = Math.ceil(
+      (allOps.reduce((m, o) => Math.max(m, o.startMinute + o.setupMinutes + o.processingMinutes), 0)
+        + timeConfig.day_length_min) / timeConfig.day_length_min,
+    );
+    for (const [machineId, weekdays] of Object.entries(maintenance)) {
+      for (let day = 0; day < horizonDays; day++) {
+        const wd = (timeConfig.start_weekday + day) % 7;
+        if (weekdays.includes(wd)) {
+          maintenanceWindows.push({
+            machineId,
+            startMinute: day * timeConfig.day_length_min,
+            durationMinutes: timeConfig.day_length_min,
+            description: `Manutenzione ${WEEKDAY_IT[wd]}`,
+          });
+        }
+      }
+    }
   }
 
   const machines = Array.from(machineSet.values());
@@ -127,18 +229,26 @@ function adaptFJSP(raw: Record<string, unknown>): DashboardData {
   const peakUtil = Math.max(...machineUtils, 0);
   const avgUtil = machineUtils.length > 0 ? machineUtils.reduce((a, b) => a + b, 0) / machineUtils.length : 0;
 
+  // highPriorityOnTime: when no high-priority orders exist, "100%" is
+  // misleading (looks like a deliberate score). Surface NaN→0 with the
+  // expected denominator semantics; UI shows "—" or "0/0" for empty set.
+  const altaOrders = orders.filter(o => o.priority === 'alta');
+  const highPriorityOnTime = altaOrders.length === 0
+    ? 0
+    : (altaOrders.filter(o => o.status === 'in-tempo').length / altaOrders.length) * 100;
+
   return {
     machines,
     operators,
     operations: allOps,
     orders,
-    maintenanceWindows: [],
+    maintenanceWindows,
     keyDecisions: [],
     kpis: {
       makespan: Math.round(makespan * 10) / 10,
       makespanDays: Math.round((makespan / 8) * 10) / 10,
       totalTardiness: rawKpis.tardiness_totale_min ?? rawKpis.total_tardiness ?? orders.reduce((s, o) => s + Math.max(0, o.completionMinute - o.deadlineMinute), 0),
-      highPriorityOnTime: orders.filter(o => o.priority === 'alta' && o.status === 'in-tempo').length / Math.max(1, orders.filter(o => o.priority === 'alta').length) * 100,
+      highPriorityOnTime,
       peakUtilization: Math.round(peakUtil * 10) / 10,
       avgUtilization: Math.round(avgUtil * 10) / 10,
       totalOperations: allOps.length,
@@ -147,10 +257,14 @@ function adaptFJSP(raw: Record<string, unknown>): DashboardData {
       ordersOnTime: orders.length - ordersLate,
       ordersLate,
       totalOrders: orders.length,
+      costoOperatori: rawKpis.costo_totale_operatori ?? 0,
+      costoSetup: rawKpis.costo_totale_setup ?? 0,
+      costoTotale: (rawKpis.costo_totale_operatori ?? 0) + (rawKpis.costo_totale_setup ?? 0),
     },
     narrative: '',
     method: 'deterministic-template',
     costUsd: (raw.cost_usd as number) ?? 0,
+    timeConfig,
   };
 }
 
@@ -268,6 +382,9 @@ function adaptLLMOnly(raw: Record<string, unknown>): DashboardData {
       ordersOnTime: orders.length,
       ordersLate: 0,
       totalOrders: orders.length,
+      costoOperatori: 0,
+      costoSetup: 0,
+      costoTotale: 0,
     },
     narrative,
     method: 'llm-only',
@@ -284,7 +401,14 @@ function adaptPipeline(raw: Record<string, unknown>): DashboardData {
     // Check if it looks like FJSP format (job keys with fasi arrays)
     const firstVal = Object.values(solution)[0] as Record<string, unknown> | undefined;
     if (firstVal && 'fasi' in firstVal) {
-      const adapted = adaptFJSP({ solution, kpis: raw.kpis ?? {}, cost_usd: raw.cost_usd });
+      const adapted = adaptFJSP({
+        solution,
+        kpis: raw.kpis ?? {},
+        cost_usd: raw.cost_usd,
+        time_config: raw.time_config,
+        maintenance: raw.maintenance,
+        operator_config: raw.operator_config,
+      });
       adapted.narrative = (raw.narrative as string) ?? '';
       adapted.method = 'codegen-pipeline';
       return adapted;
@@ -349,7 +473,27 @@ export function getJobColorHex(orderId: string): string {
   return colors[Math.abs(hash) % colors.length];
 }
 
-export function minutesToTimeStr(minutes: number): string {
+// Wall-clock formatter — preferred path: pass the operation's
+// startDatetime (already produced by the backend) and we render a
+// compact string. Fallback path: derive from raw model minutes + the
+// active TimeConfig from the dashboard. Last-resort fallback (mock /
+// no config available) keeps the legacy 8h-day estimate so the mock
+// dashboard still renders something readable.
+export function minutesToTimeStr(
+  minutes: number,
+  tc?: TimeConfig,
+  isoDatetime?: string,
+): string {
+  if (isoDatetime) {
+    // "YYYY-MM-DD HH:MM" → "01/04 08:00" (compact, day+time)
+    const m = isoDatetime.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
+    if (m) {
+      const [, , mo, dd, hh, mm] = m;
+      return `${dd}/${mo} ${hh}:${mm}`;
+    }
+  }
+  if (tc) return formatModelMinute(minutes, tc);
+  // Legacy fallback for mock dataset (8h day starting 06:00).
   const hours = Math.floor(minutes / 60);
   const mins = minutes % 60;
   const day = Math.floor(hours / 8) + 1;

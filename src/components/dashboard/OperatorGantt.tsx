@@ -16,6 +16,7 @@ const PIXELS_PER_MINUTE = 1.2;
 const ROW_HEIGHT = 44;
 
 function OperationBar({ op, selected, onSelect }: { op: Operation; selected: boolean; onSelect: () => void }) {
+  const { timeConfig } = useDashboard();
   const [hovered, setHovered] = useState(false);
   const setup = op.setupMinutes || 0;
   const proc = op.processingMinutes || 0;
@@ -48,7 +49,7 @@ function OperationBar({ op, selected, onSelect }: { op: Operation; selected: boo
           <div className="grid grid-cols-2 gap-1 text-muted-foreground">
             <span>Macchina:</span><span className="font-mono text-foreground">{op.machineId}</span>
             <span>Durata tot:</span><span className="font-mono text-foreground">{setup + proc} min</span>
-            <span>Inizio:</span><span className="font-mono text-foreground">{minutesToTimeStr(op.startMinute || 0)}</span>
+            <span>Inizio:</span><span className="font-mono text-foreground">{minutesToTimeStr(op.startMinute || 0, timeConfig, op.startDatetime)}</span>
           </div>
         </div>
       )}

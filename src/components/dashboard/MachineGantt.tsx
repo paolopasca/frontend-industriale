@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion';
 import { useDashboard } from '@/data/DashboardContext';
-import { getOperationsForMachine, getJobColorHex, minutesToTimeStr } from '@/data/resultAdapter';
+import { getOperationsForMachine, getJobColorHex, minutesToTimeStr, type TimeConfig } from '@/data/resultAdapter';
 import { type Operation } from '@/data/mockData';
 import { useState, useRef, useCallback } from 'react';
 
@@ -15,13 +15,27 @@ const DEFAULT_TOTAL_MINUTES = 1680; // ~3.5 days of 8h
 const PIXELS_PER_MINUTE = 1.2;
 const ROW_HEIGHT = 48;
 
-function TimeAxis({ totalMinutes, ganttWidth }: { totalMinutes: number; ganttWidth: number }) {
-  const ticks = [];
+function TimeAxis({ totalMinutes, ganttWidth, timeConfig }: {
+  totalMinutes: number; ganttWidth: number; timeConfig?: TimeConfig;
+}) {
+  // Day length is 8h on the legacy mock fallback, otherwise driven by
+  // backend metadata. Tick at the day boundary + every 4h within.
+  const dayLen = timeConfig?.day_length_min ?? 480;
+  const startHour = timeConfig?.company_start_hour ?? 6;
+  const tickStepHours = 4;
+  const ticks: Array<{ minute: number; label: string; major: boolean }> = [];
   for (let m = 0; m <= totalMinutes; m += 60) {
-    const day = Math.floor(m / 480) + 1;
-    const hourInDay = ((m % 480) / 60) + 6;
-    if (hourInDay === 6 || hourInDay === 10 || hourInDay === 14 || hourInDay === 18) {
-      ticks.push({ minute: m, label: `G${day} ${String(Math.floor(hourInDay)).padStart(2, '0')}:00`, major: hourInDay === 6 });
+    const dayIdx = Math.floor(m / dayLen);
+    const minInDay = m % dayLen;
+    const hourInDay = startHour + minInDay / 60;
+    const wholeHourOffset = (hourInDay - startHour) % tickStepHours;
+    if (Number.isInteger(hourInDay) && wholeHourOffset === 0) {
+      const major = minInDay === 0;
+      ticks.push({
+        minute: m,
+        label: `G${dayIdx + 1} ${String(Math.floor(hourInDay)).padStart(2, '0')}:00`,
+        major,
+      });
     }
   }
   return (
@@ -37,6 +51,7 @@ function TimeAxis({ totalMinutes, ganttWidth }: { totalMinutes: number; ganttWid
 }
 
 function OperationBar({ op, selected, onSelect }: { op: Operation; selected: boolean; onSelect: () => void }) {
+  const { timeConfig } = useDashboard();
   const [hovered, setHovered] = useState(false);
   const setup = op.setupMinutes || 0;
   const proc = op.processingMinutes || 0;
@@ -92,8 +107,8 @@ function OperationBar({ op, selected, onSelect }: { op: Operation; selected: boo
           <div className="grid grid-cols-2 gap-1 text-muted-foreground">
             <span>Setup:</span><span className="font-mono text-foreground">{setup} min</span>
             <span>Lavorazione:</span><span className="font-mono text-foreground">{proc} min</span>
-            <span>Inizio:</span><span className="font-mono text-foreground">{minutesToTimeStr(op.startMinute || 0)}</span>
-            <span>Fine:</span><span className="font-mono text-foreground">{minutesToTimeStr((op.startMinute || 0) + setup + proc)}</span>
+            <span>Inizio:</span><span className="font-mono text-foreground">{minutesToTimeStr(op.startMinute || 0, timeConfig, op.startDatetime)}</span>
+            <span>Fine:</span><span className="font-mono text-foreground">{minutesToTimeStr((op.startMinute || 0) + setup + proc, timeConfig, op.endDatetime)}</span>
           </div>
         </div>
       )}
@@ -102,7 +117,7 @@ function OperationBar({ op, selected, onSelect }: { op: Operation; selected: boo
 }
 
 export function MachineGantt({ selectedOrder, onSelectOrder, onScroll, scrollLeft }: GanttProps) {
-  const { machines, maintenanceWindows, operations } = useDashboard();
+  const { machines, maintenanceWindows, operations, timeConfig } = useDashboard();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Compute timeline width from actual data (with padding), fallback to default
@@ -152,16 +167,19 @@ export function MachineGantt({ selectedOrder, onSelectOrder, onScroll, scrollLef
         </div>
         {/* Chart */}
         <div ref={scrollRef} className="flex-1 overflow-x-auto" onScroll={handleScroll}>
-          <TimeAxis totalMinutes={TOTAL_MINUTES} ganttWidth={GANTT_WIDTH} />
+          <TimeAxis totalMinutes={TOTAL_MINUTES} ganttWidth={GANTT_WIDTH} timeConfig={timeConfig} />
           {machines.map(m => {
             const ops = getOperationsForMachine(operations, m.id);
             const maint = maintenanceWindows.filter(mw => mw.machineId === m.id);
             return (
               <div key={m.id} className="relative border-b border-border/50" style={{ height: ROW_HEIGHT, width: GANTT_WIDTH }}>
-                {/* Grid lines */}
-                {Array.from({ length: Math.ceil(TOTAL_MINUTES / 480) + 1 }).map((_, i) => (
-                  <div key={i} className="absolute top-0 bottom-0 w-px bg-border/30" style={{ left: i * 480 * PIXELS_PER_MINUTE }} />
-                ))}
+                {/* Grid lines: one per schedule day */}
+                {(() => {
+                  const dayLen = timeConfig?.day_length_min ?? 480;
+                  return Array.from({ length: Math.ceil(TOTAL_MINUTES / dayLen) + 1 }).map((_, i) => (
+                    <div key={i} className="absolute top-0 bottom-0 w-px bg-border/30" style={{ left: i * dayLen * PIXELS_PER_MINUTE }} />
+                  ));
+                })()}
                 {/* Maintenance */}
                 {maint.map((mw, i) => (
                   <div key={i} className="absolute top-1 rounded bg-maintenance/60" style={{
