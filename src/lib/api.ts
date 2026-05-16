@@ -197,6 +197,35 @@ export async function autoLogin(tenantSlug: string): Promise<boolean> {
   }
 }
 
+// ── Chat reschedule (warm-start) ─────────────────────────────────────
+
+export interface ChatRescheduleResponse {
+  reply: string;
+  action: 'reschedule' | 'data_query' | 'clarification' | 'infeasible' | 'error';
+  status?: string;
+  solution?: Record<string, unknown>;
+  kpis?: Record<string, number>;
+  objective_value?: number;
+  warnings?: string[];
+  cost_usd: number;
+  rules_used?: Record<string, unknown>;
+  time_config?: Record<string, unknown>;
+  maintenance?: Record<string, unknown>;
+  operator_config?: Record<string, unknown>;
+  shift_types?: Record<string, unknown>;
+  cp_sat_stats?: Record<string, unknown>;
+  disruption?: { intent: string; target_id?: string; raw_message: string };
+  warm_start?: Record<string, unknown>;
+  trace_id?: string;
+}
+
+export async function chatReschedule(slug: string, message: string): Promise<ChatRescheduleResponse> {
+  return apiFetch<ChatRescheduleResponse>('/api/public/chat-reschedule', {
+    method: 'POST',
+    body: JSON.stringify({ slug, message }),
+  });
+}
+
 // ── Health ───────────────────────────────────────────────────────────
 
 export async function healthCheck(): Promise<boolean> {

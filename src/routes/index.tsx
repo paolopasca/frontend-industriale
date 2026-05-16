@@ -96,7 +96,7 @@ function Index() {
           >
             <div className="min-h-screen bg-background">
               <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-6 space-y-6">
-                <DashboardHeader onReplan={() => setReplanOpen(true)} onAddData={() => setDataInputOpen(true)} />
+                <DashboardHeader onReplan={() => setReplanOpen(true)} onAddData={() => setDataInputOpen(true)} onReset={() => { setPhase('setup'); setBackendResult(null); setSolverMethod(null); }} />
                 <KPISummary />
 
                 <GanttSection title="Gantt Macchine" defaultOpen={false}>
@@ -129,7 +129,12 @@ function Index() {
                 </div>
               </div>
 
-              <ReplanModal open={replanOpen} onClose={() => setReplanOpen(false)} />
+              <ReplanModal
+                open={replanOpen}
+                onClose={() => setReplanOpen(false)}
+                companySlug={setupData?.companySlug ?? null}
+                onResult={(result) => setBackendResult(result)}
+              />
               <DataInputModal open={dataInputOpen} onClose={() => setDataInputOpen(false)} />
             </div>
           </motion.div>
