@@ -1,7 +1,12 @@
 import { motion } from 'framer-motion';
 import { RefreshCw, FileDown, Plus, ArrowLeft } from 'lucide-react';
+import { toast } from 'sonner';
 
 export function DashboardHeader({ onReplan, onAddData, onReset }: { onReplan: () => void; onAddData: () => void; onReset?: () => void }) {
+  const handleExportPdf = () => {
+    toast.info('Apertura finestra di stampa — scegli "Salva come PDF" per esportare.');
+    setTimeout(() => window.print(), 250);
+  };
   return (
     <motion.header
       initial={{ opacity: 0, y: -20 }}
@@ -21,7 +26,7 @@ export function DashboardHeader({ onReplan, onAddData, onReset }: { onReplan: ()
           </p>
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 no-print">
         {onReset && (
           <button
             onClick={onReset}
@@ -45,7 +50,10 @@ export function DashboardHeader({ onReplan, onAddData, onReset }: { onReplan: ()
           <RefreshCw className="w-4 h-4" />
           Ripianifica
         </button>
-        <button className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-sm font-medium text-foreground hover:bg-accent/80 transition-colors">
+        <button
+          onClick={handleExportPdf}
+          className="no-print flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-sm font-medium text-foreground hover:bg-accent/80 transition-colors"
+        >
           <FileDown className="w-4 h-4" />
           Esporta PDF
         </button>

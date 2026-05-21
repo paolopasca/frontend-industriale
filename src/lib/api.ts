@@ -1,9 +1,10 @@
 /**
  * DAINO Backend API client.
- * Talks to daino-backend-cp running on localhost:8001.
+ * Talks to daino-backend-definitivo via VITE_API_BASE_URL (default localhost:8001).
  */
 
-const API_BASE = 'http://localhost:8001';
+const API_BASE =
+  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? 'http://localhost:8001';
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -107,11 +108,72 @@ export async function getCompany(slug: string): Promise<CompanyDetail> {
   return apiFetch(`/api/public/company/${slug}`);
 }
 
+// /api/public/solve-llm was removed from the backend on 2026-05-18.
+// We redirect to /api/public/solve-template and adapt the FJSP-shaped
+// response into the legacy LLMOnlyResult shape so existing callers
+// (OptimizationLoader, resultAdapter.adaptLLMOnly) keep working unchanged.
+// The backend supports multiple problem types (fjsp | jssp | flow_shop |
+// staff_rostering | workforce); we sniff the type from the company's
+// consultation.md ("## Tipo problema: <value>") and fall back to 'fjsp'.
+const _PROBLEM_TYPES = ['fjsp', 'jssp', 'flow_shop', 'staff_rostering', 'workforce'] as const;
+type ProblemType = typeof _PROBLEM_TYPES[number];
+
+async function detectProblemType(slug: string): Promise<ProblemType> {
+  try {
+    const detail = await getCompany(slug);
+    const md = detail.consultation_md ?? '';
+    const m = md.match(/^##\s*Tipo problema:\s*([a-z_]+)/im);
+    if (m) {
+      const t = m[1].toLowerCase();
+      if ((_PROBLEM_TYPES as readonly string[]).includes(t)) return t as ProblemType;
+    }
+  } catch {
+    // fall through to default
+  }
+  return 'fjsp';
+}
+
 export async function solveLLMOnly(slug: string): Promise<LLMOnlyResult> {
-  return apiFetch('/api/public/solve-llm', {
-    method: 'POST',
-    body: JSON.stringify({ slug }),
-  });
+  const problemType = await detectProblemType(slug);
+  const tpl = await solveTemplate(slug, problemType, {});
+  const solution = (tpl.solution ?? {}) as Record<string, {
+    fasi?: Array<{
+      operazione: string;
+      macchina: string;
+      operatore: string;
+      setup_min?: number;
+      processing_min?: number;
+      start_min?: number;
+      end_min?: number;
+      start_datetime?: string;
+      end_datetime?: string;
+    }>;
+  }>;
+  const piano: LLMOnlyResult['result']['piano'] = [];
+  for (const [commessa, job] of Object.entries(solution)) {
+    for (const fase of job.fasi ?? []) {
+      piano.push({
+        commessa,
+        operazione: fase.operazione,
+        macchina: fase.macchina,
+        operatore: fase.operatore,
+        inizio: fase.start_datetime ?? String(fase.start_min ?? 0),
+        fine: fase.end_datetime ?? String(fase.end_min ?? 0),
+        setup_min: fase.setup_min ?? 0,
+        lavorazione_min: fase.processing_min ?? 0,
+      });
+    }
+  }
+  return {
+    status: tpl.status,
+    method: 'llm-only',
+    result: {
+      piano,
+      kpi: tpl.kpis ?? {},
+      narrative: '',
+    },
+    cost_usd: tpl.cost_usd ?? 0,
+  };
 }
 
 export async function solveTemplate(slug: string, problemType?: string, rules?: Record<string, unknown>) {
@@ -219,11 +281,97 @@ export interface ChatRescheduleResponse {
   trace_id?: string;
 }
 
-export async function chatReschedule(slug: string, message: string): Promise<ChatRescheduleResponse> {
-  return apiFetch<ChatRescheduleResponse>('/api/public/chat-reschedule', {
-    method: 'POST',
-    body: JSON.stringify({ slug, message }),
-  });
+// /api/public/chat-reschedule was removed. The replacement is the
+// authenticated /api/analysis/{session_id}/reschedule endpoint, which
+// returns 501 for compose-path runs (no saved solver.py) — this is a
+// known backend gap (TD-022). Callers must handle 501 gracefully.
+export interface RescheduleParams {
+  message: string;
+  sessionId?: string | null;
+  runId?: number | null;
+  elapsedMin?: number;
+}
+
+export async function chatReschedule(
+  slugOrParams: string | RescheduleParams,
+  message?: string,
+): Promise<ChatRescheduleResponse> {
+  // Backward-compat: accept (slug, message) and treat slug as ignored
+  // (the new endpoint scopes by JWT tenant, not by slug).
+  const params: RescheduleParams = typeof slugOrParams === 'string'
+    ? { message: message ?? '', sessionId: null, runId: null }
+    : slugOrParams;
+
+  // runId must be a positive integer; "0" or NaN means no usable run.
+  const hasValidRun = typeof params.runId === 'number'
+    && Number.isFinite(params.runId)
+    && params.runId > 0;
+  const hasSession = !!params.sessionId;
+  if (!hasSession && !hasValidRun) {
+    return {
+      reply:
+        'Reschedule non disponibile: nessuna sessione/run attiva da rielaborare. '
+        + 'Avvia prima un\'ottimizzazione con strategia codegen.',
+      action: 'error',
+      cost_usd: 0,
+    };
+  }
+
+  // session_id is part of the URL; the endpoint accepts run_id in body
+  // when no live in-memory session exists.
+  const sid = params.sessionId ?? 'no-session';
+  const body: Record<string, unknown> = {
+    disruption: {},
+    event_description: params.message,
+  };
+  if (hasValidRun) body.run_id = params.runId;
+  if (params.elapsedMin != null) body.elapsed_min = params.elapsedMin;
+
+  try {
+    const raw = await apiFetch<Record<string, unknown>>(`/api/analysis/${sid}/reschedule`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify(body),
+    });
+    const err = raw.error as string | undefined;
+    const status = raw.status as string | undefined;
+    const action: ChatRescheduleResponse['action'] = err
+      ? (status === 'INFEASIBLE' ? 'infeasible' : 'error')
+      : 'reschedule';
+    return {
+      reply: err
+        ? `Errore: ${err}`
+        : `Piano ricalcolato. Stato: ${status ?? 'OK'}.`,
+      action,
+      status,
+      solution: raw.solution as Record<string, unknown> | undefined,
+      kpis: raw.kpis as Record<string, number> | undefined,
+      objective_value: raw.objective_value as number | undefined,
+      warnings: raw.warnings as string[] | undefined,
+      cost_usd: (raw.cost_usd as number | undefined) ?? 0,
+      time_config: raw.time_config as Record<string, unknown> | undefined,
+      maintenance: raw.maintenance as Record<string, unknown> | undefined,
+      operator_config: raw.operator_config as Record<string, unknown> | undefined,
+      shift_types: raw.shift_types as Record<string, unknown> | undefined,
+      cp_sat_stats: raw.cp_sat_stats as Record<string, unknown> | undefined,
+      warm_start: raw.warm_start as Record<string, unknown> | undefined,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // Backend returns 501 with a detail describing the gap (compose-path
+    // runs have no saved solver.py). Surface a UX-friendly message.
+    if (msg.includes('Reschedule non disponibile') || msg.includes('501')) {
+      return {
+        reply:
+          'Reschedule non disponibile per questa strategia (la run è di tipo "compose": il backend '
+          + 'non ha salvato il solver). Avvia una nuova ottimizzazione con strategia codegen per '
+          + 'abilitare la ripianificazione, oppure rilancia un solve completo from-scratch.',
+        action: 'error',
+        cost_usd: 0,
+      };
+    }
+    return { reply: `Errore: ${msg}`, action: 'error', cost_usd: 0 };
+  }
 }
 
 // ── Health ───────────────────────────────────────────────────────────

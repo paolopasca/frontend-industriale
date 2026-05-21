@@ -18,6 +18,7 @@ import { GanttSection } from '@/components/dashboard/GanttSection';
 import { WhatIfAnalysis } from '@/components/dashboard/WhatIfAnalysis';
 import { DashboardContext } from '@/data/DashboardContext';
 import { adaptResult, type DashboardData } from '@/data/resultAdapter';
+import { Toaster } from '@/components/ui/sonner';
 
 export const Route = createFileRoute("/")({
   component: Index,
@@ -48,6 +49,8 @@ function Index() {
   }, [backendResult, solverMethod]);
 
   return (
+    <>
+    <Toaster position="top-right" richColors />
     <AnimatePresence mode="wait">
       {phase === 'setup' && (
         <motion.div key="setup" exit={{ opacity: 0 }} transition={{ duration: 0.4 }}>
@@ -135,11 +138,16 @@ function Index() {
                 companySlug={setupData?.companySlug ?? null}
                 onResult={(result) => setBackendResult(result)}
               />
-              <DataInputModal open={dataInputOpen} onClose={() => setDataInputOpen(false)} />
+              <DataInputModal
+                open={dataInputOpen}
+                onClose={() => setDataInputOpen(false)}
+                companySlug={setupData?.companySlug ?? null}
+              />
             </div>
           </motion.div>
         </DashboardContext.Provider>
       )}
     </AnimatePresence>
+    </>
   );
 }

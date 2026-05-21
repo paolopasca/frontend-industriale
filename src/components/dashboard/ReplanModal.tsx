@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { X, Send, Loader2, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { chatReschedule, type ChatRescheduleResponse } from '@/lib/api';
+import { chatReschedule, autoLogin, type ChatRescheduleResponse } from '@/lib/api';
 
 interface Message {
   id: string;
@@ -110,7 +110,18 @@ export function ReplanModal({
     setBusy(true);
 
     try {
-      const res = await chatReschedule(companySlug, text);
+      // The new /api/analysis/{sid}/reschedule endpoint is authenticated.
+      // Re-auth as the demo tenant (no-op if already logged in) before
+      // calling, and pull the session/run IDs persisted by the loader.
+      await autoLogin(companySlug);
+      const sessionId = localStorage.getItem('daino_last_session_id');
+      const runIdRaw = localStorage.getItem('daino_last_run_id');
+      const runId = runIdRaw ? Number(runIdRaw) : null;
+      const res = await chatReschedule({
+        message: text,
+        sessionId,
+        runId: Number.isFinite(runId) ? runId : null,
+      });
       const assistantMsg: Message = {
         id: `${Date.now()}-a`,
         role: 'assistant',

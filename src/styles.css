@@ -190,3 +190,38 @@
 
 /* Google Font import */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+/* Print styles for "Esporta PDF" — uses native browser print dialog */
+@media print {
+  .no-print,
+  [data-sonner-toaster] {
+    display: none !important;
+  }
+  body {
+    background: white !important;
+    color: black !important;
+  }
+  /* Force expand collapsed Gantt sections so they appear in the PDF */
+  details:not([open]) > summary ~ * {
+    display: block !important;
+  }
+  /* Avoid page breaks splitting individual cards */
+  .bg-card,
+  .card,
+  table,
+  section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  /* Saner colors for print background */
+  .bg-background,
+  .bg-card,
+  .bg-accent,
+  .bg-accent\/10,
+  .bg-accent\/20,
+  .bg-accent\/50,
+  .bg-input,
+  .bg-popover {
+    background: white !important;
+  }
+}

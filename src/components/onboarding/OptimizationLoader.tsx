@@ -149,6 +149,18 @@ export function OptimizationLoader({
     const addLog = (msg: string) => setBackendLog(prev => [...prev, msg]);
 
     async function runSolve() {
+      // Reschedule is only supported for codegen-pipeline runs (the
+      // backend gates it on a saved solver.py). Clear stale IDs so the
+      // ReplanModal won't try to reschedule a previous codegen run after
+      // the user picks llm-only or deterministic-json this time.
+      if (method !== 'codegen-pipeline') {
+        try {
+          localStorage.removeItem('daino_last_session_id');
+          localStorage.removeItem('daino_last_run_id');
+        } catch {
+          // ignore
+        }
+      }
       try {
         if (method === 'llm-only') {
           addLog('Chiamata Solo LLM...');
@@ -219,6 +231,14 @@ export function OptimizationLoader({
           if (state.state === 'done') {
             const results = await pipelineResults(state.session_id);
             addLog(`Completato — costo: $${results.cost_usd?.toFixed(3) ?? '?'}`);
+            // Persist session/run IDs so ReplanModal can call the
+            // authenticated /api/analysis/{sid}/reschedule endpoint.
+            try {
+              localStorage.setItem('daino_last_session_id', results.session_id);
+              localStorage.setItem('daino_last_run_id', String(results.run_id));
+            } catch {
+              // ignore storage failures
+            }
             setProgress(100);
             setDone(true);
             setTimeout(() => onComplete(results), 1500);
