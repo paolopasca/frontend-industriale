@@ -1,0 +1,7 @@
+{
+  "slug": "demo-commesse",
+  "solution": "this is not a valid solution object — it's a string",
+  "kpis": {
+    "random_metric": 42
+  }
+}

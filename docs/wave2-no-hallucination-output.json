@@ -1,0 +1,110 @@
+{
+  "base_url": "http://localhost:8080",
+  "fixtures": [
+    "optimal",
+    "feasible-warning",
+    "infeasible",
+    "empty",
+    "malformed"
+  ],
+  "repetitions": 2,
+  "total_calls": 20,
+  "pass_threshold": 0.95,
+  "fail_threshold": 0.9,
+  "global": {
+    "cited": 283,
+    "verified": 282,
+    "ratio": 0.9964664310954063,
+    "verdict": "PASS"
+  },
+  "per_fixture_endpoint": [
+    {
+      "fixture": "optimal",
+      "endpoint": "explain",
+      "calls": 2,
+      "cited": 18,
+      "verified": 18,
+      "ratio": 1
+    },
+    {
+      "fixture": "optimal",
+      "endpoint": "advise",
+      "calls": 2,
+      "cited": 81,
+      "verified": 81,
+      "ratio": 1
+    },
+    {
+      "fixture": "feasible-warning",
+      "endpoint": "explain",
+      "calls": 2,
+      "cited": 29,
+      "verified": 29,
+      "ratio": 1
+    },
+    {
+      "fixture": "feasible-warning",
+      "endpoint": "advise",
+      "calls": 2,
+      "cited": 70,
+      "verified": 70,
+      "ratio": 1
+    },
+    {
+      "fixture": "infeasible",
+      "endpoint": "explain",
+      "calls": 2,
+      "cited": 19,
+      "verified": 19,
+      "ratio": 1
+    },
+    {
+      "fixture": "infeasible",
+      "endpoint": "advise",
+      "calls": 2,
+      "cited": 66,
+      "verified": 65,
+      "ratio": 0.9848484848484849
+    },
+    {
+      "fixture": "empty",
+      "endpoint": "explain",
+      "calls": 2,
+      "cited": 0,
+      "verified": 0,
+      "ratio": null
+    },
+    {
+      "fixture": "empty",
+      "endpoint": "advise",
+      "calls": 2,
+      "cited": 7,
+      "verified": 7,
+      "ratio": 1
+    },
+    {
+      "fixture": "malformed",
+      "endpoint": "explain",
+      "calls": 2,
+      "cited": 0,
+      "verified": 0,
+      "ratio": null
+    },
+    {
+      "fixture": "malformed",
+      "endpoint": "advise",
+      "calls": 2,
+      "cited": 8,
+      "verified": 8,
+      "ratio": 1
+    }
+  ],
+  "unverified_samples": [
+    {
+      "fixture": "infeasible",
+      "endpoint": "advise",
+      "raw": "48",
+      "value": 48
+    }
+  ]
+}

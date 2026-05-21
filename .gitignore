@@ -14,7 +14,12 @@ dist-ssr
 .vinxi
 .tanstack/**
 .nitro
+
+# Env files — *.local catches .env.local; the lines below catch sibling variants
 *.local
+.env
+.env.*
+!.env.example
 
 # Wrangler / Cloudflare
 .wrangler/

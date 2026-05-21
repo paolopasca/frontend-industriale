@@ -1,0 +1,17 @@
+{
+  "slug": "demo-commesse",
+  "solution": {
+    "status": "INFEASIBLE",
+    "reason": "Capacità macchine insufficiente per rispettare le deadline impostate. La macchina M-3 è il principale collo di bottiglia.",
+    "vincoli_critici": [
+      "M-3 richiesta da 8 commesse con deadline entro 5 giorni — capacità massima 4 commesse",
+      "Operatore O-2 unico abilitato per fresatura su M-3, finestra disponibile 480 min/giorno"
+    ]
+  },
+  "kpis": {
+    "n_commesse_richieste": 21,
+    "n_commesse_pianificabili": 0,
+    "deadline_violate_count": 8,
+    "min_extension_required_min": 1440
+  }
+}

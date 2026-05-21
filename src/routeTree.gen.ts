@@ -10,33 +10,53 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiExplainRouteImport } from './routes/api/explain'
+import { Route as ApiAdviseRouteImport } from './routes/api/advise'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiExplainRoute = ApiExplainRouteImport.update({
+  id: '/api/explain',
+  path: '/api/explain',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAdviseRoute = ApiAdviseRouteImport.update({
+  id: '/api/advise',
+  path: '/api/advise',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/advise': typeof ApiAdviseRoute
+  '/api/explain': typeof ApiExplainRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/advise': typeof ApiAdviseRoute
+  '/api/explain': typeof ApiExplainRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/advise': typeof ApiAdviseRoute
+  '/api/explain': typeof ApiExplainRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths: '/' | '/api/advise' | '/api/explain'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/' | '/api/advise' | '/api/explain'
+  id: '__root__' | '/' | '/api/advise' | '/api/explain'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiAdviseRoute: typeof ApiAdviseRoute
+  ApiExplainRoute: typeof ApiExplainRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -48,11 +68,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/explain': {
+      id: '/api/explain'
+      path: '/api/explain'
+      fullPath: '/api/explain'
+      preLoaderRoute: typeof ApiExplainRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/advise': {
+      id: '/api/advise'
+      path: '/api/advise'
+      fullPath: '/api/advise'
+      preLoaderRoute: typeof ApiAdviseRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiAdviseRoute: ApiAdviseRoute,
+  ApiExplainRoute: ApiExplainRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

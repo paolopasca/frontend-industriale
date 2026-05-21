@@ -17,9 +17,41 @@ import { ReplanModal } from '@/components/dashboard/ReplanModal';
 import { DataInputModal } from '@/components/dashboard/DataInputModal';
 import { GanttSection } from '@/components/dashboard/GanttSection';
 import { WhatIfAnalysis } from '@/components/dashboard/WhatIfAnalysis';
+import { ExplanationPanel } from '@/components/dashboard/ExplanationPanel';
+import { AdvisorPanel } from '@/components/dashboard/AdvisorPanel';
 import { DashboardContext } from '@/data/DashboardContext';
 import { adaptResult, type DashboardData } from '@/data/resultAdapter';
 import { Toaster } from '@/components/ui/sonner';
+
+// Extract the raw `solution` + `kpis` blocks (flat Record<string, number>)
+// from whatever shape the backend returned. solveTemplate → top-level
+// `solution`/`kpis`; solveLLMOnly → nested under `result.kpi`/`result.piano`.
+function extractAiInputs(raw: unknown): { solution: unknown; kpis: Record<string, number> } {
+  if (!raw || typeof raw !== 'object') return { solution: null, kpis: {} };
+  const r = raw as Record<string, unknown>;
+  // Template / FJSP shape
+  if (r.solution !== undefined) {
+    const k = (r.kpis ?? {}) as Record<string, unknown>;
+    return { solution: r.solution, kpis: toNumberMap(k) };
+  }
+  // LLM-only legacy shape
+  const result = r.result as Record<string, unknown> | undefined;
+  if (result) {
+    return {
+      solution: result.piano ?? result,
+      kpis: toNumberMap((result.kpi ?? {}) as Record<string, unknown>),
+    };
+  }
+  return { solution: raw, kpis: {} };
+}
+
+function toNumberMap(rec: Record<string, unknown>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(rec)) {
+    if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+  }
+  return out;
+}
 
 export const Route = createFileRoute("/")({
   component: Index,
@@ -52,6 +84,8 @@ function Index() {
       return null;
     }
   }, [backendResult, solverMethod]);
+
+  const aiInputs = useMemo(() => extractAiInputs(backendResult), [backendResult]);
 
   return (
     <>
@@ -111,6 +145,23 @@ function Index() {
                   companySlug={setupData?.companySlug ?? null}
                 />
                 <KPISummary />
+
+                <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+                  <div className="lg:col-span-3">
+                    <ExplanationPanel
+                      slug={setupData?.companySlug ?? null}
+                      solution={aiInputs.solution}
+                      kpis={aiInputs.kpis}
+                    />
+                  </div>
+                  <div className="lg:col-span-2">
+                    <AdvisorPanel
+                      slug={setupData?.companySlug ?? null}
+                      solution={aiInputs.solution}
+                      kpis={aiInputs.kpis}
+                    />
+                  </div>
+                </div>
 
                 <GanttSection title="Gantt Macchine" defaultOpen={false}>
                   <MachineGantt
