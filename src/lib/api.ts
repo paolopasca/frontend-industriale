@@ -259,6 +259,44 @@ export async function autoLogin(tenantSlug: string): Promise<boolean> {
   }
 }
 
+// ── Smart data upload (multipart, JWT-protected) ────────────────────
+
+export interface UploadDataResult {
+  status: string;
+  source?: string;
+  problem_type?: string;
+  preview?: unknown;
+  data?: unknown;
+}
+
+// Upload a CSV/Excel for the given tenant. Always re-runs autoLogin(slug)
+// because the module-level _token has no tenant identity: a stale token
+// from a previous tenant would otherwise be sent and the backend (which
+// derives tenant_id from the JWT, not the body) would write the file
+// into the wrong tenant's run history. Backend route: POST /api/upload-data.
+export async function uploadData(file: File, slug: string): Promise<UploadDataResult> {
+  const ok = await autoLogin(slug);
+  if (!ok) {
+    throw new Error(`Login fallito per ${slug}. Impossibile caricare il file.`);
+  }
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch(`${API_BASE}/api/upload-data`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: form,
+  });
+  if (!res.ok) {
+    let detail = `Upload failed (${res.status})`;
+    try {
+      const j = await res.json();
+      if (j?.detail) detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
+    } catch { /* ignore */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
 // ── Chat reschedule (warm-start) ─────────────────────────────────────
 
 export interface ChatRescheduleResponse {

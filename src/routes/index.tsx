@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
+import { migrateLegacyKeys } from '@/lib/storage';
 import { AnimatePresence, motion } from 'framer-motion';
 import { SetupPage, type SetupData } from '@/components/onboarding/SetupPage';
 import { SolverMethodSelect, type SolverMethod } from '@/components/onboarding/SolverMethodSelect';
@@ -35,6 +36,10 @@ function Index() {
   const [replanOpen, setReplanOpen] = useState(false);
   const [dataInputOpen, setDataInputOpen] = useState(false);
   const [ganttScroll, setGanttScroll] = useState(0);
+
+  useEffect(() => {
+    migrateLegacyKeys();
+  }, []);
 
   const handleMachineScroll = useCallback((sl: number) => setGanttScroll(sl), []);
   const handleOperatorScroll = useCallback((sl: number) => setGanttScroll(sl), []);
@@ -99,7 +104,12 @@ function Index() {
           >
             <div className="min-h-screen bg-background">
               <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-6 space-y-6">
-                <DashboardHeader onReplan={() => setReplanOpen(true)} onAddData={() => setDataInputOpen(true)} onReset={() => { setPhase('setup'); setBackendResult(null); setSolverMethod(null); }} />
+                <DashboardHeader
+                  onReplan={() => setReplanOpen(true)}
+                  onAddData={() => setDataInputOpen(true)}
+                  onReset={() => { setPhase('setup'); setBackendResult(null); setSolverMethod(null); }}
+                  companySlug={setupData?.companySlug ?? null}
+                />
                 <KPISummary />
 
                 <GanttSection title="Gantt Macchine" defaultOpen={false}>

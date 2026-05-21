@@ -2,43 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Building2, Package, Wrench, Users, ChevronRight, ChevronLeft, Upload, Plus, Trash2, Zap, CheckCircle2, Loader2, Database } from 'lucide-react';
 import { toast } from 'sonner';
-import { listCompanies, getCompany, type CompanySummary, type CompanyDetail } from '@/lib/api';
-
-const API_BASE =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? 'http://localhost:8001';
-
-// Inline helper (NOT in api.ts to avoid touching compat-fixer's domain).
-// /api/upload-data requires JWT; we obtain it via demo login on the company slug.
-async function uploadDataFile(companySlug: string, file: File): Promise<{ status: string; source?: string; problem_type?: string; preview?: unknown }> {
-  // Step 1: login to get a token for this tenant
-  const loginRes = await fetch(`${API_BASE}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tenant_slug: companySlug, username: 'demo', password: 'demo' }),
-  });
-  if (!loginRes.ok) {
-    throw new Error(`Login fallito per ${companySlug} (${loginRes.status}). Impossibile caricare il file.`);
-  }
-  const { access_token } = await loginRes.json();
-
-  // Step 2: upload
-  const form = new FormData();
-  form.append('file', file);
-  const res = await fetch(`${API_BASE}/api/upload-data`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${access_token}` },
-    body: form,
-  });
-  if (!res.ok) {
-    let detail = `Upload failed (${res.status})`;
-    try {
-      const j = await res.json();
-      if (j?.detail) detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
-    } catch { /* ignore */ }
-    throw new Error(detail);
-  }
-  return res.json();
-}
+import { listCompanies, getCompany, uploadData, type CompanySummary, type CompanyDetail } from '@/lib/api';
 
 export interface SetupData {
   companyName: string;
@@ -98,7 +62,7 @@ export function SetupPage({ onOptimize }: { onOptimize: (data: SetupData) => voi
     }
     setUploadingCsv(true);
     try {
-      const result = await uploadDataFile(data.companySlug, file);
+      const result = await uploadData(file, data.companySlug);
       toast.success(`File "${file.name}" caricato (${result.source ?? 'ok'}).`);
       // Re-fetch company detail so dataFiles is fresh
       try {
@@ -428,7 +392,7 @@ export function SetupPage({ onOptimize }: { onOptimize: (data: SetupData) => voi
                     <input
                       ref={csvFileRef}
                       type="file"
-                      accept=".csv,.xlsx,.xls,.json,.pdf"
+                      accept=".csv,.xlsx,.xls,.pdf"
                       onChange={handleCsvFileChange}
                       className="hidden"
                     />

@@ -1,11 +1,26 @@
 import { motion } from 'framer-motion';
 import { RefreshCw, FileDown, Plus, ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
+import { clearSlugScoped } from '@/lib/storage';
 
-export function DashboardHeader({ onReplan, onAddData, onReset }: { onReplan: () => void; onAddData: () => void; onReset?: () => void }) {
+export function DashboardHeader({
+  onReplan,
+  onAddData,
+  onReset,
+  companySlug,
+}: {
+  onReplan: () => void;
+  onAddData: () => void;
+  onReset?: () => void;
+  companySlug?: string | null;
+}) {
   const handleExportPdf = () => {
     toast.info('Apertura finestra di stampa — scegli "Salva come PDF" per esportare.');
     setTimeout(() => window.print(), 250);
+  };
+  const handleReset = () => {
+    if (companySlug) clearSlugScoped(companySlug);
+    onReset?.();
   };
   return (
     <motion.header
@@ -29,7 +44,7 @@ export function DashboardHeader({ onReplan, onAddData, onReset }: { onReplan: ()
       <div className="flex items-center gap-2 no-print">
         {onReset && (
           <button
-            onClick={onReset}
+            onClick={handleReset}
             className="flex items-center gap-2 px-4 py-2 rounded-lg border border-border text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
           >
             <ArrowLeft className="w-4 h-4" />

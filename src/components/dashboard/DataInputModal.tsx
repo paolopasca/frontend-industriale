@@ -2,39 +2,7 @@ import { useRef, useState } from 'react';
 import { X, Plus, Trash2, Upload, Send, Package, Cpu, Users, Settings, ChevronRight, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
-import { pipelineStart } from '@/lib/api';
-
-const API_BASE =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? 'http://localhost:8001';
-
-// Inline helper: tenant login + multipart upload to /api/upload-data.
-async function uploadDataFile(companySlug: string, file: File): Promise<{ status: string; source?: string; problem_type?: string }> {
-  const loginRes = await fetch(`${API_BASE}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tenant_slug: companySlug, username: 'demo', password: 'demo' }),
-  });
-  if (!loginRes.ok) {
-    throw new Error(`Login fallito per ${companySlug} (${loginRes.status}).`);
-  }
-  const { access_token } = await loginRes.json();
-  const form = new FormData();
-  form.append('file', file);
-  const res = await fetch(`${API_BASE}/api/upload-data`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${access_token}` },
-    body: form,
-  });
-  if (!res.ok) {
-    let detail = `Upload failed (${res.status})`;
-    try {
-      const j = await res.json();
-      if (j?.detail) detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
-    } catch { /* ignore */ }
-    throw new Error(detail);
-  }
-  return res.json();
-}
+import { pipelineStart, uploadData } from '@/lib/api';
 
 type Tab = 'ordini' | 'macchine' | 'operatori' | 'vincoli';
 
@@ -103,7 +71,7 @@ export function DataInputModal({
     }
     setUploading(true);
     try {
-      const r = await uploadDataFile(companySlug, file);
+      const r = await uploadData(file, companySlug);
       toast.success(`"${file.name}" caricato (${r.source ?? 'ok'}).`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Errore upload');
@@ -270,7 +238,7 @@ export function DataInputModal({
                       <input
                         ref={csvFileRef}
                         type="file"
-                        accept=".csv,.xlsx,.xls,.json,.pdf"
+                        accept=".csv,.xlsx,.xls,.pdf"
                         onChange={handleCsvFileChange}
                         className="hidden"
                       />
@@ -497,11 +465,11 @@ export function DataInputModal({
                       <p className="text-sm text-muted-foreground">
                         {uploading ? 'Caricamento in corso...' : 'Trascina file CSV/Excel o clicca per caricare'}
                       </p>
-                      <p className="text-xs text-muted-foreground/60 mt-1">Formati supportati: .csv, .xlsx, .json, .pdf</p>
+                      <p className="text-xs text-muted-foreground/60 mt-1">Formati supportati: .csv, .xlsx, .xls</p>
                       <input
                         ref={dropFileRef}
                         type="file"
-                        accept=".csv,.xlsx,.xls,.json,.pdf"
+                        accept=".csv,.xlsx,.xls,.pdf"
                         onChange={handleDropFileChange}
                         className="hidden"
                       />

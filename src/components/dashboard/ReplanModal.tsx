@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { X, Send, Loader2, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { chatReschedule, autoLogin, type ChatRescheduleResponse } from '@/lib/api';
+import { getSlugScoped, setSlugScoped, migrateLegacyKeys } from '@/lib/storage';
 
 interface Message {
   id: string;
@@ -11,7 +12,9 @@ interface Message {
   action?: ChatRescheduleResponse['action'];
 }
 
-const STORAGE_KEY = 'replan_chat_messages';
+const STORAGE_KEY_BASE = 'replan_chat_messages';
+const SESSION_KEY = 'daino_last_session_id';
+const RUN_KEY = 'daino_last_run_id';
 const WELCOME: Message = {
   id: 'welcome',
   role: 'assistant',
@@ -20,9 +23,10 @@ const WELCOME: Message = {
   timestamp: Date.now(),
 };
 
-function loadStored(): Message[] {
+function loadStored(slug: string | null): Message[] {
+  if (!slug) return [WELCOME];
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = getSlugScoped(STORAGE_KEY_BASE, slug);
     if (raw) {
       const parsed = JSON.parse(raw) as Message[];
       if (Array.isArray(parsed) && parsed.length > 0) return parsed;
@@ -61,15 +65,24 @@ export function ReplanModal({
   companySlug: string | null;
   onResult?: (result: unknown) => void;
 }) {
-  const [messages, setMessages] = useState<Message[]>(loadStored);
+  const [messages, setMessages] = useState<Message[]>(() => loadStored(companySlug));
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
-  }, [messages]);
+    migrateLegacyKeys();
+  }, []);
+
+  useEffect(() => {
+    setMessages(loadStored(companySlug));
+  }, [companySlug]);
+
+  useEffect(() => {
+    if (!companySlug) return;
+    setSlugScoped(STORAGE_KEY_BASE, companySlug, JSON.stringify(messages));
+  }, [messages, companySlug]);
 
   useEffect(() => {
     if (open) {
@@ -110,17 +123,17 @@ export function ReplanModal({
     setBusy(true);
 
     try {
-      // The new /api/analysis/{sid}/reschedule endpoint is authenticated.
-      // Re-auth as the demo tenant (no-op if already logged in) before
-      // calling, and pull the session/run IDs persisted by the loader.
+      // The /api/analysis/{sid}/reschedule endpoint is authenticated.
+      // autoLogin always re-issues POST /api/auth/login — see uploadData()
+      // in api.ts for why a token-presence gate is incorrect here.
       await autoLogin(companySlug);
-      const sessionId = localStorage.getItem('daino_last_session_id');
-      const runIdRaw = localStorage.getItem('daino_last_run_id');
+      const sessionId = getSlugScoped(SESSION_KEY, companySlug);
+      const runIdRaw = getSlugScoped(RUN_KEY, companySlug);
       const runId = runIdRaw ? Number(runIdRaw) : null;
       const res = await chatReschedule({
         message: text,
         sessionId,
-        runId: Number.isFinite(runId) ? runId : null,
+        runId: Number.isFinite(runId) && (runId ?? 0) > 0 ? runId : null,
       });
       const assistantMsg: Message = {
         id: `${Date.now()}-a`,
