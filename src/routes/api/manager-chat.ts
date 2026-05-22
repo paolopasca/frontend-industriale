@@ -172,6 +172,8 @@ export const Route = createFileRoute('/api/manager-chat')({
                   cost_usd: result.cost_usd,
                   tokens_in: result.tokens_in,
                   tokens_out: result.tokens_out,
+                  cache_read_tokens: result.cache_read_tokens,
+                  cache_write_tokens: result.cache_write_tokens,
                   tools_used: result.tools_used,
                   iterations: result.iterations,
                   warning: result.warning,

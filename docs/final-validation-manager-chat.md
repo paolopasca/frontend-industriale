@@ -87,14 +87,49 @@ system: [
 tools: cachedManagerTools,
 ```
 
-#### Threshold consideration
+#### Threshold consideration & follow-up fix
 
-`SYSTEM_PROMPT` (645 tok) alone remains below 1024; same for the tools (926 tok). However:
-- The Anthropic cache breakpoint walks the prefix cumulatively. With breakpoints at SYSTEM_PROMPT → specBlock → last-tool, the LAST valid breakpoint with ≥1024-token prefix is what activates. With a real consultation/dataSchema attached (the production case), the prefix easily exceeds 1024.
-- On the empty-fixture path used in validation, the cumulative prefix is ~645 (system) + 10 (specBlock fallback) + 926 (tools) = 1581 tokens. Above threshold; should activate.
-- In practice on the validation cluster, even a 9608-token system block successfully cached (`cache_creation_input_tokens: 9608, input_tokens: 7` on the cache-read call). The structural fix is correct; the size threshold gate is the only remaining constraint and is satisfied for normal usage.
+Initial structural fix did NOT activate caching in practice. Empirical bisect against the live Haiku 4.5 endpoint pinned the cache-minimum threshold at **exactly 4096 tokens of cacheable prefix** (not 1024 as the advisor doc claimed for Sonnet). Bisect data:
 
-I deliberately did NOT pad `SYSTEM_PROMPT` with filler to force caching on the empty-fixture path — that would bloat the prompt for marginal gain. Production usage always includes a consultation block (set when a tenant is loaded).
+| Prefix tokens (cacheable) | `cache_creation_input_tokens` |
+|---|---|
+| 4015 | 0 (rejected, under threshold) |
+| 4055 | 0 (rejected) |
+| 4095 | 0 (rejected) |
+| **4128** | **4128 (cached)** |
+| 4208 | 4208 (cached) |
+
+With original system (~645 tok) + specBlock empty-fallback (~10 tok) + tools (~926 tok) = ~1581 prefix → cache never activated, even with `cache_control` breakpoints set correctly.
+
+**Resolution**: expanded `SYSTEM_PROMPT` with 13 concrete few-shot interaction examples, full tool-result schema documentation, unit-of-measure conventions, threshold-interpretation guidance, tool-escalation strategies, parallelism guidance, anti-pattern list, and edge-case handling. New `SYSTEM_PROMPT` is ~3624 tokens. Total cacheable prefix is now ~3624 (system) + ~926 (tools) = ~4550 tokens — comfortably above the 4096-token threshold.
+
+The expansion is not pad-for-pad's-sake: few-shot examples improve answer quality (concrete examples of correct tool selection, number citation, anti-hallucination behavior), and schema documentation reduces the model's need to guess tool result shapes.
+
+#### Live cache verification (final-adversary requirement)
+
+Two back-to-back POSTs to `/api/manager-chat` with `{slug, solution, kpis, message: "Usa il tool get_late_orders e dimmi quante commesse sono in ritardo."}` on `feasible-warning.json`:
+
+**Call 1** (cache write):
+```
+event: tool_use   → get_late_orders, iteration=1
+event: chunk      → "Hai 1 commessa in ritardo: COM-007 con un ritardo di 120 minuti..."
+event: done       → cost_usd=0.008151, tokens_in=506, tokens_out=94,
+                     cache_read_tokens=6495, cache_write_tokens=6851
+```
+
+**Call 2** (cache read):
+```
+event: tool_use   → get_late_orders, iteration=1
+event: chunk      → "Hai 1 commessa in ritardo: COM-007 con un ritardo di 120 minuti..."
+event: done       → cost_usd=0.002224, tokens_in=506, tokens_out=106,
+                     cache_read_tokens=12990, cache_write_tokens=356
+```
+
+**Verification result**: `cache_read_tokens = 12990 > 1000` ✅ — final-adversary's threshold met with 13× margin. Both iterations of the agentic loop read from cache.
+
+**Cost reduction**: $0.00815 → $0.00222 between Call 1 and Call 2 (steady-state). **73% reduction per turn** on warm calls, with identical answer quality (COM-007, 120 min, M-3, O-2 cited in both).
+
+A small companion fix in `src/routes/api/manager-chat.ts:171-180` exposes `cache_read_tokens` and `cache_write_tokens` in the SSE `done` event — previously the route omitted these fields, which is why the original validation pass observed identical `tokens_in: 2612` on both calls without realizing the cache was never firing.
 
 ### Bug B — Empty UI response on mid-loop bail warnings
 
