@@ -1,197 +1,252 @@
-import { motion } from 'framer-motion';
-import { useState, useMemo } from 'react';
-import { FlaskConical, TrendingDown, TrendingUp, Clock, Users, Wrench } from 'lucide-react';
-import { useDashboard } from '@/data/DashboardContext';
-import { getMachineUtilization } from '@/data/resultAdapter';
+import { useEffect, useRef, useState, useCallback, type KeyboardEvent } from 'react';
+import { motion, useReducedMotion } from 'framer-motion';
+import { FlaskConical, Send, Copy, RotateCw, AlertCircle, Lightbulb } from 'lucide-react';
+import { toast } from 'sonner';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Button } from '@/components/ui/button';
+import { sseStream } from '@/lib/streamingFetch';
 
-interface Scenario {
-  id: string;
-  icon: typeof FlaskConical;
-  title: string;
-  description: string;
-  impact: { makespan: string; costo: string; onTime: string };
-  verdict: 'positivo' | 'negativo' | 'neutro';
+interface WhatIfAnalysisProps {
+  slug: string | null;
+  solution: unknown;
+  kpis: Record<string, number>;
+  consultationMd?: string;
+  dataSchemaMd?: string;
 }
 
-const verdictColors = {
-  positivo: 'text-primary',
-  negativo: 'text-destructive',
-  neutro: 'text-muted-foreground',
-};
+interface ChunkPayload { text: string }
+interface DonePayload { cost_usd?: number; tokens_in?: number; tokens_out?: number }
+interface ErrorPayload { code?: string; message: string }
 
-function fmt(n: number): string {
-  return n.toFixed(1).replace('.', ',');
-}
+const MAX_SCENARIO_CHARS = 2000;
 
-export function WhatIfAnalysis() {
-  const { machines, operators, operations, orders, kpis } = useDashboard();
-  const [expanded, setExpanded] = useState<string | null>(null);
+const EXAMPLES = [
+  'Posso fermare la linea 2 oggi dalle 14 alle 18 per manutenzione, conviene?',
+  'Cosa succede se anticipo COM-007 prima di tutte le altre?',
+  'Se aggiungo una macchina M-3 secondaria, quanto recupero sul makespan?',
+  'Sposto il turno serale di mercoledì al venerdì: rischio ritardi?',
+];
 
-  const scenarios = useMemo(() => {
-    const makespanMin = kpis.makespan || 1;
-    const makespanH = makespanMin / 60;
-    const totalSetup = kpis.totalSetupTime || 0;
-    const onTimeCount = kpis.ordersOnTime || 0;
-    const totalOrders = kpis.totalOrders || 1;
-    const onTimePct = Math.round((onTimeCount / totalOrders) * 100);
+export function WhatIfAnalysis({
+  slug,
+  solution,
+  kpis,
+  consultationMd,
+  dataSchemaMd,
+}: WhatIfAnalysisProps) {
+  const [scenario, setScenario] = useState('');
+  const [response, setResponse] = useState('');
+  const [streaming, setStreaming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [costUsd, setCostUsd] = useState<number | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const responseRef = useRef<HTMLDivElement>(null);
+  const reducedMotion = useReducedMotion();
 
-    // Find bottleneck machine (highest utilization)
-    const machineUtils = machines.map(m => ({
-      ...m,
-      util: getMachineUtilization(operations, m.id, makespanMin),
-    }));
-    machineUtils.sort((a, b) => b.util - a.util);
-    const bottleneck = machineUtils[0];
-    const bottleneckName = bottleneck?.name || bottleneck?.id || 'N/A';
-    const bottleneckUtil = fmt(bottleneck?.util ?? 0);
+  const planReady = !!solution && Object.keys(kpis).length > 0;
+  const tooLong = scenario.length > MAX_SCENARIO_CHARS;
+  const tooShort = scenario.trim().length < 5;
 
-    // Estimate: adding operator reduces makespan ~8-12%
-    const reducedMakespan = makespanH * 0.9;
-    const newOnTime = Math.min(totalOrders, onTimeCount + Math.ceil(totalOrders * 0.1));
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
+  }, [scenario]);
 
-    // Estimate: reducing setup 30% saves proportional time
-    const setupSavingMin = totalSetup * 0.3;
-    const makespanAfterSetup = makespanH - (setupSavingMin / 60);
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
 
-    // Estimate: removing shift doubles makespan roughly
-    const makespanNoShift = makespanH * 1.4;
-    const onTimeNoShift = Math.max(0, Math.floor(onTimeCount * 0.6));
+  const runWhatIf = useCallback(async () => {
+    if (!planReady || tooLong || tooShort || streaming || !slug) return;
 
-    // Estimate: adding bottleneck machine
-    const makespanAddMachine = makespanH * 0.82;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
-    const result: Scenario[] = [];
+    setResponse('');
+    setError(null);
+    setCostUsd(null);
+    setStreaming(true);
 
-    if (operators.length > 0) {
-      result.push({
-        id: 'add-operator',
-        icon: Users,
-        title: `Aggiungere 1 operatore`,
-        description: `Un operatore extra qualificato su ${bottleneckName}, il collo di bottiglia con utilizzo al ${bottleneckUtil}%.`,
-        impact: {
-          makespan: `-${fmt(makespanH - reducedMakespan)}h (da ${fmt(makespanH)}h a ${fmt(reducedMakespan)}h)`,
-          costo: `+costo personale aggiuntivo`,
-          onTime: `${Math.round((newOnTime / totalOrders) * 100)}% (${newOnTime}/${totalOrders} ordini)`,
+    try {
+      const stream = sseStream<ChunkPayload | DonePayload | ErrorPayload>(
+        '/api/whatif',
+        {
+          slug,
+          solution,
+          kpis,
+          consultationMd,
+          dataSchemaMd,
+          scenario: scenario.trim(),
         },
-        verdict: 'positivo',
-      });
+        controller.signal,
+      );
+
+      for await (const { event, data } of stream) {
+        if (event === 'chunk') {
+          const t = (data as ChunkPayload).text;
+          if (typeof t === 'string') setResponse((prev) => prev + t);
+        } else if (event === 'done') {
+          const d = data as DonePayload;
+          if (d.cost_usd != null) setCostUsd(d.cost_usd);
+        } else if (event === 'error') {
+          const e = data as ErrorPayload;
+          throw new Error(e.message ?? 'Errore sconosciuto dal server.');
+        }
+      }
+    } catch (err) {
+      if (controller.signal.aborted) {
+        setStreaming(false);
+        return;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+      toast.error(`What-If: ${msg}`);
     }
+    setStreaming(false);
+    abortRef.current = null;
+  }, [slug, solution, kpis, consultationMd, dataSchemaMd, scenario, planReady, tooLong, tooShort, streaming]);
 
-    if (totalSetup > 0) {
-      result.push({
-        id: 'reduce-setup',
-        icon: Clock,
-        title: `Ridurre tempi setup del 30%`,
-        description: `Setup totale attuale: ${totalSetup} min. Una riduzione del 30% risparmia ${Math.round(setupSavingMin)} min su ${bottleneckName}.`,
-        impact: {
-          makespan: `-${fmt(makespanH - makespanAfterSetup)}h (da ${fmt(makespanH)}h a ${fmt(makespanAfterSetup)}h)`,
-          costo: `-${Math.round(setupSavingMin)} min setup/ciclo`,
-          onTime: `${onTimePct}% invariato`,
-        },
-        verdict: totalSetup > 30 ? 'positivo' : 'neutro',
-      });
+  const handleKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      void runWhatIf();
     }
+  };
 
-    if (operators.length > 2) {
-      result.push({
-        id: 'remove-shift',
-        icon: TrendingDown,
-        title: 'Eliminare un turno',
-        description: `Concentrare la produzione in un unico turno. Riduce costi personale ma perde capacita.`,
-        impact: {
-          makespan: `+${fmt(makespanNoShift - makespanH)}h (da ${fmt(makespanH)}h a ${fmt(makespanNoShift)}h)`,
-          costo: `-costo personale turno`,
-          onTime: `${Math.round((onTimeNoShift / totalOrders) * 100)}% (${onTimeNoShift}/${totalOrders} ordini)`,
-        },
-        verdict: 'negativo',
-      });
-    }
+  const handleCopy = useCallback(() => {
+    if (!response) return;
+    void navigator.clipboard.writeText(response)
+      .then(() => toast.success('Copiato'))
+      .catch(() => toast.error('Impossibile copiare'));
+  }, [response]);
 
-    if (bottleneck) {
-      result.push({
-        id: 'add-machine',
-        icon: Wrench,
-        title: `Aggiungere secondo ${bottleneckName}`,
-        description: `Raddoppiare la capacita del collo di bottiglia (${bottleneckUtil}% utilizzo). Permette lavorazioni parallele.`,
-        impact: {
-          makespan: `-${fmt(makespanH - makespanAddMachine)}h (da ${fmt(makespanH)}h a ${fmt(makespanAddMachine)}h)`,
-          costo: `+costo ammortamento macchina`,
-          onTime: `${totalOrders}/${totalOrders} ordini puntuali`,
-        },
-        verdict: 'positivo',
-      });
-    }
+  const handleRetry = useCallback(() => {
+    void runWhatIf();
+  }, [runWhatIf]);
 
-    return result;
-  }, [machines, operators, operations, orders, kpis]);
+  const sectionAriaLabel = streaming ? 'Analisi in corso' : 'Analisi What-If';
 
-  if (scenarios.length === 0) return null;
+  if (!planReady) {
+    return null;
+  }
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: 0.7, duration: 0.5 }}
-      className="rounded-lg border border-border bg-card p-4"
-    >
-      <div className="flex items-center gap-2 mb-4">
-        <FlaskConical className="w-4 h-4 text-primary" />
-        <h3 className="text-sm font-semibold text-foreground">Analisi What-If</h3>
-        <span className="text-[10px] text-muted-foreground ml-1">Basata sui colli di bottiglia rilevati</span>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {scenarios.map((s) => {
-          const Icon = s.icon;
-          const isExpanded = expanded === s.id;
-          return (
-            <motion.div
-              key={s.id}
-              layout
-              onClick={() => setExpanded(isExpanded ? null : s.id)}
-              className="p-3 rounded-md bg-accent/30 border border-border/50 hover:border-primary/20 transition-colors cursor-pointer"
+    <Card className="overflow-hidden">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <FlaskConical className="h-5 w-5 text-primary" aria-hidden />
+          Analisi What-If
+        </CardTitle>
+        <p className="text-xs text-muted-foreground">
+          Scrivi uno scenario in italiano. Opus 4.7 analizza impatti, trade-off e dà una raccomandazione.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div>
+          <textarea
+            ref={textareaRef}
+            value={scenario}
+            onChange={(e) => setScenario(e.target.value)}
+            onKeyDown={handleKey}
+            placeholder="Esempio: 'Posso fermare la linea 2 oggi dalle 14 alle 18, conviene?'"
+            disabled={streaming}
+            rows={3}
+            maxLength={MAX_SCENARIO_CHARS + 50}
+            aria-label="Scenario What-If"
+            className="w-full resize-none rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
+          />
+          <div className="mt-1.5 flex items-center justify-between text-xs">
+            <span className={tooLong ? 'text-destructive font-medium' : 'text-muted-foreground'} aria-live="polite">
+              {scenario.length}/{MAX_SCENARIO_CHARS}
+              {tooLong && ' — troppo lungo'}
+            </span>
+            <Button
+              size="sm"
+              onClick={() => void runWhatIf()}
+              disabled={streaming || tooLong || tooShort}
             >
-              <div className="flex items-start gap-3">
-                <div className="flex-shrink-0 w-8 h-8 rounded-md bg-primary/10 flex items-center justify-center">
-                  <Icon className="w-4 h-4 text-primary" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <h4 className="text-xs font-semibold text-foreground">{s.title}</h4>
-                  <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">{s.description}</p>
-                </div>
-              </div>
+              <Send className="h-3.5 w-3.5 mr-1.5" aria-hidden />
+              {streaming ? 'Analisi…' : 'Analizza scenario'}
+            </Button>
+          </div>
+        </div>
 
-              {isExpanded && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="mt-3 pt-3 border-t border-border/50 space-y-1.5"
-                >
-                  <div className="flex items-center gap-2 text-[11px]">
-                    <span className="text-muted-foreground w-20">Makespan:</span>
-                    <span className={`font-mono font-semibold ${verdictColors[s.verdict]}`}>{s.impact.makespan}</span>
+        {!response && !streaming && !error && (
+          <div className="rounded-md border border-dashed bg-muted/30 p-3 space-y-1.5">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Lightbulb className="h-3.5 w-3.5" aria-hidden />
+              Scenari di esempio
+            </div>
+            <ul className="text-xs space-y-1">
+              {EXAMPLES.map((ex, i) => (
+                <li key={i}>
+                  <button
+                    type="button"
+                    onClick={() => setScenario(ex)}
+                    disabled={streaming}
+                    className="text-left text-primary hover:underline disabled:opacity-50"
+                  >
+                    {ex}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {(streaming || response || error) && (
+          <div
+            role="region"
+            aria-label={sectionAriaLabel}
+            aria-live="polite"
+            className="rounded-md border bg-muted/20"
+          >
+            <div className="flex items-center justify-between px-3 py-2 border-b">
+              <span className="text-xs font-medium">
+                {streaming ? '🧠 Opus sta analizzando…' : 'Analisi'}
+              </span>
+              <div className="flex items-center gap-1">
+                {!streaming && response && (
+                  <>
+                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={handleCopy} aria-label="Copia">
+                      <Copy className="h-3.5 w-3.5" aria-hidden />
+                    </Button>
+                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={handleRetry} aria-label="Rigenera">
+                      <RotateCw className="h-3.5 w-3.5" aria-hidden />
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+            <ScrollArea className="max-h-[480px]">
+              <div ref={responseRef} className="p-3 text-sm whitespace-pre-wrap break-words leading-relaxed">
+                {response || (streaming ? '' : '')}
+                {streaming && (
+                  reducedMotion ? null : <span className="ml-0.5 inline-block animate-pulse">▋</span>
+                )}
+                {error && (
+                  <div role="alert" className="mt-2 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-2.5">
+                    <AlertCircle className="h-4 w-4 text-destructive mt-0.5 shrink-0" aria-hidden />
+                    <span className="text-xs">{error}</span>
                   </div>
-                  <div className="flex items-center gap-2 text-[11px]">
-                    <span className="text-muted-foreground w-20">Costo:</span>
-                    <span className="font-mono font-semibold text-foreground">{s.impact.costo}</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-[11px]">
-                    <span className="text-muted-foreground w-20">On-time:</span>
-                    <span className="font-mono font-semibold text-foreground">{s.impact.onTime}</span>
-                  </div>
-                  <div className="mt-2 flex items-center gap-1.5">
-                    {s.verdict === 'positivo' ? <TrendingUp className="w-3.5 h-3.5 text-primary" /> : s.verdict === 'negativo' ? <TrendingDown className="w-3.5 h-3.5 text-destructive" /> : null}
-                    <span className={`text-[10px] font-semibold uppercase tracking-wider ${verdictColors[s.verdict]}`}>
-                      Impatto {s.verdict}
-                    </span>
-                  </div>
-                </motion.div>
-              )}
-            </motion.div>
-          );
-        })}
-      </div>
-    </motion.div>
+                )}
+              </div>
+            </ScrollArea>
+            {!streaming && costUsd != null && (
+              <div className="px-3 py-2 border-t text-[10px] text-muted-foreground">
+                Costo: ${costUsd.toFixed(4)}
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
+
+// Default export removed — index.tsx imports the named export.

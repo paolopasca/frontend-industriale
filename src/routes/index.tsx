@@ -19,6 +19,7 @@ import { GanttSection } from '@/components/dashboard/GanttSection';
 import { WhatIfAnalysis } from '@/components/dashboard/WhatIfAnalysis';
 import { ExplanationPanel } from '@/components/dashboard/ExplanationPanel';
 import { AdvisorPanel } from '@/components/dashboard/AdvisorPanel';
+import { ManagerChatPanel } from '@/components/dashboard/ManagerChatPanel';
 import { DashboardContext } from '@/data/DashboardContext';
 import { adaptResult, type DashboardData } from '@/data/resultAdapter';
 import { Toaster } from '@/components/ui/sonner';
@@ -181,7 +182,11 @@ function Index() {
                 </GanttSection>
 
                 <BottleneckChart />
-                <WhatIfAnalysis />
+                <WhatIfAnalysis
+                  slug={setupData?.companySlug ?? null}
+                  solution={aiInputs.solution}
+                  kpis={aiInputs.kpis}
+                />
 
                 <KeyDecisions />
 
@@ -203,6 +208,11 @@ function Index() {
                 open={dataInputOpen}
                 onClose={() => setDataInputOpen(false)}
                 companySlug={setupData?.companySlug ?? null}
+              />
+              <ManagerChatPanel
+                slug={setupData?.companySlug ?? null}
+                solution={aiInputs.solution}
+                kpis={aiInputs.kpis}
               />
             </div>
           </motion.div>

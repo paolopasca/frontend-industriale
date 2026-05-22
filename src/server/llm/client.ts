@@ -12,7 +12,7 @@ export function getAnthropicClient(): Anthropic {
   return _client;
 }
 
-export type LlmSurface = 'explainer' | 'advisor';
+export type LlmSurface = 'explainer' | 'advisor' | 'manager_chat';
 
 export interface CostRecord {
   ts: number;
