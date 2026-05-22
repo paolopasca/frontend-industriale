@@ -83,6 +83,17 @@ const PRICE_CACHE_WRITE_PER_M = 1.0;
 
 const ALLOWED_TOOL_NAMES = new Set(MANAGER_TOOLS.map((t) => t.name));
 
+// Cache breakpoint on the last tool: per Anthropic spec, marking a single
+// content/tool block with cache_control caches everything from the start of
+// the prefix up to and including that block. Placing the breakpoint on the
+// final tool caches the entire tools array, which is reused on every loop
+// iteration of the agentic loop (~3 KB of schema, repeated up to 5 times).
+const cachedManagerTools: Anthropic.Tool[] = MANAGER_TOOLS.map((t, i) =>
+  i === MANAGER_TOOLS.length - 1
+    ? { ...t, cache_control: { type: 'ephemeral' as const } }
+    : t,
+);
+
 const SYSTEM_PROMPT = [
   'Sei DAINO, assistente AI conversazionale per un manager di produzione di una PMI manifatturiera italiana.',
   '',
@@ -344,14 +355,18 @@ export async function runManagerChat(
             model: MODEL,
             max_tokens: MAX_OUTPUT_TOKENS,
             system: [
-              { type: 'text', text: SYSTEM_PROMPT },
+              {
+                type: 'text',
+                text: SYSTEM_PROMPT,
+                cache_control: { type: 'ephemeral' },
+              },
               {
                 type: 'text',
                 text: specBlock,
                 cache_control: { type: 'ephemeral' },
               },
             ],
-            tools: MANAGER_TOOLS,
+            tools: cachedManagerTools,
             messages,
           },
           { signal: options?.signal },
@@ -484,13 +499,32 @@ export async function runManagerChat(
     }
   }
 
-  if (iterations >= MAX_ITERATIONS && !aborted && !warning) {
-    warning = 'max_iterations';
-    // The loop bailed before producing a final answer — synthesize an
-    // apology so the UI is never empty.
-    onChunk(
-      "Ho raggiunto il limite di analisi per questa domanda. Riprova con una domanda piu specifica.",
-    );
+  // If the loop exited mid-tool-use (warning set, no final text streamed) the
+  // UI would otherwise see an empty streaming bubble. Synthesize a graceful
+  // fallback for every non-aborted bail so the user always gets something.
+  if (!aborted) {
+    if (iterations >= MAX_ITERATIONS && !warning) {
+      warning = 'max_iterations';
+      onChunk(
+        "Ho raggiunto il limite di analisi per questa domanda. Riprova con una domanda piu specifica.",
+      );
+    } else if (warning === 'timeout_exceeded') {
+      onChunk(
+        "L'analisi sta richiedendo piu tempo del previsto. Riprova fra qualche secondo o riformula la domanda.",
+      );
+    } else if (warning === 'tool_calls_exceeded') {
+      onChunk(
+        "Ho effettuato troppe ricerche per questa domanda. Riprova con una richiesta piu specifica.",
+      );
+    } else if (warning === 'payload_too_large') {
+      onChunk(
+        "Il contesto della conversazione e troppo grande. Pulisci la chat e riprova.",
+      );
+    } else if (warning === 'unexpected_no_tool_blocks') {
+      onChunk(
+        "Si e verificato un errore inatteso nell'analisi. Riprova.",
+      );
+    }
   }
 
   emitUsage();
