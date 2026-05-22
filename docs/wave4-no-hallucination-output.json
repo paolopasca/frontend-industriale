@@ -25,7 +25,7 @@
       "cited": 0,
       "verified": 0,
       "ratio": null,
-      "ms": 12,
+      "ms": 25,
       "error": "Failed to parse URL from //api/whatif"
     },
     {
@@ -52,7 +52,7 @@
       "cited": 0,
       "verified": 0,
       "ratio": null,
-      "ms": 0,
+      "ms": 1,
       "error": "Failed to parse URL from //api/whatif"
     },
     {

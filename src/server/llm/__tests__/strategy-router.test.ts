@@ -168,25 +168,189 @@ describe('routeIntent', () => {
     expect(out.reason).toContain('unknown_machine:M99');
   });
 
-  it('builds shift_changes rules when shift_window provides start and end', () => {
+  it('F-W8-01: shift_window short-circuits to unsupported (not_implemented in catalog)', () => {
+    // Before F-W8-01 the router built a shift_changes rules payload, but
+    // f_apply_rules.py only logged a passthrough warning, so the rule had
+    // no real effect on the schedule. The catalog now flags this intent
+    // not_implemented and the router returns `unsupported` with an
+    // Italian reason the UI surfaces as a toast.
     const out = routeIntent({
       intent: makeIntent('shift_window', { shift_id: 'turno_mattina', start_min: 360, end_min: 720 }),
       baseline,
       catalog,
     });
-    expect(out.kind).toBe('rule_addition');
-    if (out.kind !== 'rule_addition') return;
-    expect(out.rules.shift_changes).toEqual({ turno_mattina: { start_min: 360, end_min: 720 } });
+    expect(out.kind).toBe('unsupported');
+    if (out.kind !== 'unsupported') return;
+    expect(out.warnings).toContain('not_implemented:shift_window');
+    expect(out.reason).toMatch(/non ancora supportato/i);
   });
 
-  it('builds extra_capacity rules for capacity_addition with shift only', () => {
+  it('F-W8-01: capacity_addition short-circuits to unsupported (not_implemented in catalog)', () => {
+    // Same rationale as shift_window: extra_capacity rules were a
+    // passthrough at the backend. Router stops the request before the
+    // BFF wastes a solve call.
     const out = routeIntent({
       intent: makeIntent('capacity_addition', { operators: 1, shift: 'serale' }),
       baseline,
       catalog,
     });
+    expect(out.kind).toBe('unsupported');
+    if (out.kind !== 'unsupported') return;
+    expect(out.warnings).toContain('not_implemented:capacity_addition');
+    expect(out.reason).toMatch(/non ancora supportato/i);
+  });
+
+  // === F-W8-01 regression guards (devils-advocate R3 symmetric) ===
+  // The `not_implemented` flag is per-intent. A future catalog mutation
+  // that accidentally widens the flag to a fully-implemented intent must
+  // fail loud and fast — these two negative tests are the trip-wire.
+
+  it('F-W8-01 regression guard: deadline_change is NOT marked unsupported', () => {
+    const tryFn: TryDataModificationFn = (id) => id === 'deadline_change';
+    const out = routeIntent({
+      intent: makeIntent('deadline_change', { order_id: 'COM-002', new_deadline_min: 3960 }),
+      baseline,
+      catalog,
+      tryDataModification: tryFn,
+    });
+    expect(out.kind).toBe('data_modification');
+    if (out.kind !== 'data_modification') return;
+    expect(out.warnings.some((w) => /not_implemented/.test(w))).toBe(false);
+  });
+
+  it('F-W8-01 regression guard: machine_unavailability is NOT marked unsupported', () => {
+    // canApply is false for machine_unavailability today (data-modifier
+    // excludes it) so the router cascades to rule_addition via the
+    // catalog's fallback_strategy. Either kind is acceptable — what
+    // matters is "NOT unsupported".
+    const tryFn: TryDataModificationFn = () => null;
+    const out = routeIntent({
+      intent: makeIntent('machine_unavailability', { machine_id: 'M01', start_min: 600, end_min: 1200 }),
+      baseline,
+      catalog,
+      tryDataModification: tryFn,
+    });
+    expect(out.kind).not.toBe('unsupported');
+    expect(out.warnings.some((w) => /not_implemented/.test(w))).toBe(false);
+  });
+
+  it('F-W8-01 regression guard: order_priority is NOT marked unsupported', () => {
+    const out = routeIntent({
+      intent: makeIntent('order_priority', { order_ids: ['COM-007'] }),
+      baseline,
+      catalog,
+    });
     expect(out.kind).toBe('rule_addition');
     if (out.kind !== 'rule_addition') return;
-    expect(out.rules.extra_capacity).toEqual({ operators: 1, shift: 'serale' });
+    expect(out.warnings.some((w) => /not_implemented/.test(w))).toBe(false);
+  });
+
+  // === B-W8-S-01 canonicalise machine/order IDs (stress-engineer 2026-05-22) ===
+  // Pre-fix the strict validator rejected Haiku's natural output like "M2"
+  // (vs baseline "M02"), cascading to the Opus translator at ~$0.25/call.
+  // Canonicalisation runs deterministically in the router with zero LLM cost.
+
+  it('B-W8-S-01: canonicalises M2 → M02 when baseline has zero-padded machines', () => {
+    const tryFn: TryDataModificationFn = () => false;
+    const out = routeIntent({
+      intent: makeIntent('machine_unavailability', {
+        machine_id: 'M2', // Haiku natural output, baseline has M01/M02/...
+        start_min: 720,
+        end_min: 1080,
+      }),
+      baseline,
+      catalog,
+      tryDataModification: tryFn,
+    });
+    // Routes to B (rule_addition) instead of falling through to opus_translator.
+    expect(out.kind).toBe('rule_addition');
+    if (out.kind !== 'rule_addition') return;
+    expect(out.entities.machine_id).toBe('M02');
+    expect(out.warnings).toContain('canonicalised:machine_id:M2->M02');
+    // The wire payload uses the canonical id so the backend's machine
+    // lookup hits.
+    expect(out.rules.unavailable_machines).toEqual({ M02: [{ start_min: 720, end_min: 1080 }] });
+  });
+
+  it('B-W8-S-01: canonicalises M-2 → M02 (handles hyphens / separators)', () => {
+    const out = routeIntent({
+      intent: makeIntent('machine_unavailability', {
+        machine_id: 'M-2',
+        start_min: 100,
+        end_min: 200,
+      }),
+      baseline,
+      catalog,
+    });
+    expect(out.kind).toBe('rule_addition');
+    if (out.kind !== 'rule_addition') return;
+    expect(out.entities.machine_id).toBe('M02');
+    expect(out.warnings).toContain('canonicalised:machine_id:M-2->M02');
+  });
+
+  it('B-W8-S-01: canonicalises lowercase m02 → M02', () => {
+    const out = routeIntent({
+      intent: makeIntent('machine_unavailability', {
+        machine_id: 'm02',
+        start_min: 100,
+        end_min: 200,
+      }),
+      baseline,
+      catalog,
+    });
+    expect(out.kind).toBe('rule_addition');
+    if (out.kind !== 'rule_addition') return;
+    expect(out.entities.machine_id).toBe('M02');
+  });
+
+  it('B-W8-S-01: canonicalises order ids in array (each_must_exist_in_solution_orders)', () => {
+    // order_priority takes order_ids:string[] — each entry is canonicalised
+    // independently so a mixed-form input ["COM-1", "COM-002"] becomes
+    // ["COM-001", "COM-002"].
+    const out = routeIntent({
+      intent: makeIntent('order_priority', { order_ids: ['COM-1', 'COM-002'] }),
+      baseline,
+      catalog,
+    });
+    expect(out.kind).toBe('rule_addition');
+    if (out.kind !== 'rule_addition') return;
+    expect(out.entities.order_ids).toEqual(['COM-001', 'COM-002']);
+    expect(out.warnings).toContain('canonicalised:order_ids:COM-1->COM-001');
+  });
+
+  it('B-W8-S-01: leaves the value alone when no canonical variant matches (no false positive)', () => {
+    // M99 is genuinely unknown — canonicalisation must NOT invent a
+    // match. The router falls through to opus_translator as before.
+    const out = routeIntent({
+      intent: makeIntent('machine_unavailability', {
+        machine_id: 'M99',
+        start_min: 100,
+        end_min: 200,
+      }),
+      baseline,
+      catalog,
+    });
+    expect(out.kind).toBe('opus_translator');
+    if (out.kind !== 'opus_translator') return;
+    expect(out.reason).toContain('unknown_machine:M99');
+  });
+
+  it('B-W8-S-01: already-canonical M02 passes through without a canonicalised warning', () => {
+    // Regression guard: don't add a noise warning when the input already
+    // matches a known id verbatim.
+    const out = routeIntent({
+      intent: makeIntent('machine_unavailability', {
+        machine_id: 'M02',
+        start_min: 100,
+        end_min: 200,
+      }),
+      baseline,
+      catalog,
+    });
+    expect(out.kind).toBe('rule_addition');
+    if (out.kind !== 'rule_addition') return;
+    expect(out.entities.machine_id).toBe('M02');
+    const canonWarnings = out.warnings.filter((w) => w.startsWith('canonicalised:'));
+    expect(canonWarnings).toEqual([]);
   });
 });

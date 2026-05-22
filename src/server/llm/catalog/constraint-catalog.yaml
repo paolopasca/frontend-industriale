@@ -107,6 +107,13 @@ intents:
 
   - id: capacity_addition
     description_it: "Aggiungere capacita' produttiva (operatori o turno extra)"
+    # F-W8-01 (devils 2026-05-22): Haiku parser recognises the intent but
+    # f_apply_rules.py only logs `extra_capacity_data_layer_passthrough`
+    # — the CP-SAT model has no consumer that actually adds capacity.
+    # Marked not_implemented so the strategy-router returns `unsupported`
+    # with an honest Italian message instead of pretending the rule was
+    # applied. Re-enable when the backend grows a real consumer.
+    not_implemented: true
     strategy: rule_addition
     fallback_strategy: rule_addition
     fallback_rule_key: extra_capacity
@@ -138,6 +145,12 @@ intents:
 
   - id: shift_window
     description_it: "Modifica orari di un turno (start/end)"
+    # F-W8-01 (devils 2026-05-22): Haiku parser recognises the intent but
+    # f_apply_rules.py only logs `shift_changes_data_layer_passthrough` —
+    # the CP-SAT model still consults the original shift table. Marked
+    # not_implemented so the router returns `unsupported`. Re-enable
+    # once the backend wires shift_changes into the time-window builder.
+    not_implemented: true
     strategy: rule_addition
     fallback_strategy: rule_addition
     fallback_rule_key: shift_changes

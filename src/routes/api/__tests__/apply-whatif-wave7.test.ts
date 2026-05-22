@@ -279,15 +279,21 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
     expect(anthropicCreate).toHaveBeenCalledTimes(1);
   });
 
-  it('Strategy C (unknown intent): falls back to Opus translator', async () => {
-    // First call: Haiku says unknown.
+  it('Strategy C (unknown intent + low confidence): falls back to Opus translator', async () => {
+    // B-W8-S-04 (2026-05-22 stress-engineer finding): when Haiku is
+    // CONFIDENT the utterance is out-of-catalog (`unknown` + `high`),
+    // the BFF short-circuits aborted_unsupported without paying for
+    // Opus. The cascade still runs when Haiku is UNCERTAIN
+    // (`unknown` + `low`/`medium`) — Opus may rescue the case. This
+    // test pins the rescue path.
+    // First call: Haiku says unknown with low confidence.
     anthropicCreate
       .mockResolvedValueOnce(
         fakeAnthropicReply({
           intent_id: 'unknown',
           entities: {},
-          confidence: 'high',
-          fallback_reasoning: 'fuori catalogo',
+          confidence: 'low',
+          fallback_reasoning: 'ambiguo, possibile vincolo non catalogato',
         }),
       )
       .mockResolvedValueOnce(
@@ -371,10 +377,11 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
     // COM-001/OP-1 ends at 60 ≤ 120 → frozen. COM-001/OP-2 ends at 120 ≤ 120 → frozen.
     // COM-001/OP-3 starts at 2400 > 120 → not frozen.
     // COM-007/OP-1 ends at 80 ≤ 120 → frozen.
+    // F-W8-09 (devils 2026-05-22): seq is 1-based to match backend op["sequenza"] key.
     const seqs = sentBody.frozen_phases.map((fp: { job_id: string; seq: number }) =>
       `${fp.job_id}:${fp.seq}`,
     ).sort();
-    expect(seqs).toEqual(['COM-001:0', 'COM-001:1', 'COM-007:0']);
+    expect(seqs).toEqual(['COM-001:1', 'COM-001:2', 'COM-007:1']);
 
     // The solved event must expose locked_phases for the UI accordion.
     const solved = chunks.find((c) => c.event === 'solved')!.data as {
@@ -744,8 +751,10 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
       expect(secondResLocked.status).toBe(409);
       expect((await secondResLocked.json() as { error: string }).error).toBe('slug_conflict');
 
-      // Fast-forward past the watchdog deadline (solve_timeout 60s + grace 30s = 90s).
-      await vi.advanceTimersByTimeAsync(91_000);
+      // Fast-forward past the watchdog deadline (devils F-W8-05 2026-05-22:
+      // budget is now SOLVE_TIMEOUT_MS * 2 + 30s = 150s to cover the
+      // F-W7-02 retry path; previously was 90s which could fire mid-retry).
+      await vi.advanceTimersByTimeAsync(151_000);
 
       // Now a third request for the same slug should succeed (lock self-healed).
       // Provide a resolving backend so this one completes.

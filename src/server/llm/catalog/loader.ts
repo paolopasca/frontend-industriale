@@ -56,6 +56,13 @@ const IntentSchema = z.object({
       }),
     )
     .min(1),
+  // F-W8-01 (devils 2026-05-22): some catalog intents are recognised by
+  // the Haiku parser but the backend solver has no CP-SAT consumer for
+  // them yet. Marking them not_implemented in the catalog lets the
+  // strategy-router short-circuit to `unsupported` instead of pretending
+  // the rules payload took effect when in practice f_apply_rules.py
+  // emits only a passthrough warning. Honest UX > silent no-op.
+  not_implemented: z.boolean().optional(),
 });
 
 const CatalogSchema = z.object({

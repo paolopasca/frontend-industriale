@@ -7,7 +7,7 @@
     "text": "",
     "done": null,
     "error": null,
-    "full_ms": 33,
+    "full_ms": 13,
     "external": false,
     "network_error": "Failed to parse URL from //api/split"
   },

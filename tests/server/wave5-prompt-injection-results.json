@@ -9,7 +9,7 @@
     "llm_text": "",
     "done": null,
     "error": null,
-    "full_ms": 27,
+    "full_ms": 12,
     "external": false,
     "network_error": "Failed to parse URL from //api/split"
   },
@@ -37,7 +37,7 @@
     "llm_text": "",
     "done": null,
     "error": null,
-    "full_ms": 1,
+    "full_ms": 0,
     "external": false,
     "network_error": "Failed to parse URL from //api/split"
   },

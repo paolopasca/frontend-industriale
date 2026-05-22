@@ -316,10 +316,14 @@ export const Route = createFileRoute('/api/apply-whatif')({
         // leak the slug + IP entries forever and every subsequent
         // request gets a 409 until the process restarts.
         //
-        // The watchdog runs cleanup() unconditionally after the request
-        // budget (solve timeout + 30s grace = 90s). Normal cleanup
-        // clears the timer; a leaked lock self-heals at watchdog fire.
-        const WATCHDOG_MS = SOLVE_TIMEOUT_MS + 30_000;
+        // Budget covers BOTH the first solve AND the F-W7-02 INFEASIBLE
+        // retry (each capped at SOLVE_TIMEOUT_MS) plus 30s grace for the
+        // SSE final flush. The earlier cap (SOLVE_TIMEOUT_MS + 30s = 90s)
+        // could fire mid-retry on a borderline INFEASIBLE/retry case (devils
+        // F-W8-05 2026-05-22): first solve 55s INFEASIBLE → retry 50s →
+        // 105s total > 90s → spurious slug-lock release + abort_signal
+        // mid-stream. Two solve budgets + grace = 150s removes the gap.
+        const WATCHDOG_MS = SOLVE_TIMEOUT_MS * 2 + 30_000;
         let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
         const clearWatchdog = () => {
           if (watchdogTimer !== null) {
@@ -426,6 +430,47 @@ export const Route = createFileRoute('/api/apply-whatif')({
                   confidence: parsed.intent.confidence,
                   fallback_reasoning: parsed.intent.fallback_reasoning,
                 });
+
+                // B-W8-S-04 — short-circuit the Opus cascade when Haiku
+                // confidently classified the utterance as out-of-catalog.
+                // Previously the router returned `opus_translator` for
+                // every `intent_id === 'unknown'` (strategy-router.ts:452),
+                // which fired the Opus 4.7 translator only to have it
+                // also return `unsupported`. Cost: $0.20 per stress
+                // cycle × 5 = $1.00 wasted per stress run.
+                //
+                // When Haiku says "definitely outside the 5 catalog
+                // intents" (intent_id=unknown + confidence=high), trust
+                // it and emit aborted_unsupported directly. We still
+                // run the cascade for confidence=medium/low so the
+                // Opus translator can rescue ambiguous classifications.
+                if (
+                  parsed.intent.intent_id === 'unknown'
+                  && parsed.intent.confidence === 'high'
+                ) {
+                  strategyKind = 'unsupported';
+                  const reason = parsed.intent.fallback_reasoning
+                    ?? 'haiku_classified_unknown_high_confidence';
+                  wave7Warnings.push('haiku_unknown_high_no_cascade');
+                  write('routed', {
+                    strategy: 'unsupported',
+                    intent_id: 'unknown',
+                    warnings: ['haiku_unknown_high_no_cascade'],
+                  });
+                  flushCost();
+                  write('aborted_unsupported', {
+                    reason,
+                    warnings: wave7Warnings,
+                  });
+                  write('done', {
+                    cost_usd: lastUsage?.cost_usd ?? 0,
+                    tokens_in: lastUsage?.tokens_in ?? 0,
+                    tokens_out: lastUsage?.tokens_out ?? 0,
+                    cache_read_tokens: lastUsage?.cache_read_tokens,
+                    cache_write_tokens: lastUsage?.cache_write_tokens,
+                  });
+                  return;
+                }
 
                 const baselineForRouter = buildBaselineForRouter(input.originalSolution);
                 const catalog = loadCatalog();
@@ -556,27 +601,43 @@ export const Route = createFileRoute('/api/apply-whatif')({
               // listens to the client's abort signal so the BFF doesn't
               // hold the SSE open forever if daino-backend-definitivo
               // stalls.
-              const solvePromise = resolveTemplate(
-                input.slug,
-                problemType,
-                rulesForSolve,
-                cutoffMin,
-                frozenPhases,
-                datasetOverrides,
-              );
-              const timeoutPromise = new Promise<never>((_, reject) => {
-                const t = setTimeout(
-                  () => reject(new Error('solve_timeout: il backend non ha risposto entro 60 secondi.')),
-                  SOLVE_TIMEOUT_MS,
-                );
-                abort.signal.addEventListener(
-                  'abort',
-                  () => { clearTimeout(t); reject(new Error('aborted')); },
-                  { once: true },
-                );
-              });
+              // Devils F-W8-04 fix (2026-05-22): an `abort` listener added
+              // to an already-aborted AbortSignal does NOT fire (verified via
+              // node repl). If the client disconnects between awaiting and
+              // arming this race, the setTimeout would tick for the full
+              // SOLVE_TIMEOUT_MS before reject — 60s of stalled SSE. Wrap the
+              // race in a helper that rejects synchronously when the signal
+              // is already aborted, and the listener-arm is guarded by a
+              // second check after the listener registers.
+              const raceWithTimeout = <T>(work: Promise<T>): Promise<T> => {
+                if (abort.signal.aborted) {
+                  return Promise.reject(new Error('aborted'));
+                }
+                const timeoutPromise = new Promise<never>((_, reject) => {
+                  const t = setTimeout(
+                    () => reject(new Error('solve_timeout: il backend non ha risposto entro 60 secondi.')),
+                    SOLVE_TIMEOUT_MS,
+                  );
+                  const onAbort = () => { clearTimeout(t); reject(new Error('aborted')); };
+                  abort.signal.addEventListener('abort', onAbort, { once: true });
+                  // Re-check after addEventListener: if the signal aborted
+                  // synchronously between the entry check and the listener
+                  // attachment, onAbort never fires. Reject now.
+                  if (abort.signal.aborted) onAbort();
+                });
+                return Promise.race([work, timeoutPromise]);
+              };
 
-              let solveResult = await Promise.race([solvePromise, timeoutPromise]);
+              let solveResult = await raceWithTimeout(
+                resolveTemplate(
+                  input.slug,
+                  problemType,
+                  rulesForSolve,
+                  cutoffMin,
+                  frozenPhases,
+                  datasetOverrides,
+                ),
+              );
 
               // F-W7-02 — INFEASIBLE recovery (plan §2 D2: "lock duro +
               // fallback soft"). If the hard-lock on pre-cutoff phases
@@ -593,36 +654,62 @@ export const Route = createFileRoute('/api/apply-whatif')({
                 // INFEASIBLE responses, so the manager/UI can see *which* rules
                 // the solver tried to honour before declaring infeasibility.
                 // Surface that on the lock_relaxing event for a richer toast.
+                //
+                // F-W8-06 (lead decision 2026-05-22): preferred fix was Opt 1
+                // (`frozen_lock_mode: 'hint'` passed to backend so the solver
+                // uses `model.add_hint` instead of `model.add` and the
+                // consolidated phases bias-but-not-pin). That requires a
+                // backend Python change in fjsp.py:1504-1513 (own by
+                // w7-backend-engineer, currently offline). Falling back to
+                // Opt 2: retry with `frozen_phases=[]` (full recompute), but
+                // emit a louder warning marker the UI surfaces as a RED
+                // banner explicitly stating "il piano e' stato ricalcolato
+                // da zero — le fasi consolidate potrebbero essersi mosse".
+                // Once the backend grows the hint mode, swap the `[]` for
+                // `frozenPhases` and add `frozen_lock_mode: 'hint'` to the
+                // call.
                 const failedAttempt = solveResult.wave7 ?? null;
                 write('lock_relaxing', {
                   reason: 'infeasible_with_hard_lock',
                   frozen_count: frozenPhases.length,
                   attempted_locks: failedAttempt?.locked_count ?? 0,
                   attempted_rules: failedAttempt?.apply_rules?.length ?? 0,
+                  // F-W8-06 honest signal: this retry will recompute the
+                  // entire plan from scratch, not just the post-cutoff tail.
+                  recompute_mode: 'full_plan_from_scratch',
                 });
-                const relaxedPromise = resolveTemplate(
-                  input.slug,
-                  problemType,
-                  rulesForSolve,
-                  cutoffMin,
-                  [], // soft retry: no frozen phases
-                  datasetOverrides,
+                // Devils F-W8-04: explicit re-check between the SSE write and
+                // the retry race. If the client aborted while we were emitting
+                // lock_relaxing, the retry race would otherwise sit on a
+                // 60-second setTimeout (see raceWithTimeout for the deeper
+                // fix). Skip the retry and let the outer try/catch surface
+                // the abort cleanly.
+                if (abort.signal.aborted) {
+                  throw new Error('aborted');
+                }
+                const relaxedResult = await raceWithTimeout(
+                  resolveTemplate(
+                    input.slug,
+                    problemType,
+                    rulesForSolve,
+                    cutoffMin,
+                    [], // F-W8-06 Opt 2 fallback: soft retry, no frozen phases.
+                    datasetOverrides,
+                  ),
                 );
-                const relaxedTimeout = new Promise<never>((_, reject) => {
-                  const t = setTimeout(
-                    () => reject(new Error('solve_timeout: il backend non ha risposto entro 60 secondi.')),
-                    SOLVE_TIMEOUT_MS,
-                  );
-                  abort.signal.addEventListener(
-                    'abort',
-                    () => { clearTimeout(t); reject(new Error('aborted')); },
-                    { once: true },
-                  );
-                });
-                const relaxedResult = await Promise.race([relaxedPromise, relaxedTimeout]);
                 solveResult = {
                   ...relaxedResult,
-                  warnings: ['lock_relaxed_to_soft', ...(relaxedResult.warnings ?? [])],
+                  // F-W8-06 louder warning: keep the legacy
+                  // `lock_relaxed_to_soft` marker (UI already renders it as
+                  // a yellow banner) AND add the new explicit
+                  // `__plan_recomputed_from_scratch` suffix so the UI can
+                  // upgrade to a red banner without losing back-compat with
+                  // older clients still reading only the legacy marker.
+                  warnings: [
+                    'lock_relaxed_to_soft',
+                    'lock_relaxed_to_soft__plan_recomputed_from_scratch',
+                    ...(relaxedResult.warnings ?? []),
+                  ],
                 };
               }
 

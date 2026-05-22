@@ -28,9 +28,15 @@
  * any debug log; the load-bearing fields for the solver are
  * `job_id` + `seq` + `machine_id` + `start_min` + `end_min`.
  *
- * `seq` is the 0-based index inside the baseline `fasi` array. The
- * backend's `alternatives` dict is keyed `(jid, seq)` where seq is the
- * operation sequence number (see fjsp.py: `alternatives[jid, seq] = alts`).
+ * `seq` MUST match the backend convention: 1-based when the baseline
+ * does not carry an explicit `sequenza`/`seq` field. The backend keys
+ * its `alternatives` dict on the same value it reads from
+ * `op["sequenza"]` (fjsp.py:713-715, 800-810), and the parallel warm-
+ * start parser at fjsp.py:1978 uses `enumerate(fasi, start=1)` as the
+ * positional fallback. Pre-fix this builder emitted 0-based indices, so
+ * every `alternatives[(jid, 0)]` lookup missed and the hard-lock silently
+ * skipped 100% of frozen phases (`frozen_phase_skipped` with reason
+ * `(job_id, seq) not in current alternatives`). Devils F-W8-09 2026-05-22.
  */
 
 export interface FrozenPhase {
@@ -53,6 +59,10 @@ interface BaselineFase {
   operatore?: unknown;
   start_min?: unknown;
   end_min?: unknown;
+  // Optional explicit sequence identifier. Backend reads either name.
+  // When both absent, builder falls back to 1-based positional index.
+  sequenza?: unknown;
+  seq?: unknown;
 }
 
 interface BaselineJob {
@@ -93,13 +103,20 @@ export function buildFrozenPhases(
     if (!isObject(jobRaw)) continue;
     const fasiRaw = (jobRaw as BaselineJob).fasi;
     if (!Array.isArray(fasiRaw)) continue;
-    for (let seq = 0; seq < fasiRaw.length; seq++) {
-      const faseRaw = fasiRaw[seq];
+    for (let idx = 0; idx < fasiRaw.length; idx++) {
+      const faseRaw = fasiRaw[idx];
       if (!isObject(faseRaw)) continue;
       const fase = faseRaw as BaselineFase;
+      // Backend keys alternatives[(jid, seq)] on op["sequenza"] (fjsp.py:715,
+      // 800). When the baseline carries no explicit sequenza/seq, match the
+      // backend's positional convention (fjsp.py:1978: enumerate start=1)
+      // by using a 1-based index. Pre-fix this builder used 0-based, which
+      // missed every (jid, 0) lookup and silently skipped 100% of locks.
+      const seqExplicit = asFiniteInt(fase.sequenza) ?? asFiniteInt(fase.seq);
+      const seq = seqExplicit !== null && seqExplicit > 0 ? seqExplicit : idx + 1;
       const start = asFiniteInt(fase.start_min);
       const end = asFiniteInt(fase.end_min);
-      const operazione = asString(fase.operazione) ?? `OP-${seq + 1}`;
+      const operazione = asString(fase.operazione) ?? `OP-${seq}`;
       const machineId = asString(fase.machine_id) ?? asString(fase.macchina);
       const operatore = asString(fase.operatore) ?? '';
       if (start === null || end === null) continue;

@@ -166,24 +166,40 @@ function buildRows(
   return rows;
 }
 
+// F-W8-06 OPT 2 banner — Wave 8 lead decision. When the BFF retries without
+// hard-lock AND the resulting plan moved a pre-cutoff consolidated phase,
+// the warning marker upgrades to this double-underscore form so the UI can
+// render a red, prominent "ricalcolato da zero" banner instead of the
+// amber soft-relax one.
+const RECOMPUTED_FROM_SCRATCH_WARNING = 'lock_relaxed_to_soft__plan_recomputed_from_scratch';
+
 // DA-04: warnings payload from BFF is not type-checked at runtime; coerce defensively.
 // Split per cl-bff contract update: `missing_kpi:<name>` items are neutral info
 // ("metrica non disponibile in questo solve"), not warnings — render them apart.
 // Wave 7: `lock_relaxed_to_soft` is a dedicated marker for the soft-relax
 // recovery path — surfaced as a prominent banner, never as a generic warning.
+// Wave 8 F-W8-06 OPT 2: the upgraded marker `lock_relaxed_to_soft__plan_recomputed_from_scratch`
+// is the strict subset that ALSO triggers the red recomputed-from-scratch banner.
 interface SplitWarnings {
   missingKpis: string[];
   warnings: string[];
   lockRelaxedFromWarning: boolean;
+  recomputedFromScratchFromWarning: boolean;
 }
 
 function sanitizeWarnings(input: unknown): SplitWarnings {
   if (!Array.isArray(input)) {
-    return { missingKpis: [], warnings: [], lockRelaxedFromWarning: false };
+    return {
+      missingKpis: [],
+      warnings: [],
+      lockRelaxedFromWarning: false,
+      recomputedFromScratchFromWarning: false,
+    };
   }
   const missingKpis: string[] = [];
   const warnings: string[] = [];
   let lockRelaxedFromWarning = false;
+  let recomputedFromScratchFromWarning = false;
   for (const w of input) {
     if (typeof w !== 'string') continue;
     const trimmed = w.trim();
@@ -191,13 +207,23 @@ function sanitizeWarnings(input: unknown): SplitWarnings {
     if (trimmed.startsWith('missing_kpi:')) {
       const name = trimmed.slice('missing_kpi:'.length).trim();
       if (name) missingKpis.push(name);
+    } else if (trimmed === RECOMPUTED_FROM_SCRATCH_WARNING) {
+      // F-W8-06 OPT 2 — the upgraded marker implies the basic relaxation
+      // also happened, so both flags fire.
+      recomputedFromScratchFromWarning = true;
+      lockRelaxedFromWarning = true;
     } else if (trimmed === 'lock_relaxed_to_soft') {
       lockRelaxedFromWarning = true;
     } else if (warnings.length < 5) {
       warnings.push(trimmed);
     }
   }
-  return { missingKpis, warnings, lockRelaxedFromWarning };
+  return {
+    missingKpis,
+    warnings,
+    lockRelaxedFromWarning,
+    recomputedFromScratchFromWarning,
+  };
 }
 
 export interface FrozenPhase {
@@ -338,15 +364,25 @@ export function SolutionDiff({
     [baseline.kpis, candidate.kpis],
   );
 
-  const { warnings, missingKpis, lockRelaxedFromWarning } = useMemo(
+  const { warnings, missingKpis, lockRelaxedFromWarning, recomputedFromScratchFromWarning } = useMemo(
     () => sanitizeWarnings(candidate.warnings),
     [candidate.warnings],
   );
   const changeLabel = changeTypeLabel(changeType);
+  // F-W8-06 OPT 2 — red banner takes precedence over the amber lock-relaxed
+  // banner. We still keep `showLockRelaxedBanner` truthy in that case so the
+  // existing accordion still renders the "lock rilassato" caveat on the
+  // consolidated phase list — but the standalone amber banner is suppressed
+  // because the red one already conveys the same information with stronger
+  // wording.
+  const showRecomputedFromScratchBanner = recomputedFromScratchFromWarning;
   // Lock-relaxed banner shows when either signal is present: the SSE event
   // (caught live via lockRelaxed prop) or the marker in solved.warnings
   // (caught even if the event was missed, e.g. user opened a stale page).
-  const showLockRelaxedBanner = lockRelaxed === true || lockRelaxedFromWarning;
+  // It is suppressed when the stronger red banner is on screen — no
+  // duplicate "lock rilassato" message in two flavours.
+  const showLockRelaxedBanner =
+    (lockRelaxed === true || lockRelaxedFromWarning) && !showRecomputedFromScratchBanner;
   const showDatasetOverrides =
     strategy === 'A' &&
     Array.isArray(datasetOverridesSummary) &&
@@ -372,6 +408,60 @@ export function SolutionDiff({
     typeof frozenCount === 'number' &&
     lockedCount === 0 &&
     frozenCount > 0;
+
+  // F-W8-06 OPT 2 — when the red banner fires, the manager must see which
+  // consolidated phases actually moved (baseline pre-cutoff phase had a
+  // different start_min in the candidate). Restricted to pre-cutoff phases
+  // because the whole point of the consolidated set is "production we
+  // assumed was already done".
+  interface MovedPhase {
+    commessa: string;
+    operazione: string;
+    baseline_start: number;
+    candidate_start: number;
+    macchina_baseline: string;
+    macchina_candidate: string;
+  }
+  const movedConsolidatedPhases = useMemo<MovedPhase[]>(() => {
+    if (!showRecomputedFromScratchBanner) return [];
+    if (cutoffMin === null || cutoffMin === undefined) return [];
+    const baselinePhases = extractCandidatePhases(baseline.solution);
+    const candidatePhases = extractCandidatePhases(candidate.solution);
+    // Key by commessa+operazione (idx within commessa not exposed; operazione
+    // is unique per commessa in the demo fixture, and the BFF preserves
+    // operazione identity across re-solves).
+    const candByKey = new Map<string, CandidatePhase>();
+    for (const p of candidatePhases) {
+      candByKey.set(`${p.commessa}#${p.operazione}`, p);
+    }
+    const moved: MovedPhase[] = [];
+    for (const b of baselinePhases) {
+      if (b.end_min > cutoffMin) continue;
+      const c = candByKey.get(`${b.commessa}#${b.operazione}`);
+      if (!c) {
+        moved.push({
+          commessa: b.commessa,
+          operazione: b.operazione,
+          baseline_start: b.start_min,
+          candidate_start: Number.NaN,
+          macchina_baseline: b.macchina,
+          macchina_candidate: '—',
+        });
+        continue;
+      }
+      if (c.start_min !== b.start_min || c.macchina !== b.macchina) {
+        moved.push({
+          commessa: b.commessa,
+          operazione: b.operazione,
+          baseline_start: b.start_min,
+          candidate_start: c.start_min,
+          macchina_baseline: b.macchina,
+          macchina_candidate: c.macchina,
+        });
+      }
+    }
+    return moved;
+  }, [showRecomputedFromScratchBanner, cutoffMin, baseline.solution, candidate.solution]);
 
   // Wave 7 — verify the candidate solution does not assign `targetMachineId`
   // to any phase whose start lies at or after the cutoff. This is the
@@ -427,6 +517,70 @@ export function SolutionDiff({
         )}
       </CardHeader>
       <CardContent className="space-y-3">
+        {showRecomputedFromScratchBanner && (
+          // F-W8-06 OPT 2 banner — Wave 8 lead decision. The BFF retry
+          // without hard-lock produced a plan that moved one or more
+          // pre-cutoff consolidated phases; the manager must verify
+          // production-floor reality against the new schedule.
+          <div
+            role="alert"
+            aria-label="Piano ricalcolato da zero — fasi consolidate potrebbero essere state spostate"
+            data-testid="solution-diff-recomputed-from-scratch-banner"
+            className="rounded-md border border-destructive/60 bg-destructive/10 p-3"
+          >
+            <div className="flex items-start gap-2">
+              <AlertTriangle
+                className="h-4 w-4 text-destructive mt-0.5 shrink-0"
+                aria-hidden
+              />
+              <div className="text-xs text-destructive-foreground leading-snug space-y-2">
+                <p className="text-destructive font-medium">
+                  ATTENZIONE: il piano e stato ricalcolato da zero, fasi
+                  consolidate potrebbero essersi spostate.
+                </p>
+                {movedConsolidatedPhases.length > 0 && (
+                  <ul
+                    className="text-[11px] font-mono space-y-0.5"
+                    data-testid="solution-diff-recomputed-moved-list"
+                  >
+                    {movedConsolidatedPhases.slice(0, 8).map((p, i) => (
+                      <li
+                        key={`${p.commessa}-${p.operazione}-${i}`}
+                        data-testid={`solution-diff-recomputed-moved-row-${i}`}
+                        className="text-destructive"
+                      >
+                        <span className="font-semibold">{p.commessa}</span>
+                        <span className="mx-1">·</span>
+                        <span>{p.operazione}</span>
+                        <span className="mx-1">·</span>
+                        <span>{p.macchina_baseline}</span>
+                        <span className="mx-1">spostata da</span>
+                        <span>{formatRelMin(p.baseline_start)}</span>
+                        <span className="mx-1">→</span>
+                        <span>{
+                          Number.isFinite(p.candidate_start)
+                            ? formatRelMin(p.candidate_start)
+                            : 'fase rimossa'
+                        }</span>
+                        {p.macchina_baseline !== p.macchina_candidate && (
+                          <>
+                            <span className="mx-1">su</span>
+                            <span>{p.macchina_candidate}</span>
+                          </>
+                        )}
+                      </li>
+                    ))}
+                    {movedConsolidatedPhases.length > 8 && (
+                      <li className="text-[10px] text-destructive/80 pt-0.5">
+                        +{movedConsolidatedPhases.length - 8} altre fasi consolidate spostate non mostrate.
+                      </li>
+                    )}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
         {showLockRelaxedBanner && (
           <div
             role="alert"

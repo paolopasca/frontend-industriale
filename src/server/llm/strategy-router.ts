@@ -177,6 +177,68 @@ type ValidationResult = ValidationFailure | ValidationSuccess;
 
 const CANONICAL_SHIFTS = new Set(['mattina', 'pomeriggio', 'serale', 'notte']);
 
+/**
+ * B-W8-S-01 (stress-engineer 2026-05-22): Haiku emits `M2`, `M-2`, `m2`,
+ * `M 2`, etc. depending on the operator's writing style, while the
+ * baseline canonical form is `M02` (zero-padded). Pre-fix the strict
+ * `must_exist_in_solution_machines` validator rejected those variants
+ * with `unknown_machine:M2`, the router cascaded to the Opus translator
+ * (Strategy C), and one Italian utterance cost ~$0.25 instead of a
+ * Haiku-only $0.005 (250× overshoot, repeated 100s of times per stress
+ * eval).
+ *
+ * The function probes a few canonical variants — original case,
+ * uppercase, alphanumeric-only, zero-padded numeric tail, leading-zero
+ * stripped — and returns the first one present in `known`. Pure-deterministic;
+ * no Opus, no LLM, no extra cost. Returns null if nothing matches so the
+ * caller falls back to the original error path.
+ */
+function canonicaliseId(raw: string, known: Set<string>): string | null {
+  if (known.size === 0) return null;
+  const candidates: string[] = [];
+  const push = (s: string) => {
+    if (s && !candidates.includes(s)) candidates.push(s);
+  };
+  push(raw);
+  push(raw.toUpperCase());
+  const alnum = raw.replace(/[^a-zA-Z0-9]/g, '');
+  push(alnum);
+  push(alnum.toUpperCase());
+  // Zero-pad / strip numeric tail. Matches "M2", "M-2", "M02", "COM-7", "COM-007".
+  // Pattern: letters + optional separator + digits.
+  const m = alnum.match(/^([A-Za-z]+)(\d+)$/);
+  if (m) {
+    const prefix = m[1].toUpperCase();
+    const num = parseInt(m[2], 10);
+    if (Number.isFinite(num)) {
+      // Try the candidate prefix as-is (covers "M" + "2" → both M2 and M02 below)
+      // and a few common widths.
+      for (const width of [2, 3, 4]) {
+        push(`${prefix}${String(num).padStart(width, '0')}`);
+      }
+      // Strip-leading-zeros variant (baseline "M2" + Haiku said "M02")
+      push(`${prefix}${num}`);
+    }
+  }
+  // COM-007 style: keep the hyphen since baselines often have hyphenated
+  // order ids. Same numeric padding probe.
+  const mh = raw.match(/^([A-Za-z]+)-?(\d+)$/);
+  if (mh) {
+    const prefix = mh[1].toUpperCase();
+    const num = parseInt(mh[2], 10);
+    if (Number.isFinite(num)) {
+      for (const width of [2, 3, 4]) {
+        push(`${prefix}-${String(num).padStart(width, '0')}`);
+      }
+      push(`${prefix}-${num}`);
+    }
+  }
+  for (const cand of candidates) {
+    if (known.has(cand)) return cand;
+  }
+  return null;
+}
+
 function validateField(
   value: unknown,
   validator: EntityValidator,
@@ -271,6 +333,37 @@ function validateEntities(
         warnings.push(`default_applied:${name}=horizon_end(${ids.horizon_end_min})`);
       }
       continue;
+    }
+    // B-W8-S-01 canonicalise machine/order ids BEFORE strict validation so
+    // "M2" → "M02" doesn't trigger an Opus fallback. The router runs
+    // post-Haiku, so this is the latest stop before entity validation.
+    if (def.validator === 'must_exist_in_solution_machines' && typeof raw === 'string') {
+      const canon = canonicaliseId(raw, ids.machines);
+      if (canon !== null && canon !== raw) {
+        warnings.push(`canonicalised:${name}:${raw}->${canon}`);
+        normalised[name] = canon;
+        continue;
+      }
+    } else if (def.validator === 'must_exist_in_solution_orders' && typeof raw === 'string') {
+      const canon = canonicaliseId(raw, ids.orders);
+      if (canon !== null && canon !== raw) {
+        warnings.push(`canonicalised:${name}:${raw}->${canon}`);
+        normalised[name] = canon;
+        continue;
+      }
+    } else if (def.validator === 'each_must_exist_in_solution_orders' && Array.isArray(raw)) {
+      const canon: string[] = [];
+      let touched = false;
+      for (const v of raw) {
+        if (typeof v !== 'string') { canon.push(v as never); continue; }
+        const c = canonicaliseId(v, ids.orders);
+        if (c !== null && c !== v) { canon.push(c); touched = true; warnings.push(`canonicalised:${name}:${v}->${c}`); }
+        else canon.push(v);
+      }
+      if (touched) {
+        normalised[name] = canon;
+        continue;
+      }
     }
     normalised[name] = raw;
   }
@@ -372,6 +465,22 @@ export function routeIntent(args: RouteIntentArgs): StrategyOutcome {
       intent_id: intent.intent_id,
       reason: `intent_id_not_in_catalog:${intent.intent_id}`,
       warnings,
+    };
+  }
+
+  // F-W8-01 (devils 2026-05-22): catalog flag for intents the parser
+  // recognises but the backend solver has no real consumer for. Short-
+  // circuit to `unsupported` so the BFF emits aborted_unsupported instead
+  // of routing to a strategy whose payload is silently ignored downstream.
+  if (def.not_implemented === true) {
+    return {
+      kind: 'unsupported',
+      intent_id: intent.intent_id,
+      reason:
+        "Scenario riconosciuto ma non ancora supportato: il backend non implementa "
+        + 'questa modifica nel modello CP-SAT. Riprova con un vincolo del catalogo gia attivo '
+        + '(es. blocco macchina, priorita commessa, cambio scadenza).',
+      warnings: [`not_implemented:${intent.intent_id}`],
     };
   }
 

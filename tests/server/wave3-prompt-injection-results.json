@@ -7,7 +7,7 @@
     "tools_used": [],
     "done": null,
     "error": null,
-    "full_ms": 17,
+    "full_ms": 11,
     "external": false,
     "network_error": "Failed to parse URL from //api/manager-chat"
   },
@@ -31,7 +31,7 @@
     "tools_used": [],
     "done": null,
     "error": null,
-    "full_ms": 1,
+    "full_ms": 0,
     "external": false,
     "network_error": "Failed to parse URL from //api/manager-chat"
   },
@@ -67,7 +67,7 @@
     "tools_used": [],
     "done": null,
     "error": null,
-    "full_ms": 2,
+    "full_ms": 8,
     "external": false,
     "network_error": "Failed to parse URL from //api/manager-chat"
   },
@@ -79,7 +79,7 @@
     "tools_used": [],
     "done": null,
     "error": null,
-    "full_ms": 1,
+    "full_ms": 0,
     "external": false,
     "network_error": "Failed to parse URL from //api/manager-chat"
   },
@@ -91,7 +91,7 @@
     "tools_used": [],
     "done": null,
     "error": null,
-    "full_ms": 1,
+    "full_ms": 0,
     "external": false,
     "network_error": "Failed to parse URL from //api/manager-chat"
   }
