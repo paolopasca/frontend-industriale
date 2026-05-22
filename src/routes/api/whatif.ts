@@ -93,7 +93,7 @@ export const Route = createFileRoute('/api/whatif')({
           costRecorded = true;
           recordCost({
             ts: Date.now(),
-            surface: 'explainer',  // re-use schema enum (no whatif yet)
+            surface: 'whatif',
             cost_usd: lastUsage.cost_usd,
             tokens_in: lastUsage.tokens_in,
             tokens_out: lastUsage.tokens_out,

@@ -31,7 +31,7 @@ export const Route = createFileRoute('/api/explain')({
     handlers: {
       POST: async ({ request }) => {
         const ip = getClientIp(request);
-        const rl = checkRateLimit(ip);
+        const rl = checkRateLimit(`${ip}:explainer`);
         if (!rl.ok) {
           return jsonError(
             429,

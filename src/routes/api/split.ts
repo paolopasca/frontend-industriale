@@ -91,7 +91,7 @@ export const Route = createFileRoute('/api/split')({
           costRecorded = true;
           recordCost({
             ts: Date.now(),
-            surface: 'advisor',  // reuse enum
+            surface: 'split',
             cost_usd: lastUsage.cost_usd,
             tokens_in: lastUsage.tokens_in,
             tokens_out: lastUsage.tokens_out,

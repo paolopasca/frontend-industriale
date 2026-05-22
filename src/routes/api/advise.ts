@@ -31,7 +31,7 @@ export const Route = createFileRoute('/api/advise')({
     handlers: {
       POST: async ({ request }) => {
         const ip = getClientIp(request);
-        const rl = checkRateLimit(ip);
+        const rl = checkRateLimit(`${ip}:advisor`);
         if (!rl.ok) {
           return jsonError(
             429,
