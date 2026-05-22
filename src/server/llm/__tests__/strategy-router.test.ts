@@ -353,4 +353,52 @@ describe('routeIntent', () => {
     const canonWarnings = out.warnings.filter((w) => w.startsWith('canonicalised:'));
     expect(canonWarnings).toEqual([]);
   });
+
+  it('B-W8-S-06 (false-alarm post-mortem): empty baseline → no canonicalisation, raw M2 passes through', () => {
+    // B-W8-S-06 was reported as a real bug but turned out to be a probe
+    // setup issue: the team-lead's curl sent `originalSolution: {}`, so
+    // `deriveIds` returned an empty machines set. With `ids.machines.size
+    // === 0`, two things happen by design:
+    //   1. `canonicaliseId(raw, knownEmpty)` returns null at line 197 →
+    //      the canonicalise branch falls through and `normalised[name] = raw`.
+    //   2. `validateField` for `must_exist_in_solution_machines` skips
+    //      the existence check (line 251 `ids.machines.size > 0 &&`) →
+    //      the validator accepts ANY string.
+    //
+    // Net effect: empty baseline → "M2" passes through to the rules
+    // payload as "M2" (not "M02"), and the backend later marks the rule
+    // as `unavailable_machine_skipped` because "M2" is not in the
+    // dataset. The real-world UI never hits this path (it always sends
+    // the baseline from the previous solve), but if a caller forgets to
+    // populate originalSolution, the silent-canonicalisation-skip
+    // behaviour is the explanation.
+    //
+    // This test pins that behaviour so a future regression that, say,
+    // hard-fails on empty baseline (cascading to Opus translator and
+    // burning $0.20) shows up loudly here.
+    const emptyBaseline: BaselineFasi = { fasi: [] };
+    const out = routeIntent({
+      intent: makeIntent('machine_unavailability', {
+        machine_id: 'M2',
+        start_min: 480,
+        end_min: 1080,
+      }),
+      baseline: emptyBaseline,
+      catalog,
+    });
+    expect(out.kind).toBe('rule_addition');
+    if (out.kind !== 'rule_addition') return;
+    // The canonicalise path didn't fire (no machines to match against),
+    // so the raw "M2" reaches the rules payload unchanged.
+    expect(out.entities.machine_id).toBe('M2');
+    const canonWarnings = out.warnings.filter((w) => w.startsWith('canonicalised:'));
+    expect(canonWarnings).toEqual([]);
+    // The rules payload mirrors entities — the backend will reject this
+    // with `unavailable_machine_skipped` because "M2" is not in the
+    // dataset, but that's the documented degraded behaviour for an
+    // empty-baseline caller, not a router bug.
+    expect(out.rules.unavailable_machines).toEqual({
+      M2: [{ start_min: 480, end_min: 1080 }],
+    });
+  });
 });

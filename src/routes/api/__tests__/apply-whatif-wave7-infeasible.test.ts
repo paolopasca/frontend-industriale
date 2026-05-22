@@ -814,6 +814,61 @@ describe('B-W8-S-04 — Haiku unknown+high short-circuits Opus cascade', () => {
     expect(anthropicCreate).toHaveBeenCalledTimes(2);
   });
 
+  it('F-W8-10 regression: Haiku unknown + confidence=medium STILL cascades to Opus (discriminator is === high only)', async () => {
+    // F-W8-10 (devils advocate 2026-05-22): pin that the
+    // discriminator is strictly `confidence === 'high'`, NOT
+    // `confidence !== 'low'`. The `medium` case represents Haiku
+    // "tentatively rejecting" with at least one assumption — Opus
+    // refinement still has value. Regressing the discriminator to
+    // `!== 'low'` would skip Opus for medium and burn UX (manager
+    // sees aborted_unsupported on borderline cases that Opus could
+    // have rescued).
+    anthropicCreate
+      .mockResolvedValueOnce(
+        fakeHaikuReply({
+          intent_id: 'unknown',
+          entities: {},
+          confidence: 'medium',
+          fallback_reasoning: 'classificazione tentata con piu assunzioni',
+        }),
+      )
+      .mockResolvedValueOnce({
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            type: 'unsupported',
+            unsupportedReason: 'opus_could_not_disambiguate',
+            warnings: ['opus_unsupported_medium_path'],
+          }),
+        }],
+        usage: { input_tokens: 800, output_tokens: 40, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      });
+
+    const fetchMock = vi.fn().mockRejectedValue(new Error('unexpected backend call'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await invokeRoute(
+      makeRequest({ ...baseBody, managerText: 'ferma qualcosa domani forse?' }, '10.0.84.5'),
+    );
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+    const events = chunks.map((c) => c.event);
+
+    // Must enter Strategy C — translating/translated present.
+    expect(events).toContain('translating');
+    expect(events).toContain('translated');
+
+    // The `haiku_unknown_high_no_cascade` warning MUST NOT appear —
+    // that marker is exclusively for the short-circuit path. Its
+    // presence on a medium-confidence run would indicate the
+    // discriminator regressed to `!== 'low'`.
+    const routed = chunks.find((c) => c.event === 'routed')!.data as { warnings: string[] };
+    expect(routed.warnings).not.toContain('haiku_unknown_high_no_cascade');
+
+    // Opus was called → 2 LLM calls total.
+    expect(anthropicCreate).toHaveBeenCalledTimes(2);
+  });
+
   it('Haiku known intent + confidence=high → still routes through strategy A/B (not short-circuited)', async () => {
     // Confirms the short-circuit only fires for `unknown`. A known
     // catalog intent with high confidence proceeds to Strategy B /

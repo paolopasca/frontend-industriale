@@ -262,6 +262,7 @@ in poi paghi 10× meno per la parte cachata).
 | Chat manager (per domanda) | Haiku 4.5 | ~$0.02 | ~$0.005 | Modello piccolo, multi-turn con tool-use |
 | Analisi What-If | Opus 4.7 | ~$0.10 | ~$0.05 | Premium per ragionamento |
 | Traduzione vincolo (apply step 1) | Opus 4.7 | ~$0.05 | ~$0.03 | Output JSON corto |
+| Intent-parser (Wave 7+8, low-cost pre-stage) | Haiku 4.5 | ~$0.001 | ~$0.0009 | Decide il routing prima di chiamare Opus |
 | Esecuzione vincolo (apply step 2) | No LLM | $0 | $0 | Solver locale |
 | Split sotto-commesse | Opus 4.7 | ~$0.10 | ~$0.05 | Premium |
 
@@ -444,5 +445,129 @@ parlante, costi e rischi visibili.
 ---
 
 *Documento mantenuto a partire dal commit `d1b1bdf` (Wave 5.2). Verrà
+aggiornato a ogni release con i numeri aggiornati di costo e copertura
+funzionale.*
+
+---
+
+## 10. Aggiornamento Wave 7+8 (maggio 2026)
+
+Le wave 7 e 8 hanno rivisitato il loop "scrivi uno scenario → vedi il piano
+ricalcolato" (apply-whatif). Cambia abbastanza da meritare un paragrafo
+dedicato. Per il manager che valuta l'acquisto, il punto pratico è: lo
+scenario che inserisci adesso **ha effetto reale sul piano**, non è una
+animazione cosmetica come era nel prototipo iniziale.
+
+### 10.1 Cosa è cambiato sotto al cofano
+
+**Prima di Wave 7** (commit `33113b0`, Wave 4.1): cliccavi "Esegui scenario",
+vedevi un nuovo Gantt, vedevi un delta di KPI. Sembrava funzionare. Una
+review interna ha però scoperto che il backend in realtà **ignorava il
+vincolo**: il nuovo piano era rumore di multi-thread CP-SAT (stessa istanza,
+stesse statistiche, ordine fasi diverso per tiebreak non deterministico).
+Il manager era convinto di vedere un effetto reale dove non c'era.
+
+**Dopo Wave 7+8** (commit `570d184`, branch `feat/wave7-real-effect`):
+- Il backend `f_apply_rules.py` consuma davvero il payload per **3 tipi di
+  vincolo**: blocco macchina, cambio priorità, cambio scadenza.
+- Le fasi del piano **non toccate dal vincolo restano bloccate** (frozen
+  phases) — il solver non ti rimescola tutto sotto i piedi.
+- Quando l'AI non sa tradurre la tua richiesta in un vincolo gestito,
+  vedi un toast esplicito **"questa funzione è in roadmap Wave 9"** invece
+  di un piano illusorio.
+
+### 10.2 Il costo per click è crollato
+
+Wave 7 ha introdotto un **intent-parser Haiku** (modello economico) che
+classifica la tua richiesta in pochi millisecondi e decide se invocare
+davvero Opus o no:
+
+| Caso d'uso | Pre-Wave 7 | Post-Wave 7+8 | Risparmio |
+|---|---|---|---|
+| Richiesta classificabile (es. "blocco M03 dalle 14 alle 18") | $0.20/click (sempre Opus) | $0.0009/click (solo Haiku) | **222×** |
+| Richiesta non traducibile (es. "che ore sono?") | $0.20/click (Opus inutile) | $0.0007/click (Haiku + short-circuit) | **285×** |
+| Richiesta ambigua (Haiku non sicuro) | $0.20/click | $0.05–$0.20/click (Haiku + cascade Opus) | 1–4× |
+
+Per un manager attivo (5 apply-whatif/giorno × 22 giorni), il costo mensile
+del **solo loop apply-whatif** scende da ~$22/mese a ~$0.10/mese — il
+risparmio sostanziale che fa scendere il costo totale LLM del manager a
+~$17/mese stimato a §5.5.
+
+### 10.3 I 5 tipi di vincolo, oggi (Wave 8)
+
+Riprendendo la tabella della §3.6, lo stato per ogni tipo di vincolo:
+
+| Vincolo | Cosa fa il backend |
+|---|---|
+| **block_machine** | ✅ Pieno consumer CP-SAT — solver rispetta il blocco, fasi spostate |
+| **force_priority** | ✅ Pieno consumer — la commessa prioritaria viene anticipata |
+| **modify_deadline** | ✅ Pieno consumer — il solver tiene conto della nuova scadenza |
+| **add_capacity** | ⚠️ **NON implementato** — backlog Wave 9. Il sistema dice "unsupported" |
+| **shift_window** | ⚠️ **NON implementato** — backlog Wave 9. Il sistema dice "unsupported" |
+| **unsupported** | ✅ Dichiarato onestamente — toast "in roadmap" |
+
+L'onestà conta più della copertura apparente. Wave 4.1 fingeva di supportare
+`add_capacity` ma il piano risultante era invariato; Wave 8 dichiara che
+non lo supporta ancora, e il manager sa quando il sistema sta lavorando e
+quando no.
+
+### 10.4 Hard-lock delle fasi non toccate
+
+Questo è un dettaglio tecnico che ha implicazioni pratiche. Quando blocchi
+M03 dalle 14 alle 18, ti aspetti che **solo le fasi su M03 in quella
+finestra** vengano spostate. Le altre 100 fasi del piano dovrebbero restare
+dove sono.
+
+Wave 7 implementa esattamente questo: il frontend identifica le fasi non
+sovrapposte al vincolo, le marca come "frozen", e il backend aggiunge
+`model.Add(start == fixed_start)` per ogni frozen → diventano constraint
+**hard**, non più suggerimenti. Il risultato che vedi sul Gantt cambia solo
+nella regione del tuo vincolo.
+
+C'è una eccezione: se il vincolo rende infattibile il piano (es. blocchi
+una macchina critica per troppo tempo), il sistema fa un **retry rilassato**
+(le fasi diventano hint invece che hard), il piano viene ricalcolato da
+zero, e tu vedi un banner rosso esplicito **"il piano è stato ricalcolato
+da zero perché il vincolo era troppo restrittivo"**. Decidi tu se accettare
+il nuovo piano o riformulare il vincolo.
+
+### 10.5 Onestà sui limiti residui (post-Wave 8)
+
+- 2 dei 5 tipi di vincolo dichiarati `unsupported` (capacity + shift) →
+  Wave 9 li sblocca.
+- Robustezza ai dialetti / italiano informale dell'intent-parser: testato,
+  ma non al 100% — alcune frasi vernacolari (es. "stoppa la M03 a piombo")
+  vanno in `unsupported`. Backlog.
+- La spiegazione + i consigli auto-firano ad ogni cambio di soluzione (cost
+  trap: ~$0.10 per refresh non voluto). Roadmap: rendere manuali con
+  bottone. Backlog.
+- "gg3" senza orario specifico = default whole-day. Funziona ma non
+  documentato bene. Backlog.
+
+Questi 4 punti sono **tutti tracciati** in `docs/to_do/feature_gaps.md` del
+backend per Wave 9. Niente è perso o nascosto.
+
+### 10.6 Per chi sta valutando l'acquisto adesso
+
+**Sì se**:
+- Vuoi usare DAINO oggi su un caso d'uso che ricade nei 3 vincoli pieni
+  (block_machine, force_priority, modify_deadline) — questi 3 coprono il
+  ~80% degli scenari operativi tipici di uno stabilimento FJSP standard
+- Sei disposto a fare pilota di 2 settimane su dati demo o anonimizzati
+  per validare i numeri di costo e latenza prima di rolling sui dati reali
+
+**Aspetta Wave 9 se**:
+- I tuoi scenari richiedono **principalmente** capacity_addition (turni
+  extra, operatori temporanei) o shift_window (modifica orari turno) —
+  questi 2 sono in roadmap Wave 9 (~6-9 ore di implementazione totali,
+  4-6 settimane wall-clock dipendendo dalla priorità)
+- Hai bisogno di un dashboard di costi LLM visibile in UI (dato raccolto,
+  manca la schermata)
+- I tuoi dati sono regolamentati e l'invio a Anthropic Cloud non è
+  ammesso → in tal caso modalità "solo solver" (vedi §4)
+
+---
+
+*Documento aggiornato post-Wave 8 (commit `570d184`, 23 maggio 2026). Verrà
 aggiornato a ogni release con i numeri aggiornati di costo e copertura
 funzionale.*
