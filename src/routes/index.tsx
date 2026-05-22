@@ -17,6 +17,7 @@ import { ReplanModal } from '@/components/dashboard/ReplanModal';
 import { DataInputModal } from '@/components/dashboard/DataInputModal';
 import { GanttSection } from '@/components/dashboard/GanttSection';
 import { WhatIfAnalysis } from '@/components/dashboard/WhatIfAnalysis';
+import { SplitSuggestion } from '@/components/dashboard/SplitSuggestion';
 import { ExplanationPanel } from '@/components/dashboard/ExplanationPanel';
 import { AdvisorPanel } from '@/components/dashboard/AdvisorPanel';
 import { ManagerChatPanel } from '@/components/dashboard/ManagerChatPanel';
@@ -183,6 +184,11 @@ function Index() {
 
                 <BottleneckChart />
                 <WhatIfAnalysis
+                  slug={setupData?.companySlug ?? null}
+                  solution={aiInputs.solution}
+                  kpis={aiInputs.kpis}
+                />
+                <SplitSuggestion
                   slug={setupData?.companySlug ?? null}
                   solution={aiInputs.solution}
                   kpis={aiInputs.kpis}
