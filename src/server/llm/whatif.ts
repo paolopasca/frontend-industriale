@@ -92,7 +92,45 @@ REGOLE INDEROGABILI:
 4. Se i dati input sono insufficienti per giudicare lo scenario, dillo esplicitamente nella sezione 4 e indica quali dati mancano.
 5. Non eseguire codice, non chiamare API, non simulare comandi.
 
-NON USARE liste numerate dentro le sezioni: solo bullet con "-". I 4 header con ## sono OBBLIGATORI nell'ordine dato.`;
+NON USARE liste numerate dentro le sezioni: solo bullet con "-". I 4 header con ## sono OBBLIGATORI nell'ordine dato.
+
+ESEMPI di output ben formati (few-shot):
+
+ESEMPIO A — scenario: "Posso fermare M-3 dalle 14 alle 18 per manutenzione preventiva?"
+KPI input: makespan_min=2880, max_machine_util=0.92, M-3 utilization=0.92.
+Output atteso:
+## 1. Interpretazione
+Lo scenario prevede un fermo programmato di M-3 per 240 minuti in finestra pomeridiana. Assumo che l'intervento sia opzionale e che possa essere rinviato.
+## 2. Impatti probabili
+- M-3 utilizzo attuale 92%: il fermo elimina ~16% della capacita' giornaliera della macchina collo di bottiglia.
+- Makespan corrente 2880 min: il fermo aggiungerebbe presumibilmente 240 min al makespan se M-3 e' nel critical path.
+- Le commesse che dipendono da M-3 slittano di almeno 4 ore.
+- Le altre macchine non sono interessate direttamente dal fermo.
+## 3. Trade-off
+- Pro: riduce il rischio di guasto non programmato di M-3.
+- Pro: pulizia e ispezione preventiva possono migliorare la qualita' a valle.
+- Contro: makespan stimato peggiora di ~8% (240 min su 2880).
+- Contro: le commesse a deadline stretta su M-3 possono diventare in ritardo.
+## 4. Raccomandazione
+Sconsigliato oggi stessa giornata: M-3 e' al 92% e nel critical path. Suggerisco di programmare il fermo nella prima finestra in cui M-3 scende sotto 70% di utilizzo, o nel weekend.
+
+ESEMPIO B — scenario: "Se aggiungo un secondo operatore O-7 per il turno serale, di quanto recupero?"
+KPI input: makespan_min=3120, on_time_rate=0.85, n_in_ritardo=1, ritardo_totale_min=120.
+Output atteso:
+## 1. Interpretazione
+Lo scenario aggiunge un operatore O-7 al turno serale per assorbire carico residuo. Assumo che O-7 abbia le stesse capability degli operatori gia' presenti e che il costo aggiuntivo sia gestibile.
+## 2. Impatti probabili
+- Il ritardo totale corrente di 120 min e' concentrato su 1 commessa: un operatore extra serale puo' assorbirlo se ha accesso alla macchina richiesta.
+- L'on-time rate potrebbe risalire da 85% verso 95% se la commessa in ritardo rientra in finestra.
+- Il makespan corrente di 3120 min potrebbe scendere di circa 120 min nel caso ottimistico.
+- Aumento del costo operatori del ~10% per il turno aggiuntivo.
+## 3. Trade-off
+- Pro: recupero del ritardo senza spostare deadline.
+- Pro: buffer per future variazioni sul piano.
+- Contro: costo orario extra non ammortizzato se il piano e' stabile in seguito.
+- Contro: rischio di sottoutilizzo se altre commesse non si presentano.
+## 4. Raccomandazione
+Condizionato: vale la pena se il ritardo di 120 min ha penali contrattuali superiori al costo del turno serale. Verificare contratto cliente e costo orario O-7 prima di confermare.`;
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -116,8 +154,10 @@ function escapeXml(s: string): string {
 }
 
 function buildSystemBlocks(input: WhatIfInput): Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> {
+  // SYSTEM_PROMPT is identical across all calls — cache it.
+  // Without this, every call re-bills the full ~1.6k token system prompt.
   const blocks: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> = [
-    { type: 'text', text: SYSTEM_PROMPT },
+    { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
   ];
   const spec: string[] = [];
   if (input.consultationMd?.trim()) spec.push('## Consultation\n' + input.consultationMd.trim());

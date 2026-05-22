@@ -34,9 +34,14 @@ function extractCandidates(solution: unknown): CommessaCandidate[] {
   if (Array.isArray(sol.fasi)) {
     fasi.push(...(sol.fasi as typeof fasi));
   } else {
-    for (const v of Object.values(sol)) {
+    // FJSP shape: { "COM-001": { fasi: [...] }, "COM-002": { fasi: [...] } }.
+    // The commessa is the parent key (jobId), not a field on each fase.
+    // Inject the jobId so the downstream loop can read it as `f.commessa`.
+    for (const [jobId, v] of Object.entries(sol)) {
       if (v && typeof v === 'object' && Array.isArray((v as { fasi?: unknown }).fasi)) {
-        fasi.push(...((v as { fasi: typeof fasi }).fasi));
+        for (const fase of (v as { fasi: typeof fasi }).fasi) {
+          fasi.push({ ...fase, commessa: fase.commessa ?? jobId });
+        }
       }
     }
   }

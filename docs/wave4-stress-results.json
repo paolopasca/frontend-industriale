@@ -1,0 +1,110 @@
+{
+  "base_url": "http://localhost:8080",
+  "total_calls": 8,
+  "scenario": "Posso fermare la macchina M-3 oggi dalle 14 alle 18 per manutenzione preventiva? Quali commesse rischio di mandare in ritardo e qual è il trade-off rispetto al rischio guasto?",
+  "stats": [
+    {
+      "index": 0,
+      "ok": true,
+      "external_529": false,
+      "status": 200,
+      "ttft_ms": 1249,
+      "full_ms": 20884,
+      "text_chars": 2759,
+      "cost_usd": 0.115065,
+      "tokens_in": 1671,
+      "tokens_out": 1200
+    },
+    {
+      "index": 1,
+      "ok": true,
+      "external_529": false,
+      "status": 200,
+      "ttft_ms": 1970,
+      "full_ms": 22142,
+      "text_chars": 2709,
+      "cost_usd": 0.11424,
+      "tokens_in": 1671,
+      "tokens_out": 1189
+    },
+    {
+      "index": 2,
+      "ok": true,
+      "external_529": false,
+      "status": 200,
+      "ttft_ms": 1264,
+      "full_ms": 21745,
+      "text_chars": 2646,
+      "cost_usd": 0.111615,
+      "tokens_in": 1671,
+      "tokens_out": 1154
+    },
+    {
+      "index": 3,
+      "ok": true,
+      "external_529": false,
+      "status": 200,
+      "ttft_ms": 1731,
+      "full_ms": 24342,
+      "text_chars": 2602,
+      "cost_usd": 0.11064,
+      "tokens_in": 1671,
+      "tokens_out": 1141
+    },
+    {
+      "index": 4,
+      "ok": true,
+      "external_529": false,
+      "status": 200,
+      "ttft_ms": 1707,
+      "full_ms": 21578,
+      "text_chars": 2770,
+      "cost_usd": 0.115065,
+      "tokens_in": 1671,
+      "tokens_out": 1200
+    },
+    {
+      "index": 5,
+      "ok": true,
+      "external_529": false,
+      "status": 200,
+      "ttft_ms": 1791,
+      "full_ms": 22273,
+      "text_chars": 2740,
+      "cost_usd": 0.115065,
+      "tokens_in": 1671,
+      "tokens_out": 1200
+    },
+    {
+      "index": 6,
+      "ok": true,
+      "external_529": false,
+      "status": 200,
+      "ttft_ms": 1841,
+      "full_ms": 20783,
+      "text_chars": 2687,
+      "cost_usd": 0.11394,
+      "tokens_in": 1671,
+      "tokens_out": 1185
+    },
+    {
+      "index": 7,
+      "ok": true,
+      "external_529": false,
+      "status": 200,
+      "ttft_ms": 1744,
+      "full_ms": 23247,
+      "text_chars": 2722,
+      "cost_usd": 0.114165,
+      "tokens_in": 1671,
+      "tokens_out": 1188
+    }
+  ],
+  "summary": {
+    "ok": 8,
+    "external_529": 0,
+    "real_errors": 0,
+    "cache_hit_after_first": false,
+    "total_cost_usd": 0.909795
+  }
+}

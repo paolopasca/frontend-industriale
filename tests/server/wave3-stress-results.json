@@ -1,0 +1,222 @@
+[
+  {
+    "index": 0,
+    "question": "Quante commesse sono in ritardo?",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 18,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 1,
+    "question": "Quanto è saturata la macchina M-3?",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 1,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 2,
+    "question": "Quale è la prossima scadenza?",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 1,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 3,
+    "question": "Mostrami i KPI principali.",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 0,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 4,
+    "question": "Quali sono i colli di bottiglia?",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 1,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 5,
+    "question": "Dammi il dettaglio dei costi.",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 1,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 6,
+    "question": "Lo status del solver?",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 0,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 7,
+    "question": "Mostra le commesse on-time.",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 1,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 8,
+    "question": "Chi sono gli operatori più carichi?",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 1,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 9,
+    "question": "Dimmi le fasi di COM-007.",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 0,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 10,
+    "question": "Quante commesse sono in ritardo?",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 1,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 11,
+    "question": "Quanto è saturata la macchina M-3?",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 0,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 12,
+    "question": "Quale è la prossima scadenza?",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 1,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 13,
+    "question": "Mostrami i KPI principali.",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 0,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 14,
+    "question": "Quali sono i colli di bottiglia?",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 0,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 15,
+    "question": "Dammi il dettaglio dei costi.",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 1,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 16,
+    "question": "Lo status del solver?",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 1,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 17,
+    "question": "Mostra le commesse on-time.",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 0,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 18,
+    "question": "Chi sono gli operatori più carichi?",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 1,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  },
+  {
+    "index": 19,
+    "question": "Dimmi le fasi di COM-007.",
+    "ok": false,
+    "external_529": true,
+    "status": 429,
+    "full_ms": 0,
+    "text_chars": 0,
+    "tools_used": [],
+    "error": "HTTP 429: {\"error\":\"rate_limited\",\"message\":\"Limite di 10 richieste/ora superato per la chat manager.\"}"
+  }
+]

@@ -1,0 +1,79 @@
+{
+  "base_url": "http://localhost:8080",
+  "fixtures": [
+    "optimal",
+    "feasible-warning",
+    "infeasible",
+    "empty",
+    "malformed"
+  ],
+  "scenario": "Analizza la criticità principale del piano corrente e dimmi cosa rischio se non intervengo.",
+  "pass_threshold": 0.95,
+  "fail_threshold": 0.9,
+  "total_cost_usd": 0.474285,
+  "global": {
+    "cited": 108,
+    "verified": 108,
+    "ratio": 1,
+    "verdict": "PASS",
+    "strict_call_count": 3
+  },
+  "per_fixture": [
+    {
+      "fixture": "optimal",
+      "status": "ok",
+      "cited": 42,
+      "verified": 42,
+      "ratio": 1,
+      "ms": 20081,
+      "cost_usd": 0.11157,
+      "tokens_in": 1738,
+      "tokens_out": 1140
+    },
+    {
+      "fixture": "feasible-warning",
+      "status": "ok",
+      "cited": 37,
+      "verified": 37,
+      "ratio": 1,
+      "ms": 21400,
+      "cost_usd": 0.10623,
+      "tokens_in": 1627,
+      "tokens_out": 1091
+    },
+    {
+      "fixture": "infeasible",
+      "status": "ok",
+      "cited": 29,
+      "verified": 29,
+      "ratio": 1,
+      "ms": 20340,
+      "cost_usd": 0.10431,
+      "tokens_in": 1444,
+      "tokens_out": 1102
+    },
+    {
+      "fixture": "empty",
+      "status": "ok",
+      "cited": 4,
+      "verified": 4,
+      "ratio": 1,
+      "ms": 13804,
+      "cost_usd": 0.072735,
+      "tokens_in": 1239,
+      "tokens_out": 722
+    },
+    {
+      "fixture": "malformed",
+      "status": "ok",
+      "cited": 5,
+      "verified": 5,
+      "ratio": 1,
+      "ms": 14946,
+      "cost_usd": 0.07944,
+      "tokens_in": 1201,
+      "tokens_out": 819
+    }
+  ],
+  "unverified_samples": []
+}

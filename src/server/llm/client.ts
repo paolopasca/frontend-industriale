@@ -46,8 +46,11 @@ export interface RateLimitResult {
   limit: number;
 }
 
-function shouldBypassRateLimit(ip: string): boolean {
+function shouldBypassRateLimit(ipOrCompositeKey: string): boolean {
   if (process.env.DAINO_BFF_RATE_LIMIT_BYPASS_LOCAL === '0') return false;
+  // Composite keys are of the form "<ip>:<surface>" (e.g. "local:whatif",
+  // "127.0.0.1:split"). Strip the surface suffix before matching.
+  const ip = ipOrCompositeKey.split(':')[0];
   if (ip !== 'local' && ip !== '127.0.0.1' && ip !== '::1') return false;
   const env = process.env.NODE_ENV;
   return env !== 'production';
