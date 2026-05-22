@@ -1,98 +1,118 @@
 {
-  "base_url": "http://localhost:8080",
+  "base_url": "/",
   "total": 10,
-  "passed": 10,
-  "failed": 0,
+  "passed": 0,
+  "failed": 10,
   "results": [
     {
       "fixture": "optimal",
       "endpoint": "explain",
-      "status": 200,
-      "pass": true,
-      "preview": "✅ La pianificazione delle 21 commesse è ottimale e rispetta tutti i vincoli, con un makespan di 2.880 minuti e un on-tim",
-      "reasons": [],
-      "ms": 4243
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/explain"
+      ],
+      "ms": 0
     },
     {
       "fixture": "optimal",
       "endpoint": "advise",
-      "status": 200,
-      "pass": true,
-      "preview": "1. 🟡 Monitora M-3: con un utilizzo al 92% è la macchina più carica del piano e risulta impegnata in sequenza su COM-001",
-      "reasons": [],
-      "ms": 9649
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/advise"
+      ],
+      "ms": 0
     },
     {
       "fixture": "feasible-warning",
       "endpoint": "explain",
-      "status": 200,
-      "pass": true,
-      "preview": "⚠️ La pianificazione delle 21 commesse è fattibile ma non garantita ottima, con un on-time rate dell'85% e una commessa ",
-      "reasons": [],
-      "ms": 4796
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/explain"
+      ],
+      "ms": 0
     },
     {
       "fixture": "feasible-warning",
       "endpoint": "advise",
-      "status": 200,
-      "pass": true,
-      "preview": "1. ⚠️ Riassegna COM-007 da M-3 a una macchina alternativa per recuperare i 120 minuti di ritardo: M-3 è già al 95% di sa",
-      "reasons": [],
-      "ms": 9151
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/advise"
+      ],
+      "ms": 0
     },
     {
       "fixture": "infeasible",
       "endpoint": "explain",
-      "status": 200,
-      "pass": true,
-      "preview": "⚠️ La pianificazione delle 21 commesse richieste non è realizzabile con i vincoli attuali: nessuna delle 21 commesse ris",
-      "reasons": [],
-      "ms": 3018
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/explain"
+      ],
+      "ms": 0
     },
     {
       "fixture": "infeasible",
       "endpoint": "advise",
-      "status": 200,
-      "pass": true,
-      "preview": "1. ⚠️ Riassegna almeno 4 delle 8 commesse con deadline entro 5 giorni da M-3 a una macchina alternativa abilitata alla f",
-      "reasons": [],
-      "ms": 9742
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/advise"
+      ],
+      "ms": 0
     },
     {
       "fixture": "empty",
       "endpoint": "explain",
-      "status": 200,
-      "pass": true,
-      "preview": "Nessuna commessa pianificabile nella finestra temporale. Verifica i dati di ingresso.",
-      "reasons": [],
-      "ms": 1300
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/explain"
+      ],
+      "ms": 0
     },
     {
       "fixture": "empty",
       "endpoint": "advise",
-      "status": 200,
-      "pass": true,
-      "preview": "1. 📋 Verifica che le commesse siano state correttamente caricate nel sistema: lo status è OPTIMAL ma `fasi` è vuoto, il",
-      "reasons": [],
-      "ms": 6042
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/advise"
+      ],
+      "ms": 0
     },
     {
       "fixture": "malformed",
       "endpoint": "explain",
-      "status": 200,
-      "pass": true,
-      "preview": "Pianificazione non disponibile: i dati ricevuti non sono in un formato leggibile.",
-      "reasons": [],
-      "ms": 1368
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/explain"
+      ],
+      "ms": 0
     },
     {
       "fixture": "malformed",
       "endpoint": "advise",
-      "status": 200,
-      "pass": true,
-      "preview": "1. 📋 Verifica che il solver abbia completato correttamente l'elaborazione: lo status restituito è UNKNOWN, il che indic",
-      "reasons": [],
-      "ms": 6878
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/advise"
+      ],
+      "ms": 0
     }
   ]
 }

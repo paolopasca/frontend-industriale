@@ -1,0 +1,90 @@
+{
+  "timestamp": "2026-05-22T10:37:42.317Z",
+  "base_url": "http://localhost:8080",
+  "backend_url": "http://localhost:8001",
+  "results": [
+    {
+      "id": 1,
+      "name": "Prompt injection in whatifText",
+      "pass": true,
+      "ms": 4601,
+      "status": 200,
+      "finalState": "unsupported",
+      "cost_usd": 0.028328,
+      "notes": "terminal=unsupported, no key leak, no \"PWNED\" echo"
+    },
+    {
+      "id": 2,
+      "name": "Italian/English code-switched scenario",
+      "pass": true,
+      "ms": 14848,
+      "status": 200,
+      "finalState": "done",
+      "cost_usd": 0.027788,
+      "notes": "terminal=done"
+    },
+    {
+      "id": 3,
+      "name": "whatifText empty",
+      "pass": true,
+      "ms": 1,
+      "status": 400,
+      "finalState": "no-stream",
+      "cost_usd": 0,
+      "notes": "HTTP 400 ({\"error\":\"invalid_body\",\"message\":\"whatifText: String must contain at least 3 character(s)\"})"
+    },
+    {
+      "id": 4,
+      "name": "whatifText 1900 chars (under cap)",
+      "pass": true,
+      "ms": 13780,
+      "status": 200,
+      "finalState": "done",
+      "cost_usd": 0.044618,
+      "notes": "length=1615 chars, terminal=done"
+    },
+    {
+      "id": 5,
+      "name": "Body > 256KB (cap is 256_000 in BFF)",
+      "pass": true,
+      "ms": 2,
+      "status": 413,
+      "finalState": "no-stream",
+      "cost_usd": 0,
+      "notes": "HTTP 413 (cap is 256KB per apply-whatif.ts:117)"
+    },
+    {
+      "id": 6,
+      "name": "Backend rejects (bogus slug)",
+      "pass": true,
+      "ms": 2901,
+      "status": 200,
+      "finalState": "error",
+      "cost_usd": 0,
+      "notes": "error event delivered: Company not found"
+    },
+    {
+      "id": 7,
+      "name": "Translator malformed JSON",
+      "pass": true,
+      "ms": 2,
+      "cost_usd": 0,
+      "notes": "translator has explicit malformed-JSON fallback (normaliseChange + extractJsonObject)"
+    },
+    {
+      "id": 8,
+      "name": "KPI NaN — zod rejection + SolutionDiff DA-01 guard",
+      "pass": true,
+      "ms": 2,
+      "status": 400,
+      "finalState": "no-stream",
+      "cost_usd": 0,
+      "notes": "zod rejects NaN=true (HTTP 400); SolutionDiff has finite/NaN guard=true"
+    }
+  ],
+  "summary": {
+    "passed": 8,
+    "total": 8,
+    "total_cost_usd": 0.10073399999999999
+  }
+}

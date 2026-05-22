@@ -3,30 +3,24 @@
     "case_id": "CASE-COM001-OPTIMAL",
     "fixture": "optimal",
     "commessa": "COM-001",
-    "status": 200,
-    "text": "## Diagnosi\nLa commessa COM-001 è composta da sole 2 fasi (taglio su M-1, fresatura su M-3) per un end-time complessivo di 300 minuti, quindi uno split spinto non è raccomandato; si può tuttavia valutare una micro-separazione per ridurre la contesa su M-3 con COM-002.\n\n## Proposta di split\n1. **SUB-001A** — fase \"taglio\", macchina target **M-1**, operatore O-1, capability richiesta: taglio.\n   - Motivazione: M-1 è già la macchina assegnata e completa il taglio in 120 minuti senza contesa con altre commesse.\n2. **SUB-001B** — fase \"fresatura\", macchina target **M-3**, operatore O-2, capability richiesta: fresatura.\n   - Motivazione: nella soluzione corrente solo M-3 esegue fresatura; non risultano alternative inferibili dai dati, quindi la fase resta su M-3 ma può essere lottizzata per anticipare una parte prima dello slot di COM-002 (300-480).\n\n## Rischi\n- Setup duplicato sulla fase di fresatura se SUB-001B viene ulteriormente spezzato in lotti su M-3 (setup attuale 20 min per fase).\n- Le capability di M-2 e di eventuali altre macchine non sono esplicitate nei dati: non è possibile confermare che M-2 supporti la fresatura, quindi lo spostamento di SUB-001B su altra macchina non è giustificabile.\n- Sincronizzazione tra SUB-001A e SUB-001B: la fresatura dipende dal completamento del taglio (vincolo di precedenza già rispettato nello schedule corrente).\n- Commessa con solo 2 fasi: il beneficio dello split è marginale rispetto al rischio di aumentare il setup_cost_usd (oggi 410).\n\n## Stima impatto\n- Makespan della commessa già a 300 minuti su un makespan globale di 2880: lo split incide al massimo sul ~10% del totale.\n- Nessun guadagno atteso su on_time_rate (già 0.95) né su max_machine_util (0.92) senza una macchina alternativa con capability fresatura confermata.\n- Possibile aumento marginale del setup_cost_usd se si introducono lotti aggiuntivi su M-3 (oggi 20 min di setup per la sola fresatura COM-001).",
-    "done": {
-      "cost_usd": 0.08523,
-      "tokens_in": 1517,
-      "tokens_out": 833
-    },
+    "status": 0,
+    "text": "",
+    "done": null,
     "error": null,
-    "full_ms": 14955,
-    "external": false
+    "full_ms": 33,
+    "external": false,
+    "network_error": "Failed to parse URL from //api/split"
   },
   {
     "case_id": "CASE-COM-INFEASIBLE",
     "fixture": "infeasible",
     "commessa": "COM-001",
-    "status": 200,
-    "text": "## Diagnosi\nLa commessa COM-001 non è presente in dettaglio nella soluzione corrente (status INFEASIBLE, nessuna fase pianificata), quindi non è possibile inferire con certezza le fasi e le capability richieste per uno split mirato.\n\n## Proposta di split\nNon è possibile proporre sotto-commesse istanziate su macchine specifiche: la soluzione input riporta `status: INFEASIBLE` e `n_commesse_pianificabili: 0`, pertanto non risultano assegnazioni fase→macchina per COM-001 né un elenco esplicito delle macchine disponibili oltre al riferimento a M-3 come collo di bottiglia.\n\nIndicazione operativa generica (da validare con il dettaglio fasi):\n- **SUB-001** — eventuali fasi che richiedono fresatura su M-3 (capability fresatura, operatore O-2). Motivazione: M-3 è l'unica macchina citata come abilitata, ma è satura.\n- **SUB-002** — eventuali fasi non-fresatura, da instradare su macchine alternative non specificate nei dati input. Motivazione: alleggerire M-3, a condizione che esistano macchine con capability compatibili (non desumibile dall'input).\n\n## Rischi\n- Capability non inferibili: i dati input non elencano le fasi di COM-001 né le macchine alternative a M-3, quindi ogni assegnazione proposta è ipotetica.\n- M-3 è già saturata da 8 commesse contro una capacità di 4: spostare fasi su M-3 peggiorerebbe il collo di bottiglia.\n- Operatore O-2 è risorsa unica per fresatura su M-3 con finestra di 480 min/giorno: lo split non risolve il vincolo di manodopera.\n- Possibile setup duplicato e necessità di sincronizzazione tra SUB-001 e SUB-002 se le fasi sono in sequenza tecnologica.\n\n## Stima impatto\n- Lo split di COM-001, da solo, non rende la pianificazione fattibile: servirebbe coprire un'estensione minima di 1440 min e sanare 8 deadline violate su 21 commesse richieste.\n- Riduzione del carico su M-3 ottenibile solo se almeno parte delle fasi di COM-001 esce dalle 8 commesse in conflitto (capacità M-3 = 4 commesse entro 5 giorni).\n- Senza dettaglio fasi e macchine alternative, il guadagno atteso sul makespan non è quantificabile con i numeri forniti; si raccomanda di rifornire la decomposizione con l'elenco fasi di COM-001 e le capability delle macchine diverse da M-3.",
-    "done": {
-      "cost_usd": 0.08853,
-      "tokens_in": 1222,
-      "tokens_out": 936
-    },
+    "status": 0,
+    "text": "",
+    "done": null,
     "error": null,
-    "full_ms": 17304,
-    "external": false
+    "full_ms": 0,
+    "external": false,
+    "network_error": "Failed to parse URL from //api/split"
   }
 ]

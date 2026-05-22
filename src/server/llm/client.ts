@@ -12,7 +12,7 @@ export function getAnthropicClient(): Anthropic {
   return _client;
 }
 
-export type LlmSurface = 'explainer' | 'advisor' | 'manager_chat' | 'whatif' | 'split';
+export type LlmSurface = 'explainer' | 'advisor' | 'manager_chat' | 'whatif' | 'split' | 'translator' | 'whatif_apply';
 
 export interface CostRecord {
   ts: number;
@@ -56,19 +56,28 @@ function shouldBypassRateLimit(ipOrCompositeKey: string): boolean {
   return env !== 'production';
 }
 
-export function checkRateLimit(ip: string): RateLimitResult {
+// `limitOverride` lets a caller enforce a stricter per-surface cap (e.g.
+// apply-whatif is 5/h because each call triggers a full re-solve, not just
+// an LLM round-trip). The override only narrows: it never raises the cap
+// above the global LIMIT env var, so a misconfigured surface can't escape
+// the safety ceiling.
+export function checkRateLimit(ip: string, limitOverride?: number): RateLimitResult {
+  const effectiveLimit =
+    typeof limitOverride === 'number' && limitOverride > 0
+      ? Math.min(limitOverride, LIMIT)
+      : LIMIT;
   if (shouldBypassRateLimit(ip)) {
-    return { ok: true, remaining: LIMIT, limit: LIMIT };
+    return { ok: true, remaining: effectiveLimit, limit: effectiveLimit };
   }
   const now = Date.now();
   const hits = (_hits.get(ip) || []).filter((t) => now - t < WINDOW_MS);
-  if (hits.length >= LIMIT) {
+  if (hits.length >= effectiveLimit) {
     _hits.set(ip, hits);
-    return { ok: false, remaining: 0, limit: LIMIT };
+    return { ok: false, remaining: 0, limit: effectiveLimit };
   }
   hits.push(now);
   _hits.set(ip, hits);
-  return { ok: true, remaining: LIMIT - hits.length, limit: LIMIT };
+  return { ok: true, remaining: effectiveLimit - hits.length, limit: effectiveLimit };
 }
 
 export function getClientIp(request: Request): string {

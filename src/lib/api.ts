@@ -195,6 +195,82 @@ export async function solveTemplate(slug: string, problemType?: string, rules?: 
   });
 }
 
+// Wave 4.1 — what-if apply path. Identical wire payload to solveTemplate
+// but exposes an explicit signature where problem_type is required so the
+// BFF route doesn't accidentally fall back to 'fjsp' when the caller
+// already detected the company's problem type.
+//
+// Wave 7 extension (2026-05-22): three optional params land on the same
+// /api/public/solve-template body — the backend's w7-backend-engineer
+// has wired the following additive fields:
+//   - cutoff_min: int   — pre-cutoff phases are hard-locked (model.Add ==)
+//   - frozen_phases: list[dict] — explicit list to lock (see FrozenPhase)
+//   - dataset_overrides: dict | null — merged into `data` before solve
+// All three are optional with null/no-op defaults; legacy callers (no
+// Wave 7 args) get identical behaviour to Wave 4.1.
+export interface ResolveTemplateFrozenPhase {
+  job_id: string;
+  seq: number;
+  start_min: number;
+  end_min: number;
+  machine_id: string;
+  worker_id: string;
+  // Debug aliases kept on the wire so backend logs are self-describing.
+  commessa?: string;
+  operazione?: string;
+  operatore?: string;
+}
+
+/** Wave 7 envelope returned by /api/public/solve-template when any of
+ * cutoff_min/frozen_phases/dataset_overrides was supplied. `null` when the
+ * caller did not opt into Wave 7 — distinguish "did not run wave7" (null)
+ * from "ran with zero locks" (locked_count === 0). */
+export interface ResolveTemplateWave7Envelope {
+  cutoff_min: number | null;
+  locked_count: number;
+  frozen_phases: Array<Record<string, unknown>>;
+  apply_rules: Array<Record<string, unknown>>;
+}
+
+export interface ResolveTemplateResponse {
+  status: string;
+  method: string;
+  solution: Record<string, unknown>;
+  kpis: Record<string, number>;
+  objective_value: number;
+  warnings: string[];
+  cost_usd: number;
+  wave7?: ResolveTemplateWave7Envelope | null;
+}
+
+export async function resolveTemplate(
+  slug: string,
+  problemType: string,
+  rules: Record<string, unknown>,
+  cutoffMin?: number,
+  frozenPhases?: ResolveTemplateFrozenPhase[],
+  datasetOverrides?: Record<string, unknown> | null,
+): Promise<ResolveTemplateResponse> {
+  const body: Record<string, unknown> = {
+    slug,
+    problem_type: problemType,
+    rules,
+  };
+  if (cutoffMin !== undefined && Number.isFinite(cutoffMin) && cutoffMin > 0) {
+    body.cutoff_min = cutoffMin;
+  }
+  if (frozenPhases && frozenPhases.length > 0) {
+    body.frozen_phases = frozenPhases;
+  }
+  if (datasetOverrides && Object.keys(datasetOverrides).length > 0) {
+    body.dataset_overrides = datasetOverrides;
+  }
+  return apiFetch<ResolveTemplateResponse>('/api/public/solve-template', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
 // ── Pipeline endpoints (need auth) ──────────────────────────────────
 
 export async function pipelineStart(

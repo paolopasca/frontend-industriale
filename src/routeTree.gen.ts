@@ -14,6 +14,7 @@ import { Route as ApiWhatifRouteImport } from './routes/api/whatif'
 import { Route as ApiSplitRouteImport } from './routes/api/split'
 import { Route as ApiManagerChatRouteImport } from './routes/api/manager-chat'
 import { Route as ApiExplainRouteImport } from './routes/api/explain'
+import { Route as ApiApplyWhatifRouteImport } from './routes/api/apply-whatif'
 import { Route as ApiAdviseRouteImport } from './routes/api/advise'
 
 const IndexRoute = IndexRouteImport.update({
@@ -41,6 +42,11 @@ const ApiExplainRoute = ApiExplainRouteImport.update({
   path: '/api/explain',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiApplyWhatifRoute = ApiApplyWhatifRouteImport.update({
+  id: '/api/apply-whatif',
+  path: '/api/apply-whatif',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAdviseRoute = ApiAdviseRouteImport.update({
   id: '/api/advise',
   path: '/api/advise',
@@ -50,6 +56,7 @@ const ApiAdviseRoute = ApiAdviseRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api/advise': typeof ApiAdviseRoute
+  '/api/apply-whatif': typeof ApiApplyWhatifRoute
   '/api/explain': typeof ApiExplainRoute
   '/api/manager-chat': typeof ApiManagerChatRoute
   '/api/split': typeof ApiSplitRoute
@@ -58,6 +65,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/api/advise': typeof ApiAdviseRoute
+  '/api/apply-whatif': typeof ApiApplyWhatifRoute
   '/api/explain': typeof ApiExplainRoute
   '/api/manager-chat': typeof ApiManagerChatRoute
   '/api/split': typeof ApiSplitRoute
@@ -67,6 +75,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/api/advise': typeof ApiAdviseRoute
+  '/api/apply-whatif': typeof ApiApplyWhatifRoute
   '/api/explain': typeof ApiExplainRoute
   '/api/manager-chat': typeof ApiManagerChatRoute
   '/api/split': typeof ApiSplitRoute
@@ -77,6 +86,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/api/advise'
+    | '/api/apply-whatif'
     | '/api/explain'
     | '/api/manager-chat'
     | '/api/split'
@@ -85,6 +95,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/api/advise'
+    | '/api/apply-whatif'
     | '/api/explain'
     | '/api/manager-chat'
     | '/api/split'
@@ -93,6 +104,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/api/advise'
+    | '/api/apply-whatif'
     | '/api/explain'
     | '/api/manager-chat'
     | '/api/split'
@@ -102,6 +114,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ApiAdviseRoute: typeof ApiAdviseRoute
+  ApiApplyWhatifRoute: typeof ApiApplyWhatifRoute
   ApiExplainRoute: typeof ApiExplainRoute
   ApiManagerChatRoute: typeof ApiManagerChatRoute
   ApiSplitRoute: typeof ApiSplitRoute
@@ -145,6 +158,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiExplainRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/apply-whatif': {
+      id: '/api/apply-whatif'
+      path: '/api/apply-whatif'
+      fullPath: '/api/apply-whatif'
+      preLoaderRoute: typeof ApiApplyWhatifRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/advise': {
       id: '/api/advise'
       path: '/api/advise'
@@ -158,6 +178,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ApiAdviseRoute: ApiAdviseRoute,
+  ApiApplyWhatifRoute: ApiApplyWhatifRoute,
   ApiExplainRoute: ApiExplainRoute,
   ApiManagerChatRoute: ApiManagerChatRoute,
   ApiSplitRoute: ApiSplitRoute,
