@@ -101,11 +101,12 @@ function pickScenario(idx: number): { scenario: string; machine: string; start_m
   // Rotate machines so each gets blocked ~2x in 10 cycles.
   const machine = MACHINES[idx % MACHINES.length];
   // Vary window across days 1..3, length 3-6 hours, anchored on whole hours.
-  // Day d starts at d*1440; we pick hour H in [8, 16) within day d.
+  // Catalog convention: gg1 = minuti 0-1440, gg2 = 1440-2880, gg3 = 2880-4320.
+  // Day d=1..3 starts at (d-1)*1440 to match the Haiku parser's day indexing.
   const day = (idx % 3) + 1; // gg1..gg3
   const hour = 8 + (idx % 8); // 8..15
   const span = 3 + (idx % 4); // 3..6
-  const start_min = day * 1440 + hour * 60;
+  const start_min = (day - 1) * 1440 + hour * 60;
   const end_min = start_min + span * 60;
   // Phrase varies slightly to avoid prompt-cache trivialisation, but stays
   // Italian-natural so the Haiku parser actually exercises entity extraction.
