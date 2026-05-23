@@ -26,12 +26,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  *      arm rejects synchronously instead of waiting 60s for setTimeout.
  *   7. F-W8-05: watchdog budget (now SOLVE_TIMEOUT_MS * 2 + 30s) covers
  *      a worst-case 55s first solve + 50s retry without firing.
- *   8. F-W8-06 (lead Opt 2 fallback): lock_relaxing emits an explicit
- *      `recompute_mode: 'full_plan_from_scratch'` field and solved.warnings
- *      carries the new `lock_relaxed_to_soft__plan_recomputed_from_scratch`
- *      marker so the UI can upgrade the lock-relaxed banner from yellow
- *      to red. Lead's preferred Opt 1 (`frozen_lock_mode: 'hint'`) is
- *      blocked on backend changes in fjsp.py (w7-backend-engineer offline).
+ *   8. F-W8-06 Wave 9 OPT 1 (w9-backend-lock-mode 2026-05-23): the backend
+ *      now accepts `frozen_lock_mode='hint'`. The retry path re-submits
+ *      the SAME frozen_phases list with the hint mode so the consolidated
+ *      set is preserved as `model.AddHint` (soft preference) instead of
+ *      being dropped wholesale. lock_relaxing emits
+ *      `recompute_mode: 'frozen_phases_as_hint'` and solved.warnings
+ *      carries `lock_relaxed_to_soft__consolidated_preserved_as_hint` —
+ *      the UI keeps the lock-relaxed banner amber (no red) because
+ *      consolidated phases are NOT lost. The Wave 8 Opt 2 marker
+ *      `__plan_recomputed_from_scratch` is retired.
  */
 
 const anthropicCreate = vi.fn();
@@ -229,20 +233,24 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
     // BFF tried the fallback path; the backend's own warnings come after.
     expect(solved.warnings[0]).toBe('lock_relaxed_to_soft');
     expect(solved.warnings).toContain('cpsat:infeasible_after_relax');
-    // F-W8-06: louder marker for the "plan recomputed from scratch" case
-    // surfaces alongside the legacy marker.
-    expect(solved.warnings).toContain('lock_relaxed_to_soft__plan_recomputed_from_scratch');
+    // F-W8-06 Wave 9 OPT 1: the louder marker for "consolidated preserved
+    // as hint" travels alongside the legacy marker. The earlier
+    // `__plan_recomputed_from_scratch` marker is replaced now that the
+    // backend supports the hint mode (w9-backend-lock-mode 2026-05-23).
+    expect(solved.warnings).toContain('lock_relaxed_to_soft__consolidated_preserved_as_hint');
 
     // Backend called exactly twice — original + 1 relaxed retry.
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('F-W8-06: lock_relaxing event carries recompute_mode=full_plan_from_scratch (Opt 2 honest signal)', async () => {
-    // Lead chose Opt 1 (frozen_lock_mode='hint'), but it requires backend
-    // changes in fjsp.py (w7-backend-engineer ownership, offline). Falling
-    // back to Opt 2 per the lead's directive: keep the retry-with-empty-
-    // phases path, but emit a louder warning + an explicit recompute_mode
-    // on the lock_relaxing SSE event so the UI can render a RED banner.
+  it('F-W8-06 Wave 9 OPT 1: lock_relaxing carries recompute_mode=frozen_phases_as_hint AND retry payload preserves frozen_phases with frozen_lock_mode=hint', async () => {
+    // Wave 9 (w9-backend-lock-mode 2026-05-23): backend accepts
+    // `frozen_lock_mode='hint'`. The BFF retry re-submits the SAME
+    // frozen_phases list with the soft-preference mode, so the
+    // consolidated set is preserved as `model.AddHint` instead of being
+    // wiped (Wave 8 Opt 2 fallback). The marker emitted on solved.warnings
+    // is `__consolidated_preserved_as_hint` and the lock_relaxing event
+    // carries `recompute_mode: 'frozen_phases_as_hint'`.
     anthropicCreate.mockResolvedValueOnce(
       fakeHaikuReply({
         intent_id: 'order_priority',
@@ -275,6 +283,17 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
         objective_value: 2900,
         warnings: [],
         cost_usd: 0,
+        wave7: {
+          cutoff_min: 120,
+          locked_count: 2,
+          frozen_phases: [],
+          apply_rules: [],
+          // Per w9-backend-lock-mode contract: the kernel echoes back the
+          // mode it actually applied. Tests assert the BFF asked for
+          // 'hint' on the retry by inspecting the request body below; the
+          // backend echo here is a separate audit channel.
+          frozen_lock_mode: 'hint',
+        },
       }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -290,14 +309,36 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
       frozen_count: number;
     };
     expect(lockRelaxing.reason).toBe('infeasible_with_hard_lock');
-    expect(lockRelaxing.recompute_mode).toBe('full_plan_from_scratch');
+    expect(lockRelaxing.recompute_mode).toBe('frozen_phases_as_hint');
+    // The retry preserves the consolidated set — frozen_count is the
+    // number of phases identified, NOT zeroed out.
+    expect(lockRelaxing.frozen_count).toBeGreaterThan(0);
 
     const solved = chunks.find((c) => c.event === 'solved')!.data as {
       status: string;
       warnings: string[];
     };
     expect(solved.warnings).toContain('lock_relaxed_to_soft');
-    expect(solved.warnings).toContain('lock_relaxed_to_soft__plan_recomputed_from_scratch');
+    expect(solved.warnings).toContain('lock_relaxed_to_soft__consolidated_preserved_as_hint');
+    // Wave 9 specifically must NOT emit the Wave 8 `__plan_recomputed_from_scratch`
+    // marker — that one is replaced because the plan is NOT recomputed from scratch.
+    expect(solved.warnings).not.toContain('lock_relaxed_to_soft__plan_recomputed_from_scratch');
+
+    // Inspect the retry request body: frozen_phases must be the FULL list
+    // (preserved) AND `frozen_lock_mode: 'hint'` must be present.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const retryBody = JSON.parse(
+      (fetchMock.mock.calls[1][1] as RequestInit).body as string,
+    );
+    expect(retryBody.frozen_lock_mode).toBe('hint');
+    expect(Array.isArray(retryBody.frozen_phases)).toBe(true);
+    expect(retryBody.frozen_phases.length).toBeGreaterThan(0);
+    // First call (the hard-lock attempt) must NOT include frozen_lock_mode —
+    // it relies on the backend default 'hard'.
+    const firstBody = JSON.parse(
+      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(firstBody.frozen_lock_mode).toBeUndefined();
   });
 
   it('Case 3: OPTIMAL on first solve → no retry, no lock_relaxing event', async () => {

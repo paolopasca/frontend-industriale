@@ -168,36 +168,39 @@ describe('routeIntent', () => {
     expect(out.reason).toContain('unknown_machine:M99');
   });
 
-  it('F-W8-01: shift_window short-circuits to unsupported (not_implemented in catalog)', () => {
-    // Before F-W8-01 the router built a shift_changes rules payload, but
-    // f_apply_rules.py only logged a passthrough warning, so the rule had
-    // no real effect on the schedule. The catalog now flags this intent
-    // not_implemented and the router returns `unsupported` with an
-    // Italian reason the UI surfaces as a toast.
+  it('Wave 9 T1: shift_window routes to rule_addition (backend consumer now exists)', () => {
+    // Wave 9 (w9-backend-rules-consumer 2026-05-23): backend now has a
+    // real `shift_window_modified` consumer in f_apply_rules.py with
+    // explicit skip reasons on apply_rules[]. The catalog's
+    // not_implemented flag was removed, so the router builds a
+    // shift_changes rules payload instead of short-circuiting.
     const out = routeIntent({
       intent: makeIntent('shift_window', { shift_id: 'turno_mattina', start_min: 360, end_min: 720 }),
       baseline,
       catalog,
     });
-    expect(out.kind).toBe('unsupported');
-    if (out.kind !== 'unsupported') return;
-    expect(out.warnings).toContain('not_implemented:shift_window');
-    expect(out.reason).toMatch(/non ancora supportato/i);
+    expect(out.kind).toBe('rule_addition');
+    if (out.kind !== 'rule_addition') return;
+    expect(out.warnings.some((w) => w.startsWith('not_implemented'))).toBe(false);
+    expect(out.rules).toBeDefined();
+    expect(out.rules.shift_changes).toBeDefined();
   });
 
-  it('F-W8-01: capacity_addition short-circuits to unsupported (not_implemented in catalog)', () => {
-    // Same rationale as shift_window: extra_capacity rules were a
-    // passthrough at the backend. Router stops the request before the
-    // BFF wastes a solve call.
+  it('Wave 9 T1: capacity_addition routes to rule_addition (backend consumer now exists)', () => {
+    // Wave 9 (w9-backend-rules-consumer 2026-05-23): backend now has a
+    // real `extra_capacity_added` consumer in f_apply_rules.py. The
+    // not_implemented flag was removed and the router builds an
+    // extra_capacity rules payload.
     const out = routeIntent({
       intent: makeIntent('capacity_addition', { operators: 1, shift: 'serale' }),
       baseline,
       catalog,
     });
-    expect(out.kind).toBe('unsupported');
-    if (out.kind !== 'unsupported') return;
-    expect(out.warnings).toContain('not_implemented:capacity_addition');
-    expect(out.reason).toMatch(/non ancora supportato/i);
+    expect(out.kind).toBe('rule_addition');
+    if (out.kind !== 'rule_addition') return;
+    expect(out.warnings.some((w) => w.startsWith('not_implemented'))).toBe(false);
+    expect(out.rules).toBeDefined();
+    expect(out.rules.extra_capacity).toBeDefined();
   });
 
   // === F-W8-01 regression guards (devils-advocate R3 symmetric) ===

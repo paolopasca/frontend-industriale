@@ -492,7 +492,15 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
     const firstBody = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
     const secondBody = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
     expect(firstBody.frozen_phases.length).toBeGreaterThan(0);
-    expect(secondBody.frozen_phases).toBeUndefined();
+    // F-W8-06 Wave 9 OPT 1: the retry now preserves the consolidated set
+    // as soft hint instead of wiping it (Wave 8 Opt 2 fallback). The
+    // payload includes the SAME frozen_phases list plus `frozen_lock_mode: 'hint'`.
+    expect(Array.isArray(secondBody.frozen_phases)).toBe(true);
+    expect(secondBody.frozen_phases.length).toBe(firstBody.frozen_phases.length);
+    expect(secondBody.frozen_lock_mode).toBe('hint');
+    // First call must NOT set frozen_lock_mode — the backend default 'hard'
+    // is the intended behaviour for the initial solve.
+    expect(firstBody.frozen_lock_mode).toBeUndefined();
   });
 
   it('F-W7-04 — concurrent apply-whatif on same slug from different IPs returns 409 slug_conflict', async () => {

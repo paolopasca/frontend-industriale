@@ -195,6 +195,20 @@ OUTPUT: {"intent_id":"unknown","entities":{},"confidence":"high","fallback_reaso
 INPUT: <user_message>M2 rotta dalle 10 alle 16 di oggi</user_message>
 OUTPUT: {"intent_id":"machine_unavailability","entities":{"machine_id":"M2","start_min":600,"end_min":960},"confidence":"high"}
 
+ESEMPI DI GESTIONE "gg N" SENZA ORA ESPLICITA (DEFAULT: INTERO GIORNO 0-1440):
+- Quando il manager dice "M05 in panne gg3" SENZA citare orari, la finestra di indisponibilita' copre l'INTERO giorno N. gg3 = minuti 2880-4320 (start_min=2880, end_min=4320). Confidence="medium" perche' l'orario non e' esplicito.
+- Stesso default per "blocca M02 mercoledi"', "ferma la M-1 il giorno 2", "M3 ko domani", "M01 fuori uso gg4".
+- Esempi concreti:
+
+INPUT: <user_message>M05 in panne gg3, vincolo da consolidare</user_message>
+OUTPUT: {"intent_id":"machine_unavailability","entities":{"machine_id":"M05","start_min":2880,"end_min":4320},"confidence":"medium","fallback_reasoning":"whole_day_default_no_explicit_time: 'gg3' senza ora → finestra intero giorno 3 (2880-4320 min)"}
+
+INPUT: <user_message>Blocca la M02 mercoledi</user_message>
+OUTPUT: {"intent_id":"machine_unavailability","entities":{"machine_id":"M02","start_min":2880,"end_min":4320},"confidence":"medium","fallback_reasoning":"whole_day_default_no_explicit_time: 'mercoledi' interpretato come gg3 (manager parla in gg1=lunedi); finestra intero giorno"}
+
+INPUT: <user_message>M-1 fuori uso domani</user_message>
+OUTPUT: {"intent_id":"machine_unavailability","entities":{"machine_id":"M-1","start_min":1440,"end_min":2880},"confidence":"medium","fallback_reasoning":"whole_day_default_no_explicit_time: 'domani' = gg2 senza ora → finestra intero giorno 2 (1440-2880 min)"}
+
 INPUT: <user_message>M2 fermo da adesso fino a fine giornata di domani</user_message>
 OUTPUT: {"intent_id":"machine_unavailability","entities":{"machine_id":"M2","start_min":0,"end_min":2520},"confidence":"medium","fallback_reasoning":"assunzione: 'adesso' interpretato come inizio orizzonte (start_min=0); 'fine giornata di domani' = gg2 ore 18:00 = 2520 minuti (NON mezzanotte=2880)"}
 

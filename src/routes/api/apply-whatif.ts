@@ -431,6 +431,37 @@ export const Route = createFileRoute('/api/apply-whatif')({
                   fallback_reasoning: parsed.intent.fallback_reasoning,
                 });
 
+                // F-W8-07 — low confidence classification warning. When
+                // Haiku says confidence='low' it has classified an intent
+                // but with multiple assumptions; the manager must be told
+                // the result may not match their intent. Continue the
+                // normal flow (do NOT short-circuit) so the constraint is
+                // still applied, but tag wave7Warnings so the UI renders
+                // a yellow banner. NB: this is DIFFERENT from B-W8-S-04
+                // short-circuit which fires only on (unknown + high).
+                //
+                // F-W9-04 — when intent_id is 'unknown', the yellow
+                // low_confidence banner contradicts the
+                // aborted_unsupported event that fires downstream.
+                // Skip the banner for unknown intents — the manager
+                // will see the explicit unsupported toast instead, no
+                // need to also tell them "low confidence on a result
+                // that didn't apply anyway".
+                if (
+                  parsed.intent.confidence === 'low'
+                  && parsed.intent.intent_id !== 'unknown'
+                ) {
+                  wave7Warnings.push('low_confidence_classification');
+                  console.warn(
+                    '[apply-whatif] low_confidence_classification',
+                    {
+                      intent_id: parsed.intent.intent_id,
+                      fallback_reasoning: parsed.intent.fallback_reasoning,
+                      manager_text: input.managerText?.slice(0, 200),
+                    },
+                  );
+                }
+
                 // B-W8-S-04 — short-circuit the Opus cascade when Haiku
                 // confidently classified the utterance as out-of-catalog.
                 // Previously the router returned `opus_translator` for
@@ -642,9 +673,10 @@ export const Route = createFileRoute('/api/apply-whatif')({
               // F-W7-02 — INFEASIBLE recovery (plan §2 D2: "lock duro +
               // fallback soft"). If the hard-lock on pre-cutoff phases
               // made the model infeasible (e.g. the new constraint clashes
-              // with the frozen window), re-solve once WITHOUT the
-              // frozen-phases. The manager sees a warning so they know
-              // the production-invariant guarantee was relaxed.
+              // with the frozen window), re-solve once in HINT mode so
+              // the solver biases toward the consolidated slots but is
+              // not pinned to them. The manager sees a warning so they
+              // know the production-invariant guarantee was relaxed.
               if (
                 solveResult.status === 'INFEASIBLE'
                 && frozenPhases.length > 0
@@ -655,28 +687,26 @@ export const Route = createFileRoute('/api/apply-whatif')({
                 // the solver tried to honour before declaring infeasibility.
                 // Surface that on the lock_relaxing event for a richer toast.
                 //
-                // F-W8-06 (lead decision 2026-05-22): preferred fix was Opt 1
-                // (`frozen_lock_mode: 'hint'` passed to backend so the solver
-                // uses `model.add_hint` instead of `model.add` and the
-                // consolidated phases bias-but-not-pin). That requires a
-                // backend Python change in fjsp.py:1504-1513 (own by
-                // w7-backend-engineer, currently offline). Falling back to
-                // Opt 2: retry with `frozen_phases=[]` (full recompute), but
-                // emit a louder warning marker the UI surfaces as a RED
-                // banner explicitly stating "il piano e' stato ricalcolato
-                // da zero — le fasi consolidate potrebbero essersi mosse".
-                // Once the backend grows the hint mode, swap the `[]` for
-                // `frozenPhases` and add `frozen_lock_mode: 'hint'` to the
-                // call.
+                // F-W8-06 Wave 9 OPT 1 (w9-backend-lock-mode 2026-05-23):
+                // backend now accepts `frozen_lock_mode: 'hint'`. The retry
+                // re-submits the SAME frozen_phases list but with the
+                // soft-preference mode, so the consolidated set is
+                // preserved as `model.AddHint` instead of being dropped
+                // wholesale (the Wave 8 Opt 2 fallback). The emitted
+                // warning marker changes from `__plan_recomputed_from_scratch`
+                // (which triggered a red banner) to
+                // `__consolidated_preserved_as_hint` (which keeps the
+                // banner amber).
                 const failedAttempt = solveResult.wave7 ?? null;
                 write('lock_relaxing', {
                   reason: 'infeasible_with_hard_lock',
                   frozen_count: frozenPhases.length,
                   attempted_locks: failedAttempt?.locked_count ?? 0,
                   attempted_rules: failedAttempt?.apply_rules?.length ?? 0,
-                  // F-W8-06 honest signal: this retry will recompute the
-                  // entire plan from scratch, not just the post-cutoff tail.
-                  recompute_mode: 'full_plan_from_scratch',
+                  // F-W8-06 Wave 9 honest signal: the consolidated phases
+                  // are kept and re-submitted as soft hints — the plan
+                  // is NOT being recomputed from scratch.
+                  recompute_mode: 'frozen_phases_as_hint',
                 });
                 // Devils F-W8-04: explicit re-check between the SSE write and
                 // the retry race. If the client aborted while we were emitting
@@ -693,21 +723,22 @@ export const Route = createFileRoute('/api/apply-whatif')({
                     problemType,
                     rulesForSolve,
                     cutoffMin,
-                    [], // F-W8-06 Opt 2 fallback: soft retry, no frozen phases.
+                    frozenPhases, // F-W8-06 Wave 9 OPT 1: full list, NOT [].
                     datasetOverrides,
+                    'hint', // F-W8-06 Wave 9 OPT 1: soft preference.
                   ),
                 );
                 solveResult = {
                   ...relaxedResult,
-                  // F-W8-06 louder warning: keep the legacy
-                  // `lock_relaxed_to_soft` marker (UI already renders it as
-                  // a yellow banner) AND add the new explicit
-                  // `__plan_recomputed_from_scratch` suffix so the UI can
-                  // upgrade to a red banner without losing back-compat with
-                  // older clients still reading only the legacy marker.
+                  // F-W8-06 Wave 9 OPT 1 marker. Keep the legacy
+                  // `lock_relaxed_to_soft` so old UIs still light up the
+                  // amber banner; add the new
+                  // `__consolidated_preserved_as_hint` suffix so the UI
+                  // can upgrade the copy to reflect that consolidated
+                  // phases were NOT dropped.
                   warnings: [
                     'lock_relaxed_to_soft',
-                    'lock_relaxed_to_soft__plan_recomputed_from_scratch',
+                    'lock_relaxed_to_soft__consolidated_preserved_as_hint',
                     ...(relaxedResult.warnings ?? []),
                   ],
                 };

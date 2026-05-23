@@ -243,6 +243,22 @@ export interface ResolveTemplateResponse {
   wave7?: ResolveTemplateWave7Envelope | null;
 }
 
+/**
+ * Wave 9 F-W8-06 OPT 1: how the backend should treat `frozen_phases`.
+ *   - 'hard' (default): `model.Add(start_var == fp.start_min)` — pin the
+ *     phase exactly to its consolidated slot. Returns INFEASIBLE when the
+ *     new constraint clashes with the lock.
+ *   - 'hint': `model.AddHint(start_var, fp.start_min)` — bias the solver
+ *     toward the consolidated slot but allow it to move the phase when
+ *     necessary. Used by the BFF's INFEASIBLE-retry path so consolidated
+ *     phases are preserved as a soft preference instead of being dropped
+ *     wholesale (the Wave 8 Opt 2 fallback).
+ *
+ * Sent on the wire as the `frozen_lock_mode` field; omitted from the body
+ * when undefined so legacy backends still receive the Wave 7 shape.
+ */
+export type FrozenLockMode = 'hard' | 'hint';
+
 export async function resolveTemplate(
   slug: string,
   problemType: string,
@@ -250,6 +266,7 @@ export async function resolveTemplate(
   cutoffMin?: number,
   frozenPhases?: ResolveTemplateFrozenPhase[],
   datasetOverrides?: Record<string, unknown> | null,
+  frozenLockMode?: FrozenLockMode,
 ): Promise<ResolveTemplateResponse> {
   const body: Record<string, unknown> = {
     slug,
@@ -264,6 +281,13 @@ export async function resolveTemplate(
   }
   if (datasetOverrides && Object.keys(datasetOverrides).length > 0) {
     body.dataset_overrides = datasetOverrides;
+  }
+  // F-W8-06 Wave 9 OPT 1: only forward `frozen_lock_mode` when the caller
+  // explicitly asked for it. Legacy callers (and the first-solve path in
+  // apply-whatif) keep the wire shape unchanged so the backend defaults
+  // to hard-lock semantics.
+  if (frozenLockMode !== undefined) {
+    body.frozen_lock_mode = frozenLockMode;
   }
   return apiFetch<ResolveTemplateResponse>('/api/public/solve-template', {
     method: 'POST',

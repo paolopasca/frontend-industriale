@@ -1,0 +1,252 @@
+{
+  "timestamp": "2026-05-23T10:36:46.517Z",
+  "base_url": "http://localhost:8080",
+  "backend_url": "http://localhost:8001",
+  "slug": "demo-commesse",
+  "cost_cap_usd": 1,
+  "total_scenarios": 10,
+  "aborted_on_cost_cap": false,
+  "cycles": [
+    {
+      "index": 0,
+      "scenario_id": "shift_01",
+      "intent_expected": "shift_window",
+      "expected_apply_rule_type": "shift_window_modified",
+      "utterance": "Anticipa il turno mattina di mezz'ora, dalle 7:30 alle 12.",
+      "parsed_intent_id": "shift_window",
+      "parsed_entities": {
+        "shift_id": "turno_mattina",
+        "start_min": 450,
+        "end_min": 720
+      },
+      "parsed_confidence": "high",
+      "strategy": "B",
+      "solve_status": "MODEL_INVALID",
+      "delta_kpis": {
+        "makespan": 2583,
+        "costo_totale_operatori": -0.58,
+        "costo_totale_setup": 0,
+        "ritardo_pesato_totale": 330
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [],
+      "expected_type_present": false,
+      "cost_usd": 0.000918,
+      "latency_ms": 11390,
+      "warnings": [
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 1,
+      "scenario_id": "shift_02",
+      "intent_expected": "shift_window",
+      "expected_apply_rule_type": "shift_window_modified",
+      "utterance": "Estendi il turno mattina fino alle 13 invece che alle 12.",
+      "parsed_intent_id": "shift_window",
+      "parsed_entities": {
+        "shift_id": "turno_mattina",
+        "end_min": 780
+      },
+      "parsed_confidence": "high",
+      "strategy": "B",
+      "solve_status": "MODEL_INVALID",
+      "delta_kpis": {
+        "makespan": -4,
+        "costo_totale_operatori": 12.48,
+        "costo_totale_setup": 0,
+        "ritardo_pesato_totale": 0
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [],
+      "expected_type_present": false,
+      "cost_usd": 0.000863,
+      "latency_ms": 11264,
+      "warnings": [
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 2,
+      "scenario_id": "shift_03",
+      "intent_expected": "shift_window",
+      "expected_apply_rule_type": "shift_window_modified",
+      "utterance": "Anticipa il turno pomeriggio di un'ora, parte alle 7.",
+      "parsed_intent_id": "shift_window",
+      "parsed_entities": {
+        "shift_id": "turno_pomeriggio",
+        "start_min": 420
+      },
+      "parsed_confidence": "medium",
+      "strategy": "B",
+      "solve_status": "MODEL_INVALID",
+      "delta_kpis": {
+        "makespan": -120,
+        "costo_totale_operatori": -6.8,
+        "costo_totale_setup": 0,
+        "ritardo_pesato_totale": 0
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [],
+      "expected_type_present": false,
+      "cost_usd": 0.001624,
+      "latency_ms": 12812,
+      "warnings": [
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 3,
+      "scenario_id": "shift_04",
+      "intent_expected": "shift_window",
+      "expected_apply_rule_type": "shift_window_modified",
+      "utterance": "Allunga il turno pomeriggio fino alle 19.",
+      "parsed_intent_id": "shift_window",
+      "parsed_entities": {
+        "shift_id": "turno_pomeriggio",
+        "end_min": 1140
+      },
+      "parsed_confidence": "medium",
+      "strategy": "B",
+      "solve_status": "FEASIBLE",
+      "delta_kpis": {
+        "makespan": -2,
+        "costo_totale_operatori": 9.9,
+        "costo_totale_setup": 0,
+        "ritardo_pesato_totale": 0
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "shift_change_alias_resolved",
+        "shift_change_skipped"
+      ],
+      "expected_type_present": false,
+      "cost_usd": 0.001255,
+      "latency_ms": 12003,
+      "warnings": [
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 4,
+      "scenario_id": "shift_05",
+      "intent_expected": "shift_window",
+      "expected_apply_rule_type": "shift_window_modified",
+      "utterance": "Estendi il turno mattina, parte alle 6 e termina alle 13.",
+      "parsed_intent_id": "shift_window",
+      "parsed_entities": {
+        "shift_id": "turno_mattina",
+        "start_min": 360,
+        "end_min": 780
+      },
+      "parsed_confidence": "high",
+      "strategy": "B",
+      "solve_status": "MODEL_INVALID",
+      "delta_kpis": {
+        "makespan": 1627,
+        "costo_totale_operatori": 7.93,
+        "costo_totale_setup": 0,
+        "ritardo_pesato_totale": 240
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [],
+      "expected_type_present": false,
+      "cost_usd": 0.000915,
+      "latency_ms": 11350,
+      "warnings": [
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    }
+  ],
+  "summary": {
+    "intent_correct": 5,
+    "strategy_b": 5,
+    "delta_nonzero": 5,
+    "apply_rule_type_present": 0,
+    "errors": 0,
+    "cost": {
+      "mean": 0.001115,
+      "total": 0.005575,
+      "p50": 0.000918,
+      "p95": 0.001624
+    },
+    "latency_ms": {
+      "p50": 11390,
+      "p95": 12812,
+      "max": 12812
+    },
+    "verdict": "CONDITIONAL",
+    "target_results": [
+      {
+        "name": "5/5 delta KPI != 0",
+        "pass": true,
+        "detail": "5/5"
+      },
+      {
+        "name": "5/5 apply_rule_type present",
+        "pass": false,
+        "detail": "0/5"
+      },
+      {
+        "name": "Total cost < $1.00 (hard cap)",
+        "pass": true,
+        "detail": "$0.0056 / $1.00"
+      },
+      {
+        "name": "Intent classified ≥ 80%",
+        "pass": true,
+        "detail": "5/5"
+      },
+      {
+        "name": "Strategy = B ≥ 80%",
+        "pass": true,
+        "detail": "5/5"
+      },
+      {
+        "name": "Error rate < 10%",
+        "pass": true,
+        "detail": "0/5"
+      }
+    ]
+  }
+}

@@ -1,23 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * F-W8-01 — not_implemented short-circuit (w8-infeasible-recovery).
+ * Wave 9 T1 (w9-backend-rules-consumer 2026-05-23) — capacity_addition
+ * and shift_window are NOW wired end-to-end. Backend has real
+ * `extra_capacity_added` + `shift_window_modified` consumers in
+ * f_apply_rules.py, with explicit skip reasons surfaced on
+ * `wave7.apply_rules[]` when the dataset cannot accept the rule.
  *
- * Catalog flag introduced after devils' 2026-05-22 finding: the Haiku
- * parser recognises `capacity_addition` and `shift_window`, but the
- * backend solver (f_apply_rules.py) only logs a passthrough warning for
- * those rule keys — the CP-SAT model has no consumer that actually
- * changes capacity or shifts. Routing them through Strategy B would
- * pretend a constraint took effect when in fact it was silently ignored,
- * which is exactly the "transport-only" hypocrisy this fix removes.
+ * The catalog flag `not_implemented: true` is removed for both intents.
+ * The strategy-router now routes them to Strategy B (rule_addition).
  *
  * Expected end-to-end behaviour through /api/apply-whatif:
- *   parsing_intent → intent_parsed → routed (strategy=unsupported) →
- *   aborted_unsupported → done.
+ *   parsing_intent → intent_parsed → routed (strategy=B) → solving →
+ *   solved → done.
  *
- * The route MUST NOT call the backend at all — no wasted solve, no
- * misleading "rule applied" UI state. The `aborted_unsupported.reason`
- * surface is the user-facing Italian message the UI renders as a toast.
+ * This file is the regression guard against re-introducing the
+ * short-circuit: if either intent stops routing to Strategy B, the
+ * backend wiring is silently broken again.
+ *
+ * Historical context: the original Wave 8 short-circuit was introduced
+ * after devils 2026-05-22 found the backend silently dropped both
+ * payloads via `extra_capacity_data_layer_passthrough` /
+ * `shift_changes_data_layer_passthrough`. Wave 9 fixed the root cause
+ * (real consumers) instead of papering over it with `unsupported`.
  */
 
 const anthropicCreate = vi.fn();
@@ -134,8 +139,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('F-W8-01 — not_implemented intents short-circuit to aborted_unsupported', () => {
-  it('capacity_addition: routed=unsupported with not_implemented warning, no backend fetch', async () => {
+describe('Wave 9 T1 — capacity_addition + shift_window route to Strategy B end-to-end', () => {
+  it('capacity_addition: routed=B, backend receives rules.extra_capacity, solved fires', async () => {
     anthropicCreate.mockResolvedValueOnce(
       fakeHaikuReply({
         intent_id: 'capacity_addition',
@@ -144,11 +149,34 @@ describe('F-W8-01 — not_implemented intents short-circuit to aborted_unsupport
       }),
     );
 
-    // Any backend call here would be a regression. The fetch mock fails
-    // the test if it's invoked.
-    const fetchMock = vi.fn().mockImplementation(() => {
-      throw new Error('backend MUST NOT be called for not_implemented intents');
-    });
+    // Wave 9: backend now has a real consumer, so it MUST be called.
+    // The mock returns an OPTIMAL response with the wave7 envelope
+    // carrying `extra_capacity_added` on apply_rules — the audit
+    // signal the UI uses to show "vincolo applicato".
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        status: 'OPTIMAL',
+        method: 'cp-sat',
+        solution: { 'COM-001': { fasi: [] } },
+        kpis: { makespan_min: 2900 },
+        objective_value: 2900,
+        warnings: [],
+        cost_usd: 0,
+        wave7: {
+          cutoff_min: null,
+          locked_count: 0,
+          frozen_phases: [],
+          apply_rules: [
+            {
+              type: 'extra_capacity_added',
+              shift_id: 'serale',
+              operator_id: 'OP-extra-1',
+              machines: ['M01'],
+            },
+          ],
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     const res = await invokeRoute(
@@ -161,39 +189,33 @@ describe('F-W8-01 — not_implemented intents short-circuit to aborted_unsupport
     const chunks = parseSse(await streamToString(res.body!));
     const events = chunks.map((c) => c.event);
 
-    // The routed event must report the unsupported strategy AND carry
-    // the not_implemented marker on the warnings array.
     expect(events).toContain('routed');
     const routed = chunks.find((c) => c.event === 'routed')!.data as {
       strategy: string;
       intent_id: string;
       warnings: string[];
     };
-    expect(routed.strategy).toBe('unsupported');
+    expect(routed.strategy).toBe('B');
     expect(routed.intent_id).toBe('capacity_addition');
-    expect(routed.warnings).toContain('not_implemented:capacity_addition');
+    // No more not_implemented marker — Wave 9 removed it.
+    expect(routed.warnings).not.toContain('not_implemented:capacity_addition');
 
-    // The route exits via aborted_unsupported → done, never reaching
-    // solving / solved. The toast text on the UI side comes from the
-    // `reason` field on aborted_unsupported.
-    expect(events).toContain('aborted_unsupported');
+    // Full happy path: solving → solved → done. No aborted_unsupported.
+    expect(events).toContain('solving');
+    expect(events).toContain('solved');
     expect(events).toContain('done');
-    expect(events).not.toContain('solving');
-    expect(events).not.toContain('solved');
-    expect(events).not.toContain('translating');
+    expect(events).not.toContain('aborted_unsupported');
 
-    const aborted = chunks.find((c) => c.event === 'aborted_unsupported')!.data as {
-      reason: string;
-      warnings: string[];
-    };
-    expect(aborted.reason).toMatch(/non ancora supportato/i);
-    expect(aborted.warnings).toContain('not_implemented:capacity_addition');
-
-    // Backend never contacted.
-    expect(fetchMock).not.toHaveBeenCalled();
+    // Backend received rules.extra_capacity per the Wave 9 wire schema.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const sentBody = JSON.parse(
+      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(sentBody.rules).toBeDefined();
+    expect(sentBody.rules.extra_capacity).toBeDefined();
   });
 
-  it('shift_window: routed=unsupported with not_implemented warning, no backend fetch', async () => {
+  it('shift_window: routed=B, backend receives rules.shift_changes, solved fires', async () => {
     anthropicCreate.mockResolvedValueOnce(
       fakeHaikuReply({
         intent_id: 'shift_window',
@@ -202,9 +224,32 @@ describe('F-W8-01 — not_implemented intents short-circuit to aborted_unsupport
       }),
     );
 
-    const fetchMock = vi.fn().mockImplementation(() => {
-      throw new Error('backend MUST NOT be called for not_implemented intents');
-    });
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        status: 'OPTIMAL',
+        method: 'cp-sat',
+        solution: { 'COM-001': { fasi: [] } },
+        kpis: { makespan_min: 2900 },
+        objective_value: 2900,
+        warnings: [],
+        cost_usd: 0,
+        wave7: {
+          cutoff_min: null,
+          locked_count: 0,
+          frozen_phases: [],
+          apply_rules: [
+            {
+              type: 'shift_window_modified',
+              shift_id: 'turno_mattina',
+              old_start_min: 480,
+              old_end_min: 720,
+              new_start_min: 360,
+              new_end_min: 720,
+            },
+          ],
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     const res = await invokeRoute(
@@ -223,30 +268,24 @@ describe('F-W8-01 — not_implemented intents short-circuit to aborted_unsupport
       intent_id: string;
       warnings: string[];
     };
-    expect(routed.strategy).toBe('unsupported');
+    expect(routed.strategy).toBe('B');
     expect(routed.intent_id).toBe('shift_window');
-    expect(routed.warnings).toContain('not_implemented:shift_window');
+    expect(routed.warnings).not.toContain('not_implemented:shift_window');
 
-    expect(events).toContain('aborted_unsupported');
+    expect(events).toContain('solving');
+    expect(events).toContain('solved');
     expect(events).toContain('done');
-    expect(events).not.toContain('solving');
-    expect(events).not.toContain('solved');
-    expect(events).not.toContain('translating');
+    expect(events).not.toContain('aborted_unsupported');
 
-    const aborted = chunks.find((c) => c.event === 'aborted_unsupported')!.data as {
-      reason: string;
-      warnings: string[];
-    };
-    expect(aborted.reason).toMatch(/non ancora supportato/i);
-    expect(aborted.warnings).toContain('not_implemented:shift_window');
-
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const sentBody = JSON.parse(
+      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(sentBody.rules).toBeDefined();
+    expect(sentBody.rules.shift_changes).toBeDefined();
   });
 
-  it('deadline_change still routes normally (regression guard: only the flagged intents short-circuit)', async () => {
-    // Sanity check: an intent without `not_implemented` keeps working.
-    // If this fails, the short-circuit has accidentally swallowed a
-    // supported intent.
+  it('deadline_change still routes normally (regression guard: supported intents keep working)', async () => {
     anthropicCreate.mockResolvedValueOnce(
       fakeHaikuReply({
         intent_id: 'deadline_change',
@@ -272,7 +311,6 @@ describe('F-W8-01 — not_implemented intents short-circuit to aborted_unsupport
     const chunks = parseSse(await streamToString(res.body!));
     const events = chunks.map((c) => c.event);
 
-    // deadline_change is still wired end-to-end.
     expect(events).toContain('solving');
     expect(events).toContain('solved');
     expect(events).not.toContain('aborted_unsupported');

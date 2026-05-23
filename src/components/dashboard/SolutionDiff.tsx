@@ -173,6 +173,22 @@ function buildRows(
 // amber soft-relax one.
 const RECOMPUTED_FROM_SCRATCH_WARNING = 'lock_relaxed_to_soft__plan_recomputed_from_scratch';
 
+// F-W8-06 Wave 9 OPT 1 banner — once the backend grew the
+// `frozen_lock_mode='hint'` kwarg, the BFF retries with the consolidated
+// phases preserved as hint (soft preference) instead of recomputing from
+// scratch. The amber banner is then upgraded to this stronger marker
+// (still amber, not red — the consolidated set was preserved as soft) so
+// the manager sees that the lock was relaxed but the consolidation was
+// not lost.
+const HINT_PRESERVED_WARNING = 'lock_relaxed_to_soft__consolidated_preserved_as_hint';
+
+// F-W8-07 — low confidence classification banner. Haiku tagged the parse
+// with confidence='low': the intent is one of the 5 catalog ids but the
+// classifier needed multiple assumptions to reach it. Surface this as a
+// yellow informative banner ("verify the result matches your intent")
+// since the constraint will still be applied (we did NOT short-circuit).
+const LOW_CONFIDENCE_WARNING = 'low_confidence_classification';
+
 // DA-04: warnings payload from BFF is not type-checked at runtime; coerce defensively.
 // Split per cl-bff contract update: `missing_kpi:<name>` items are neutral info
 // ("metrica non disponibile in questo solve"), not warnings — render them apart.
@@ -180,11 +196,14 @@ const RECOMPUTED_FROM_SCRATCH_WARNING = 'lock_relaxed_to_soft__plan_recomputed_f
 // recovery path — surfaced as a prominent banner, never as a generic warning.
 // Wave 8 F-W8-06 OPT 2: the upgraded marker `lock_relaxed_to_soft__plan_recomputed_from_scratch`
 // is the strict subset that ALSO triggers the red recomputed-from-scratch banner.
+// Wave 9 F-W8-07: `low_confidence_classification` is split out to its own banner.
 interface SplitWarnings {
   missingKpis: string[];
   warnings: string[];
   lockRelaxedFromWarning: boolean;
   recomputedFromScratchFromWarning: boolean;
+  hintPreservedFromWarning: boolean;
+  lowConfidenceFromWarning: boolean;
 }
 
 function sanitizeWarnings(input: unknown): SplitWarnings {
@@ -194,12 +213,16 @@ function sanitizeWarnings(input: unknown): SplitWarnings {
       warnings: [],
       lockRelaxedFromWarning: false,
       recomputedFromScratchFromWarning: false,
+      hintPreservedFromWarning: false,
+      lowConfidenceFromWarning: false,
     };
   }
   const missingKpis: string[] = [];
   const warnings: string[] = [];
   let lockRelaxedFromWarning = false;
   let recomputedFromScratchFromWarning = false;
+  let hintPreservedFromWarning = false;
+  let lowConfidenceFromWarning = false;
   for (const w of input) {
     if (typeof w !== 'string') continue;
     const trimmed = w.trim();
@@ -212,8 +235,19 @@ function sanitizeWarnings(input: unknown): SplitWarnings {
       // also happened, so both flags fire.
       recomputedFromScratchFromWarning = true;
       lockRelaxedFromWarning = true;
+    } else if (trimmed === HINT_PRESERVED_WARNING) {
+      // F-W8-06 Wave 9 OPT 1 — backend retry with frozen_lock_mode='hint'.
+      // Consolidated phases are preserved as soft preference; the legacy
+      // `lock_relaxed_to_soft` marker also fires so older banners still
+      // light up.
+      hintPreservedFromWarning = true;
+      lockRelaxedFromWarning = true;
     } else if (trimmed === 'lock_relaxed_to_soft') {
       lockRelaxedFromWarning = true;
+    } else if (trimmed === LOW_CONFIDENCE_WARNING) {
+      // F-W8-07 — Haiku reported confidence='low'; intent applied but the
+      // classification is uncertain. Yellow banner, NOT red.
+      lowConfidenceFromWarning = true;
     } else if (warnings.length < 5) {
       warnings.push(trimmed);
     }
@@ -223,6 +257,8 @@ function sanitizeWarnings(input: unknown): SplitWarnings {
     warnings,
     lockRelaxedFromWarning,
     recomputedFromScratchFromWarning,
+    hintPreservedFromWarning,
+    lowConfidenceFromWarning,
   };
 }
 
@@ -364,7 +400,14 @@ export function SolutionDiff({
     [baseline.kpis, candidate.kpis],
   );
 
-  const { warnings, missingKpis, lockRelaxedFromWarning, recomputedFromScratchFromWarning } = useMemo(
+  const {
+    warnings,
+    missingKpis,
+    lockRelaxedFromWarning,
+    recomputedFromScratchFromWarning,
+    hintPreservedFromWarning,
+    lowConfidenceFromWarning,
+  } = useMemo(
     () => sanitizeWarnings(candidate.warnings),
     [candidate.warnings],
   );
@@ -375,7 +418,13 @@ export function SolutionDiff({
   // consolidated phase list — but the standalone amber banner is suppressed
   // because the red one already conveys the same information with stronger
   // wording.
-  const showRecomputedFromScratchBanner = recomputedFromScratchFromWarning;
+  //
+  // F-W8-06 Wave 9 OPT 1: when the backend used `frozen_lock_mode='hint'`
+  // the consolidated phases were preserved as soft preference, so the
+  // amber banner stays (no red). The hint-preserved flag upgrades the
+  // amber banner copy without changing its colour.
+  const showRecomputedFromScratchBanner =
+    recomputedFromScratchFromWarning && !hintPreservedFromWarning;
   // Lock-relaxed banner shows when either signal is present: the SSE event
   // (caught live via lockRelaxed prop) or the marker in solved.warnings
   // (caught even if the event was missed, e.g. user opened a stale page).
@@ -383,6 +432,7 @@ export function SolutionDiff({
   // duplicate "lock rilassato" message in two flavours.
   const showLockRelaxedBanner =
     (lockRelaxed === true || lockRelaxedFromWarning) && !showRecomputedFromScratchBanner;
+  const showLowConfidenceBanner = lowConfidenceFromWarning;
   const showDatasetOverrides =
     strategy === 'A' &&
     Array.isArray(datasetOverridesSummary) &&
@@ -586,6 +636,7 @@ export function SolutionDiff({
             role="alert"
             aria-label="Lock di produzione invariata rilassato"
             data-testid="solution-diff-lock-relaxed-banner"
+            data-hint-preserved={hintPreservedFromWarning ? 'true' : 'false'}
             className="rounded-md border border-amber-500/50 bg-amber-500/15 p-3"
           >
             <div className="flex items-start gap-2">
@@ -594,9 +645,47 @@ export function SolutionDiff({
                 aria-hidden
               />
               <div className="text-xs text-amber-900 dark:text-amber-200 leading-snug">
-                <strong>Attenzione:</strong> il lock di produzione invariata e stato
-                rilassato per trovare una soluzione fattibile. Verifica manuale
-                delle fasi pre-cutoff consigliata.
+                {hintPreservedFromWarning ? (
+                  // F-W8-06 Wave 9 OPT 1 — backend retry preserved consolidated
+                  // phases as soft preference via `frozen_lock_mode='hint'`.
+                  // The amber banner stays (no red): the lock was relaxed but
+                  // the consolidation was NOT lost.
+                  <>
+                    <strong>Vincolo troppo restrittivo.</strong> Fasi consolidate
+                    preservate come preferenza (soft) — verifica il diff.
+                  </>
+                ) : (
+                  <>
+                    <strong>Attenzione:</strong> il lock di produzione invariata
+                    e stato rilassato per trovare una soluzione fattibile.
+                    Verifica manuale delle fasi pre-cutoff consigliata.
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showLowConfidenceBanner && (
+          // F-W8-07 — Haiku classified the intent but with low confidence.
+          // The constraint was still applied (no short-circuit), but the
+          // manager must verify the result matches their original intent.
+          // Yellow banner, informative — NOT red, the solver did its job.
+          <div
+            role="status"
+            aria-label="Classificazione a bassa confidenza"
+            data-testid="solution-diff-low-confidence-banner"
+            className="rounded-md border border-yellow-500/50 bg-yellow-500/15 p-3"
+          >
+            <div className="flex items-start gap-2">
+              <AlertTriangle
+                className="h-4 w-4 text-yellow-700 dark:text-yellow-400 mt-0.5 shrink-0"
+                aria-hidden
+              />
+              <div className="text-xs text-yellow-900 dark:text-yellow-200 leading-snug">
+                <strong>Classificazione a bassa confidenza:</strong> la nostra
+                AI non era sicura della tua richiesta. Verifica che il risultato
+                corrisponda alla tua intenzione.
               </div>
             </div>
           </div>
