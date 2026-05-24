@@ -135,7 +135,9 @@ describe('routeIntent', () => {
     expect(out.warnings.some((w) => w.includes('default_applied:end_min=horizon_end(4320)'))).toBe(true);
   });
 
-  it('rejects negative start_min via positive_int validator', () => {
+  it('rejects negative start_min via non_negative_int validator', () => {
+    // F-W10-04: machine_unavailability.start_min now uses `non_negative_int`
+    // (0 = start-of-horizon is legit). Negative values are still rejected.
     const out = routeIntent({
       intent: makeIntent('machine_unavailability', { machine_id: 'M01', start_min: -50, end_min: 100 }),
       baseline,
@@ -143,7 +145,7 @@ describe('routeIntent', () => {
     });
     expect(out.kind).toBe('opus_translator');
     if (out.kind !== 'opus_translator') return;
-    expect(out.reason).toContain('entity_validation_failed:start_min:not_a_positive_int');
+    expect(out.reason).toContain('entity_validation_failed:start_min:not_a_non_negative_int');
   });
 
   it('rejects end_min <= start_min via gt_start validator', () => {

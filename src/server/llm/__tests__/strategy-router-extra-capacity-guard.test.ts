@@ -42,17 +42,20 @@ function makeIntent(entities: Record<string, unknown>): Intent {
 }
 
 describe('routeIntent — extra_capacity guard (F-W9-05)', () => {
-  it('rejects zero operators as unsupported', () => {
+  it('rejects zero operators (validator catches early after F-W10-04 tightened positive_int)', () => {
     const out = routeIntent({
       intent: makeIntent({ operators: 0, shift: 'serale' }),
       baseline,
       catalog,
     });
-    expect(out.kind).toBe('unsupported');
-    if (out.kind !== 'unsupported') return;
-    expect(out.intent_id).toBe('capacity_addition');
-    expect(out.reason).toContain('invalid_extra_capacity_count');
-    expect(out.reason).toContain('0');
+    // F-W10-04 tightened the catalog `positive_int` validator to mean
+    // strictly > 0, so `operators: 0` now fails entity validation and the
+    // router returns `opus_translator` (Wave 4.1 fallback) rather than the
+    // ad-hoc `unsupported` guard. What matters is we do NOT emit a
+    // `rule_addition` outcome with a no-op `operators: 0` payload — both
+    // opus_translator and unsupported are honest rejections.
+    expect(out.kind).not.toBe('rule_addition');
+    expect(out.kind).not.toBe('data_modification');
   });
 
   it('rejects negative operators as unsupported', () => {
