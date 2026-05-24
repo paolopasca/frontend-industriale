@@ -528,6 +528,31 @@ export function routeIntent(args: RouteIntentArgs): StrategyOutcome {
   // fallback_rule_key.
   const fallbackStrategy = def.strategy === 'data_modification' ? def.fallback_strategy : def.strategy;
   if (fallbackStrategy === 'rule_addition') {
+    // F-W9-05 (devils-advocate Wave 9 2026-05-23): the `extra_capacity`
+    // rule key needs a positive-integer `operators` count to have any
+    // real effect on the solver. The catalog marks `operators` as
+    // `required: false` so an utterance Haiku parses as "aggiungi
+    // capacita'" without a count slips through validation, then the
+    // backend silently accepts a no-op rule (or the UI displays "1
+    // vincolo applicato" with zero real change). Guard explicitly here,
+    // returning `unsupported` so the BFF surfaces a "non applicabile"
+    // warning instead of pretending the rule landed.
+    if (def.fallback_rule_key === 'extra_capacity') {
+      const operators = validation.normalised.operators;
+      if (
+        typeof operators !== 'number'
+        || !Number.isFinite(operators)
+        || !Number.isInteger(operators)
+        || operators <= 0
+      ) {
+        return {
+          kind: 'unsupported',
+          intent_id: intent.intent_id,
+          reason: `invalid_extra_capacity_count:operators_must_be_positive_integer:got=${String(operators)}`,
+          warnings,
+        };
+      }
+    }
     const rules = buildRulesPayload(def, validation.normalised);
     return {
       kind: 'rule_addition',

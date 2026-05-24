@@ -700,64 +700,20 @@ test.describe('Wave 9 — Extensions', () => {
       await expect(applyBtn).toBeVisible({ timeout: 5_000 });
       await expect(applyBtn).toBeEnabled();
 
-      const expectedBody = buildExpectedBody(spec);
-      const { events, solved, warnings } = parseSseEvents(expectedBody);
-
       await applyBtn.click();
       await page.waitForTimeout(500);
 
-      // ── ASSERT 1 — lock_relaxing event emitted with the Wave 9
-      // recompute_mode marker. T3 ships `'frozen_phases_as_hint'` (the
-      // Wave 8 marker `'full_plan_from_scratch'` is RETIRED).
-      expect(events).toContain('lock_relaxing');
+      // F-W9-08 — scope of this e2e: VERIFY THE UI consumes the
+      // Wave 9 hint-preserved warning correctly (amber banner + copy +
+      // data attribute). The mock at `**/api/apply-whatif` short-circuits
+      // the BFF, so this test cannot validate what the BFF sends to the
+      // backend kernel — the assertions on the mock's own spec would be
+      // tautological. The BFF -> backend payload contract (first call
+      // hard-lock, retry with `frozen_lock_mode: 'hint'` + same
+      // `frozen_phases` list) is covered by the integration test
+      // `src/routes/api/__tests__/apply-whatif-retry-hint.test.ts`.
 
-      // ── ASSERT 2 — new warning marker present + legacy marker also
-      // present (backward compat).
-      expect(
-        warnings.includes('lock_relaxed_to_soft__consolidated_preserved_as_hint'),
-        `solved.warnings must include 'lock_relaxed_to_soft__consolidated_preserved_as_hint' ` +
-          `(got: ${warnings.join('|')})`,
-      ).toBe(true);
-      expect(
-        warnings.includes('lock_relaxed_to_soft'),
-        `solved.warnings must include legacy 'lock_relaxed_to_soft' (got: ${warnings.join('|')})`,
-      ).toBe(true);
-
-      // ── ASSERT 2b (Wave 9 retired Wave 8 marker) — the old
-      // `__plan_recomputed_from_scratch` marker MUST NOT appear when
-      // FIX 3 is active (hint retry, not full recompute).
-      expect(
-        warnings.includes('lock_relaxed_to_soft__plan_recomputed_from_scratch'),
-        `solved.warnings must NOT include retired Wave 8 'lock_relaxed_to_soft__plan_recomputed_from_scratch' ` +
-          `(got: ${warnings.join('|')})`,
-      ).toBe(false);
-
-      // ── ASSERT 3 — solved still emitted (the retry recovered).
-      expect(events).toContain('solved');
-      expect(solved).not.toBeNull();
-
-      // ── ASSERT 4 — consolidated phases preserved softly. The
-      // pre-cutoff phases (end_min <= 200 in the baseline) should be
-      // within ±15 min of the baseline (hint bias, small shifts only).
-      const candidate = flattenPhases(solved?.newSolution as Record<string, { fasi?: Array<Record<string, unknown>> }>);
-      const baselinePhases = flattenPhases(baseline);
-      let preCutoffViolations = 0;
-      for (const b of baselinePhases) {
-        if (b.end_min > 200) continue; // not consolidated
-        const match = candidate.find((c) => c.commessa === b.commessa && c.operazione === b.operazione);
-        if (!match) continue;
-        const drift = Math.abs(match.start_min - b.start_min);
-        if (drift > 15) {
-          preCutoffViolations += 1;
-        }
-      }
-      expect(
-        preCutoffViolations,
-        `Pre-cutoff phases should stay within ±15 min of baseline under hint mode ` +
-          `(found ${preCutoffViolations} large drifts)`,
-      ).toBe(0);
-
-      // ── ASSERT 5 — verify the UI actually RENDERED the amber
+      // ── ASSERT 1 — verify the UI actually RENDERED the amber
       // lock-relaxed banner with the Wave 9 `data-hint-preserved="true"`
       // attribute. T3 FIX 3 wired the banner: amber colour, copy
       // "preservate come preferenza (soft) — verifica il diff." (NOT
@@ -782,7 +738,7 @@ test.describe('Wave 9 — Extensions', () => {
         'banner copy must reflect Wave 9 hint-preserved semantic',
       ).toContainText(/preferenza.*soft|preservat.*hint|preservat.*preferen/i);
 
-      // ── ASSERT 6 — red recomputed-from-scratch banner must NOT
+      // ── ASSERT 2 — red recomputed-from-scratch banner must NOT
       // appear in Wave 9 (the suppression via !hintPreservedFromWarning
       // hides it).
       const redBanner = page.getByTestId('solution-diff-recomputed-from-scratch-banner');
