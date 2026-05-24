@@ -157,7 +157,21 @@ function deriveIds(baseline: BaselineFasi): DerivedIds {
   return { machines, orders, operators, horizon_end_min: horizon };
 }
 
+/**
+ * F-W10-04 — strict positivity. Use for fields where 0 is NOT a legitimate
+ * value (e.g. `operators` count in capacity_addition: "add 0 operators" is
+ * nonsense). The pre-W10 implementation accepted 0 under the same name,
+ * masking the operator-count bug behind a friendly type check.
+ */
 function isPositiveInt(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v) && Number.isInteger(v) && v > 0;
+}
+
+/**
+ * F-W10-04 — non-negative integer. Use for fields where 0 is the legitimate
+ * start-of-horizon value (e.g. `start_min`, `new_deadline_min`).
+ */
+function isNonNegativeInt(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v) && Number.isInteger(v) && v >= 0;
 }
 
@@ -272,8 +286,15 @@ function validateField(
     case 'positive_int':
       if (!isPositiveInt(value)) return { ok: false, reason: 'not_a_positive_int' };
       return { ok: true };
+    case 'non_negative_int':
+      if (!isNonNegativeInt(value)) return { ok: false, reason: 'not_a_non_negative_int' };
+      return { ok: true };
     case 'gt_start':
-      if (!isPositiveInt(value)) return { ok: false, reason: 'not_a_positive_int' };
+      // gt_start fields (end_min) must be a non-negative integer strictly
+      // greater than start_min. Strict positivity is not required — only
+      // strict ordering vs start_min — so we accept 0 if start_min < 0 (in
+      // practice impossible) and rely on the ordering check below.
+      if (!isNonNegativeInt(value)) return { ok: false, reason: 'not_a_non_negative_int' };
       if (startMinForGt !== undefined && (value as number) <= startMinForGt) {
         return { ok: false, reason: 'end_min_not_greater_than_start_min' };
       }
@@ -370,7 +391,7 @@ function validateEntities(
 
   // Second pass: validate values. Track start_min for the gt_start
   // validator (used by end_min / shift end_min).
-  const startMin = isPositiveInt(normalised.start_min) ? (normalised.start_min as number) : undefined;
+  const startMin = isNonNegativeInt(normalised.start_min) ? (normalised.start_min as number) : undefined;
   for (const [name, def] of fields) {
     if (!(name in normalised)) continue;
     const v = normalised[name];

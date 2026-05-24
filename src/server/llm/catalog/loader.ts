@@ -23,7 +23,11 @@ const ValidatorSchema = z.enum([
   'must_exist_in_solution_machines',
   'must_exist_in_solution_orders',
   'each_must_exist_in_solution_orders',
+  // F-W10-04 — `positive_int` now means strict positivity (`v > 0`); fields
+  // where 0 is a legit value (start_min, new_deadline_min, ...) must declare
+  // `non_negative_int` (`v >= 0`) instead.
   'positive_int',
+  'non_negative_int',
   'gt_start',
   'iso_datetime_string',
   'short_string',

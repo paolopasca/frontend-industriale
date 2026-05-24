@@ -147,8 +147,19 @@ interface Wave9ApplyMockSpec {
   };
 }
 
-async function setupWave9ApplyMock(page: Page, spec: Wave9ApplyMockSpec): Promise<{ getPostBody(): string | null; dispose(): Promise<void> }> {
-  let postBody: string | null = null;
+async function setupWave9ApplyMock(page: Page, spec: Wave9ApplyMockSpec): Promise<{
+  /** Last captured request body. Convenience accessor for tests that only
+   *  expect a single apply call (the common case for click-once Apply). */
+  getPostBody(): string | null;
+  /** F-W10-09 — full ordered list of captured request bodies. Tests that
+   *  click Apply more than once (e.g. UI-driven retries) can assert on
+   *  individual entries. NB: the BFF's INTERNAL retry to the backend goes
+   *  through `fetch`, NOT through this mock — that contract lives in
+   *  `src/routes/api/__tests__/apply-whatif-retry-hint.test.ts`. */
+  getPostBodies(): readonly string[];
+  dispose(): Promise<void>;
+}> {
+  const postBodies: string[] = [];
 
   const chunks: string[] = [];
   const push = (event: string, data: unknown) => {
@@ -200,7 +211,8 @@ async function setupWave9ApplyMock(page: Page, spec: Wave9ApplyMockSpec): Promis
 
   const handler = async (route: Route) => {
     try {
-      postBody = route.request().postData();
+      const captured = route.request().postData();
+      if (captured !== null) postBodies.push(captured);
       await route.fulfill({
         status: 200,
         contentType: 'text/event-stream; charset=utf-8',
@@ -218,7 +230,8 @@ async function setupWave9ApplyMock(page: Page, spec: Wave9ApplyMockSpec): Promis
   await page.route('**/api/apply-whatif', handler);
 
   return {
-    getPostBody: () => postBody,
+    getPostBody: () => (postBodies.length > 0 ? postBodies[postBodies.length - 1] : null),
+    getPostBodies: () => postBodies,
     dispose: async () => {
       await page.unroute('**/api/apply-whatif', handler).catch(() => { /* no-op */ });
     },
@@ -703,15 +716,36 @@ test.describe('Wave 9 — Extensions', () => {
       await applyBtn.click();
       await page.waitForTimeout(500);
 
-      // F-W9-08 — scope of this e2e: VERIFY THE UI consumes the
-      // Wave 9 hint-preserved warning correctly (amber banner + copy +
-      // data attribute). The mock at `**/api/apply-whatif` short-circuits
-      // the BFF, so this test cannot validate what the BFF sends to the
-      // backend kernel — the assertions on the mock's own spec would be
-      // tautological. The BFF -> backend payload contract (first call
-      // hard-lock, retry with `frozen_lock_mode: 'hint'` + same
-      // `frozen_phases` list) is covered by the integration test
-      // `src/routes/api/__tests__/apply-whatif-retry-hint.test.ts`.
+      // F-W9-08 / F-W10-09 — SCOPE OF THIS E2E.
+      //
+      // VERIFY THE UI consumes the Wave 9 hint-preserved warning
+      // correctly (amber banner + copy + data attribute).
+      //
+      // The mock at `**/api/apply-whatif` short-circuits the BFF, so
+      // this test CANNOT validate what the BFF sends to the backend
+      // kernel — assertions on the mock's own spec would be tautological.
+      // The BFF -> backend payload contract (first call hard-lock,
+      // retry with `frozen_lock_mode: 'hint'` + same `frozen_phases` +
+      // `force_cold_start: true` on both calls — F-W10-07) is covered
+      // by the integration test at:
+      //
+      //   ../src/routes/api/__tests__/apply-whatif-retry-hint.test.ts
+      //   (relative path: ../../src/routes/api/__tests__/apply-whatif-retry-hint.test.ts)
+      //
+      // DO NOT DELETE that file. It is the only contract test for the
+      // BFF retry payload. A future contributor who removes it thinking
+      // "the e2e covers it" will silently de-cover the contract
+      // (F-W10-09 raccomandazione).
+      //
+      // F-W10-09 follow-up: `mock.getPostBodies()` exposes the full
+      // ordered list of captured request bodies, so a future test that
+      // clicks Apply more than once (e.g. UI-driven retry) can assert
+      // on individual entries without needing a mock refactor.
+      const capturedBodies = mock.getPostBodies();
+      expect(
+        capturedBodies.length,
+        'mock must have captured exactly one apply-whatif request (single click)',
+      ).toBe(1);
 
       // ── ASSERT 1 — verify the UI actually RENDERED the amber
       // lock-relaxed banner with the Wave 9 `data-hint-preserved="true"`
