@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { sseStream } from '@/lib/streamingFetch';
 import { SolutionDiff, type FrozenPhase } from './SolutionDiff';
+import { humanizeUnsupportedReason } from './unsupported-reason-labels';
 
 interface WhatIfAnalysisProps {
   slug: string | null;
@@ -382,7 +383,7 @@ export function WhatIfAnalysis({
         } else if (event === 'aborted_unsupported') {
           const payload = data as ApplyAbortedUnsupportedPayload;
           setApplying('unsupported');
-          toast.warning(`Scenario non applicabile: ${payload.reason ?? 'motivo non specificato.'}`);
+          toast.warning(`Scenario non applicabile: ${humanizeUnsupportedReason(payload.reason)}`);
           // 'done' is still expected after this, but we do not transition out of 'unsupported'.
         } else if (event === 'solving') {
           // Only advance to 'solving' if we are not already in a terminal state.

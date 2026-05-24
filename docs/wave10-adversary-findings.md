@@ -100,7 +100,7 @@ def test_extra_capacity_on_dataset_without_dual_resource_flags_still_takes_effec
 **Aggiunto**: 2026-05-23
 **Owner finding**: w10-devils-advocate
 **Severity**: MED
-**Status**: OPEN
+**Status**: RESOLVED 2026-05-24 (Wave 11 T2 w11-ux-polish) — Option (b) frontend mapping. Added `src/components/dashboard/unsupported-reason-labels.ts` with `humanizeUnsupportedReason()` that maps the first ':' segment of the BFF reason to Italian copy and falls back to the raw string for unknown prefixes. `WhatIfAnalysis.tsx:385` now calls the helper before surfacing the toast. Unit test: `src/components/dashboard/__tests__/unsupported-reason-labels.test.ts` (9 cases).
 **File coinvolti**:
 - `frontend-industriale/src/server/llm/strategy-router.ts:551`
 - `frontend-industriale/src/components/dashboard/WhatIfAnalysis.tsx:382-386`
@@ -176,7 +176,7 @@ it('operators=0 utterance → aborted_unsupported with invalid_extra_capacity_co
 **Aggiunto**: 2026-05-23
 **Owner finding**: w10-devils-advocate
 **Severity**: MED
-**Status**: OPEN
+**Status**: RESOLVED 2026-05-24 (Wave 11 T2 w11-ux-polish) — Option A. `isPositiveInt` is now strict (`v > 0`); a new `isNonNegativeInt` (`v >= 0`) covers the start-of-horizon case. Catalog YAML migrated: `operators`/`duration_min` keep `positive_int` (strict, no zero), while `start_min`/`new_deadline_min` (where 0 is legit) declare `non_negative_int`. The `gt_start` validator now uses non-negative as the base check and relies on the strict ordering vs `start_min`. Loader ValidatorSchema enum extended with `non_negative_int`. Unit test: `src/server/llm/__tests__/strategy-router-positive-int.test.ts` (7 cases). Existing W9-05 guard test relaxed to allow either `opus_translator` (validator catches early) or `unsupported` (router guard for undefined operators) since the validator now catches `operators: 0` before the guard.
 **File coinvolti**:
 - `frontend-industriale/src/server/llm/strategy-router.ts:160-162` (`isPositiveInt`)
 - `frontend-industriale/src/server/llm/catalog/constraint-catalog.yaml:29, 92, 122, 131, 163`
@@ -479,9 +479,9 @@ except Exception as exc:
 | ID | Severity | Status | Owner | Title |
 |---|---|---|---|---|
 | F-W10-01 | HIGH | **CLOSED** | T4 (backend) | T4 fix lets extra_capacity silently no-op (chicken-egg in `_auto_enable_data_implied_rules` — fixed) |
-| F-W10-02 | MED | OPEN | T2 (BFF) / UI | T2 unsupported reason has no UI mapping → raw debug string in toast |
+| F-W10-02 | MED | **CLOSED** | T2 (BFF) / UI | T2 unsupported reason mapped to Italian copy via `humanizeUnsupportedReason()` in WhatIfAnalysis (Wave 11 T2) |
 | F-W10-03 | LOW | OPEN | T2 (BFF) | T2 guard tested only at unit level — no apply-whatif integration test |
-| F-W10-04 | MED | OPEN | Catalog | `positive_int` validator mis-named: accepts 0 silently for ALL positive_int fields |
+| F-W10-04 | MED | **CLOSED** | Catalog | `positive_int` now strictly > 0; new `non_negative_int` covers start-of-horizon fields (Wave 11 T2) |
 | F-W10-05 | HIGH | OPEN | T1 (validator) | Validator silently accepts unknown operators in solution → systemic constraint laundering |
 | F-W10-06 | HIGH | **CLOSED** | T1 (backend) | T1's H6 fix shipped at `template_solve.py:1086-1091` (MODEL_INVALID branch now propagates wave7_apply_rules) |
 | F-W10-07 | MED | OPEN | Cross-team | BFF never sends force_cold_start → warm-start stale plans pollute apply-whatif retries |

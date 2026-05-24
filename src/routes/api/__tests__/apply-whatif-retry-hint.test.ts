@@ -250,6 +250,10 @@ describe('F-W9-08 — BFF retry payload contract (e2e test 5 companion)', () => 
     expect(Array.isArray(firstBody.frozen_phases)).toBe(true);
     expect(firstBody.frozen_phases.length).toBeGreaterThan(0);
     expect(firstBody.frozen_lock_mode).toBeUndefined();
+    // F-W10-07: apply-whatif must always disable the L2 warm-start loader
+    // so the previous OPTIMAL plan does NOT inject hints into the new
+    // solve under the changed constraint set.
+    expect(firstBody.force_cold_start).toBe(true);
 
     // ── ASSERT 6 — KEY contract — retry call carries
     // `frozen_lock_mode: 'hint'` AND the SAME frozen_phases list (the
@@ -260,6 +264,10 @@ describe('F-W9-08 — BFF retry payload contract (e2e test 5 companion)', () => 
     expect(retryBody.frozen_lock_mode).toBe('hint');
     expect(Array.isArray(retryBody.frozen_phases)).toBe(true);
     expect(retryBody.frozen_phases.length).toBe(firstBody.frozen_phases.length);
+    // F-W10-07: retry must also force-cold-start. The retry is the same
+    // logical solve attempt with relaxed locks — must not pick up a
+    // warm-start from a now-stale plan.
+    expect(retryBody.force_cold_start).toBe(true);
   });
 
   it('machine_unavailability + OPTIMAL on first solve -> NO retry, NO frozen_lock_mode anywhere', async () => {
@@ -319,5 +327,8 @@ describe('F-W9-08 — BFF retry payload contract (e2e test 5 companion)', () => 
       (fetchMock.mock.calls[0][1] as RequestInit).body as string,
     );
     expect(firstBody.frozen_lock_mode).toBeUndefined();
+    // F-W10-07: apply-whatif always disables L2 warm-start, even on the
+    // happy path where there is no retry.
+    expect(firstBody.force_cold_start).toBe(true);
   });
 });

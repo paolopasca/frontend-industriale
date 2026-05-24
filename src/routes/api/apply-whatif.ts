@@ -667,6 +667,8 @@ export const Route = createFileRoute('/api/apply-whatif')({
                   cutoffMin,
                   frozenPhases,
                   datasetOverrides,
+                  undefined, // frozenLockMode: first call uses backend default 'hard'.
+                  true, // F-W10-07 forceColdStart: never warm-start apply-whatif.
                 ),
               );
 
@@ -726,6 +728,7 @@ export const Route = createFileRoute('/api/apply-whatif')({
                     frozenPhases, // F-W8-06 Wave 9 OPT 1: full list, NOT [].
                     datasetOverrides,
                     'hint', // F-W8-06 Wave 9 OPT 1: soft preference.
+                    true, // F-W10-07 forceColdStart: never warm-start apply-whatif.
                   ),
                 );
                 solveResult = {

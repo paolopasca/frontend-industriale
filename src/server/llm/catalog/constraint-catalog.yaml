@@ -26,7 +26,8 @@ intents:
         validator: must_exist_in_solution_machines
       start_min:
         required: true
-        validator: positive_int
+        # F-W10-04: 0 = start-of-horizon, legit.
+        validator: non_negative_int
       end_min:
         required: false
         validator: gt_start
@@ -89,7 +90,8 @@ intents:
         validator: must_exist_in_solution_orders
       new_deadline_min:
         required: true
-        validator: positive_int
+        # F-W10-04: 0 = start-of-horizon deadline, conceptually legit.
+        validator: non_negative_int
       iso_datetime:
         required: false
         validator: iso_datetime_string
@@ -119,6 +121,10 @@ intents:
     entities:
       operators:
         required: false
+        # F-W10-04: must be strictly > 0; "aggiungi 0 operatori" is nonsense
+        # and is now rejected at the validator stage. The router's
+        # invalid_extra_capacity_count guard remains as a second line of
+        # defence for the undefined-operators case.
         validator: positive_int
       shift:
         required: false
@@ -128,6 +134,7 @@ intents:
         validator: must_exist_in_solution_machines
       duration_min:
         required: false
+        # F-W10-04: 0-minute duration is nonsense — strictly > 0.
         validator: positive_int
     italian_triggers:
       - "aggiungi operatore"
@@ -160,7 +167,8 @@ intents:
         validator: shift_name_or_id
       start_min:
         required: false
-        validator: positive_int
+        # F-W10-04: 0 = midnight start, legit.
+        validator: non_negative_int
       end_min:
         required: false
         validator: gt_start

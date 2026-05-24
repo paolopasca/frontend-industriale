@@ -267,6 +267,7 @@ export async function resolveTemplate(
   frozenPhases?: ResolveTemplateFrozenPhase[],
   datasetOverrides?: Record<string, unknown> | null,
   frozenLockMode?: FrozenLockMode,
+  forceColdStart?: boolean,
 ): Promise<ResolveTemplateResponse> {
   const body: Record<string, unknown> = {
     slug,
@@ -288,6 +289,16 @@ export async function resolveTemplate(
   // to hard-lock semantics.
   if (frozenLockMode !== undefined) {
     body.frozen_lock_mode = frozenLockMode;
+  }
+  // F-W10-07 — when forceColdStart=true, the backend bypasses the L2
+  // warm-start loader so the previous OPTIMAL/FEASIBLE plan (saved in
+  // plan_memory/last_plan.json) does NOT inject hints into this solve.
+  // apply-whatif sets this on every call (first + retry) because each
+  // what-if is a fresh constraint set — warm-starting from the old plan
+  // can bias the search toward a now-stale schedule and slow down
+  // CP-SAT or cause spurious MODEL_INVALIDs (see wave10 finding).
+  if (forceColdStart) {
+    body.force_cold_start = true;
   }
   return apiFetch<ResolveTemplateResponse>('/api/public/solve-template', {
     method: 'POST',
