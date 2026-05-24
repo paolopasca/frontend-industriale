@@ -16,7 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { sseStream } from '@/lib/streamingFetch';
+import { sseStream, friendlyErrorMessage } from '@/lib/streamingFetch';
 import { SolutionDiff, type FrozenPhase } from './SolutionDiff';
 import { humanizeUnsupportedReason } from './unsupported-reason-labels';
 
@@ -249,7 +249,9 @@ export function WhatIfAnalysis({
           if (d.cost_usd != null) setCostUsd(d.cost_usd);
         } else if (event === 'error') {
           const e = data as ErrorPayload;
-          throw new Error(e.message ?? 'Errore sconosciuto dal server.');
+          const errorObj = new Error(e.message ?? 'Errore sconosciuto dal server.') as Error & { code?: string };
+          errorObj.code = e.code;
+          throw errorObj;
         }
       }
     } catch (err) {
@@ -258,8 +260,10 @@ export function WhatIfAnalysis({
         return;
       }
       const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
-      toast.error(`What-If: ${msg}`);
+      const code = (err as { code?: string })?.code;
+      const friendly = friendlyErrorMessage({ code, message: msg }) ?? msg;
+      setError(friendly);
+      toast.error(`What-If: ${friendly}`);
     }
     setStreaming(false);
     abortRef.current = null;
@@ -453,7 +457,9 @@ export function WhatIfAnalysis({
           setApplying('idle');
         } else if (event === 'error') {
           const e = data as ErrorPayload;
-          throw new Error(e.message ?? 'Errore sconosciuto dal server.');
+          const errorObj = new Error(e.message ?? 'Errore sconosciuto dal server.') as Error & { code?: string };
+          errorObj.code = e.code;
+          throw errorObj;
         }
       }
     } catch (err) {
@@ -473,7 +479,8 @@ export function WhatIfAnalysis({
       } else if (httpErr.status === 409 || httpErr.code === 'conflict') {
         toast.error('C’è già un ricalcolo in corso per questa sessione.');
       } else {
-        toast.error(`Esegui: ${msg}`);
+        const friendly = friendlyErrorMessage({ code: httpErr.code, message: msg }) ?? msg;
+        toast.error(`Esegui: ${friendly}`);
       }
     }
     applyAbortRef.current = null;

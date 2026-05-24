@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
-import { sseStream } from '@/lib/streamingFetch';
+import { sseStream, friendlyErrorMessage } from '@/lib/streamingFetch';
 
 interface AdvisorPanelProps {
   slug: string | null;
@@ -206,9 +206,7 @@ export function AdvisorPanel({
                     Consigli non disponibili
                   </p>
                   <p className="text-muted-foreground mt-1">
-                    {error.code === 'rate_limited'
-                      ? 'Limite di richieste superato. Riprova fra qualche minuto.'
-                      : error.message}
+                    {friendlyErrorMessage(error) ?? error.message}
                   </p>
                 </div>
               </div>

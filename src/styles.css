@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 @import "tw-animate-css";
 
@@ -187,9 +188,6 @@
 .animate-pulse-glow {
   animation: pulse-glow 3s ease-in-out infinite;
 }
-
-/* Google Font import */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
 /* Print styles for "Esporta PDF" — uses native browser print dialog */
 @media print {

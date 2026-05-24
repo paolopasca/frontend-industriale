@@ -87,7 +87,9 @@ export function OrdersTable({ selectedOrder, onSelectOrder }: { selectedOrder: s
                       {cfg.label}
                     </span>
                   </td>
-                  <td className="px-3 py-2.5 font-mono text-muted-foreground">{order.deadline}</td>
+                  <td className="px-3 py-2.5 font-mono text-muted-foreground">
+                    {order.deadline && order.deadline !== 'N/A' ? order.deadline : <span className="text-muted-foreground/50">—</span>}
+                  </td>
                   <td className="px-3 py-2.5">
                     <span className={`flex items-center gap-1 font-medium ${order.status === 'in-ritardo' ? 'text-destructive' : 'text-primary'}`}>
                       <span className={`w-1.5 h-1.5 rounded-full ${order.status === 'in-ritardo' ? 'bg-destructive' : 'bg-primary'}`} />
@@ -95,7 +97,9 @@ export function OrdersTable({ selectedOrder, onSelectOrder }: { selectedOrder: s
                     </span>
                   </td>
                   <td className="px-3 py-2.5 text-foreground">{order.product}</td>
-                  <td className="px-3 py-2.5 text-muted-foreground truncate max-w-[140px]">{order.client}</td>
+                  <td className="px-3 py-2.5 text-muted-foreground truncate max-w-[140px]">
+                    {order.client && order.client.trim().length > 0 ? order.client : <span className="text-muted-foreground/50">—</span>}
+                  </td>
                   <td className="px-3 py-2.5 text-right font-mono text-muted-foreground">{order.quantity}</td>
                   <td className="px-3 py-2.5 text-right font-mono text-muted-foreground">{order.operationCount}</td>
                 </tr>

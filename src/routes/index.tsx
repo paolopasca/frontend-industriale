@@ -40,36 +40,7 @@ import { ManagerChatPanel } from '@/components/dashboard/ManagerChatPanel';
 import { DashboardContext } from '@/data/DashboardContext';
 import { adaptResult, type DashboardData } from '@/data/resultAdapter';
 import { Toaster } from '@/components/ui/sonner';
-
-// Extract the raw `solution` + `kpis` blocks (flat Record<string, number>)
-// from whatever shape the backend returned. solveTemplate → top-level
-// `solution`/`kpis`; solveLLMOnly → nested under `result.kpi`/`result.piano`.
-function extractAiInputs(raw: unknown): { solution: unknown; kpis: Record<string, number> } {
-  if (!raw || typeof raw !== 'object') return { solution: null, kpis: {} };
-  const r = raw as Record<string, unknown>;
-  // Template / FJSP shape
-  if (r.solution !== undefined) {
-    const k = (r.kpis ?? {}) as Record<string, unknown>;
-    return { solution: r.solution, kpis: toNumberMap(k) };
-  }
-  // LLM-only legacy shape
-  const result = r.result as Record<string, unknown> | undefined;
-  if (result) {
-    return {
-      solution: result.piano ?? result,
-      kpis: toNumberMap((result.kpi ?? {}) as Record<string, unknown>),
-    };
-  }
-  return { solution: raw, kpis: {} };
-}
-
-function toNumberMap(rec: Record<string, unknown>): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const [k, v] of Object.entries(rec)) {
-    if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
-  }
-  return out;
-}
+import { extractAiInputs, extractSolverStatus } from '@/lib/aiInputs';
 
 export const Route = createFileRoute("/")({
   component: Index,
@@ -111,6 +82,7 @@ function Index() {
   }, [backendResult, solverMethod]);
 
   const aiInputs = useMemo(() => extractAiInputs(backendResult), [backendResult]);
+  const solverStatus = useMemo(() => extractSolverStatus(backendResult), [backendResult]);
 
   return (
     <>
@@ -160,6 +132,8 @@ function Index() {
                   // per coerenza col nuovo flow lineare.
                   onReset={() => { setPhase('setup'); setBackendResult(null); setSolverMethod(DEFAULT_SOLVER_METHOD); }}
                   companySlug={setupData?.companySlug ?? null}
+                  companyName={setupData?.companyName ?? null}
+                  solverStatus={solverStatus}
                 />
                 <KPISummary />
 

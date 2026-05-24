@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { Card } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
-import { sseStream } from '@/lib/streamingFetch';
+import { sseStream, friendlyErrorMessage } from '@/lib/streamingFetch';
 import {
   getSlugScoped,
   setSlugScoped,
@@ -208,6 +208,7 @@ export function ManagerChatPanel({
       let costUsd: number | undefined;
       let toolsFinal: string[] = [];
       let serverError: string | null = null;
+      let serverErrorCode: string | undefined;
       let aborted = false;
 
       try {
@@ -249,13 +250,16 @@ export function ManagerChatPanel({
             aborted = true;
             break;
           } else if (event === 'error') {
-            serverError = (data as ErrorPayload).message ?? 'Errore sconosciuto dal server.';
+            const payload = data as ErrorPayload;
+            serverError = payload.message ?? 'Errore sconosciuto dal server.';
+            serverErrorCode = payload.code;
             break;
           }
         }
       } catch (err) {
         if (!controller.signal.aborted) {
           serverError = err instanceof Error ? err.message : String(err);
+          serverErrorCode = (err as { code?: string })?.code;
         }
       } finally {
         if (abortRef.current === controller) abortRef.current = null;
@@ -269,9 +273,14 @@ export function ManagerChatPanel({
       }
 
       if (serverError) {
-        const friendly = /rate.?limit|429/i.test(serverError)
-          ? 'Limite richieste/ora superato. Riprova fra qualche minuto.'
-          : serverError;
+        // Prefer the structured friendly map (handles rate_limited, chat_failed,
+        // ANTHROPIC_API_KEY leaks, etc.). Keep the legacy substring fallback
+        // as a safety net for older BFF responses that don't surface a code.
+        const friendly =
+          friendlyErrorMessage({ code: serverErrorCode, message: serverError })
+          ?? (/rate.?limit|429/i.test(serverError)
+            ? 'Limite richieste/ora superato. Riprova fra qualche minuto.'
+            : serverError);
         setLastError(friendly);
         toast.error(`Chat: ${friendly}`);
         setDraftAssistant('');
@@ -354,7 +363,7 @@ export function ManagerChatPanel({
           disabled={!planReady}
           title={planReady ? 'Apri Chat Manager' : 'Esegui un\'ottimizzazione per attivare la chat'}
           aria-label="Apri Chat Manager"
-          className="fixed bottom-6 right-6 z-40 h-14 w-14 rounded-full shadow-lg p-0"
+          className="fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full shadow-lg p-0"
         >
           <MessageCircle className="h-6 w-6" aria-hidden />
         </Button>
@@ -368,12 +377,12 @@ export function ManagerChatPanel({
             animate={reducedMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
             exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 20, scale: 0.95 }}
             transition={{ duration: 0.18 }}
-            className="fixed bottom-6 right-6 z-40 w-[380px] max-w-[calc(100vw-2rem)] h-[600px] max-h-[calc(100vh-2rem)]"
+            className="fixed bottom-6 right-6 z-50 w-[360px] max-w-[calc(100vw-2rem)] h-[560px] max-h-[calc(100vh-2rem)]"
             role="dialog"
             aria-label="Chat Manager"
             aria-modal="false"
           >
-            <Card className="flex flex-col h-full shadow-xl">
+            <Card className="flex flex-col h-full shadow-2xl ring-1 ring-border/50 bg-card/95 backdrop-blur-sm">
               <div className="flex items-center justify-between px-4 py-3 border-b">
                 <div className="flex items-center gap-2">
                   <MessageCircle className="h-5 w-5 text-primary" aria-hidden />

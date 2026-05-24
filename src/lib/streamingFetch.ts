@@ -13,6 +13,53 @@ export interface SseEvent<T = unknown> {
   data: T;
 }
 
+/**
+ * F-W11-LIVE-02 — translate raw BFF error codes/messages into manager-friendly
+ * text for the explainer/advisor/whatif/split/chat banners. Without this, the
+ * SSE error event (code: 'explainer_failed' / 'advisor_failed' / 'whatif_failed'
+ * / 'split_failed' / 'chat_failed') leaks raw server-side strings like
+ * "ANTHROPIC_API_KEY not set (server-only env var)" straight into the UI,
+ * which confuses managers (they think THEY have to set a key).
+ *
+ * Returns null when no translation applies — caller falls back to the raw
+ * message. The translator is conservative: it only intervenes when the raw
+ * text is a known technical leak or one of the BFF's structured error codes.
+ */
+export function friendlyErrorMessage(err: { code?: string; message?: string }): string | null {
+  const code = err.code ?? '';
+  const message = err.message ?? '';
+  if (code === 'rate_limited') {
+    return 'Limite di richieste superato. Riprova fra qualche minuto.';
+  }
+  if (code === 'invalid_body' || code === 'invalid_json') {
+    return 'Richiesta non valida. Ricarica la pagina e riprova.';
+  }
+  if (code === 'payload_too_large') {
+    return 'Piano troppo grande per essere analizzato. Contatta il supporto.';
+  }
+  // Server-side runtime failures (LLM client init, network, etc.) come back
+  // as code='explainer_failed' / 'advisor_failed' / etc. with the underlying
+  // Error message verbatim. Suppress technical strings (API key envvar,
+  // stack-y node errors) — show a generic transient-failure message.
+  if (
+    code === 'explainer_failed'
+    || code === 'advisor_failed'
+    || code === 'whatif_failed'
+    || code === 'split_failed'
+    || code === 'chat_failed'
+    || code === 'apply_whatif_failed'
+    || /ANTHROPIC_API_KEY|server-only env var|process\.env\b/i.test(message)
+  ) {
+    return 'Servizio AI temporaneamente non disponibile. Riprova fra qualche minuto.';
+  }
+  // Defence in depth: catch raw HTTP / network leaks that managers should
+  // never see.
+  if (/HTTP\s+5\d\d\b|ECONNREFUSED|ETIMEDOUT|fetch failed/i.test(message)) {
+    return 'Servizio temporaneamente non raggiungibile. Riprova fra qualche minuto.';
+  }
+  return null;
+}
+
 export async function* sseStream<T = unknown>(
   url: string,
   body: unknown,
