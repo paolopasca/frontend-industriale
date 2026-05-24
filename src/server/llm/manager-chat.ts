@@ -389,7 +389,20 @@ function serializeToolResult(payload: unknown): string {
 
 function hasActivePlan(input: ManagerChatInput): boolean {
   const norm = normalizeForTools(input.solution, input.kpis);
-  return norm.fasi.length > 0;
+  // Wave 13 F-W11-LIVE-03 hotfix: anche se ``norm.fasi`` e' vuoto per
+  // qualche motivo (es. envelope serialization quirk, fasi nested
+  // sotto chiave non riconosciuta), considera il piano "attivo" se:
+  //  - status e' uno dei terminali "ok" (OPTIMAL/FEASIBLE), oppure
+  //  - kpis ha almeno un numero finito (segno che il backend ha
+  //    risposto con KPI calcolati).
+  if (norm.fasi.length > 0) return true;
+  const STATUS_OK = new Set(['OPTIMAL', 'FEASIBLE']);
+  if (STATUS_OK.has(norm.status.toUpperCase())) return true;
+  const kpis = input.kpis ?? {};
+  const hasFiniteKpi = Object.values(kpis).some(
+    (v) => typeof v === 'number' && Number.isFinite(v),
+  );
+  return hasFiniteKpi;
 }
 
 const FALLBACK_NO_PLAN_TEXT =
