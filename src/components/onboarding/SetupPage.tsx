@@ -621,7 +621,11 @@ export function SetupPage({ onOptimize }: { onOptimize: (data: SetupData) => voi
                 className="flex items-center gap-2 px-8 py-3 rounded-xl bg-primary text-primary-foreground text-sm font-bold hover:bg-primary/90 disabled:opacity-40 transition-all teal-glow"
               >
                 <Zap className="w-5 h-5" />
-                {companyLoaded?.has_consultation ? 'Scegli Metodo' : 'Ottimizza Produzione'}
+                {/* Wave 12: removed Scegli Metodo step. Button always
+                    triggers ``onOptimize`` → goes straight to optimizing
+                    with ``deterministic-json`` (the only path testato
+                    Wave 7-11 end-to-end). */}
+                Ottimizza Produzione
               </motion.button>
             )}
           </div>

@@ -24,6 +24,8 @@ const ValidatorSchema = z.enum([
   'must_exist_in_solution_orders',
   'each_must_exist_in_solution_orders',
   'positive_int',
+  'non_negative_int',  // Wave 11 F-W10-04 rename — accepts 0
+  'strict_positive_int',  // Wave 11 F-W10-04 — rejects 0 (used for ``operators``)
   'gt_start',
   'iso_datetime_string',
   'short_string',

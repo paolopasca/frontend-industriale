@@ -3,8 +3,24 @@ import { useState, useCallback, useMemo, useEffect } from 'react';
 import { migrateLegacyKeys } from '@/lib/storage';
 import { AnimatePresence, motion } from 'framer-motion';
 import { SetupPage, type SetupData } from '@/components/onboarding/SetupPage';
-import { SolverMethodSelect, type SolverMethod } from '@/components/onboarding/SolverMethodSelect';
+import type { SolverMethod } from '@/components/onboarding/SolverMethodSelect';
 import { OptimizationLoader } from '@/components/onboarding/OptimizationLoader';
+
+// Wave 12: il prodotto usa SEMPRE `deterministic-json` (path
+// ``daino.template_solve.template_solve()`` nel backend definitivo).
+// Verificato Wave 7-11: 30 F-rules, ~75 pytest, smoke live OK,
+// apply-whatif Wave 4.1-11 end-to-end funzionante. Vedi
+// ``docs/come-funziona-il-frontend.md`` §2-4 + RESEARCH_LOG ADR-094..ADR-100.
+//
+// I path ``llm-only`` (wrapper FAKE su template_solve) e
+// ``codegen-pipeline`` (arm_c compose, lento + costoso + non
+// testato end-to-end nei pytest Wave 7-11) sono ora dead code:
+// l'UI di selezione metodo non e' piu' raggiungibile, e il
+// componente ``SolverMethodSelect`` sara' rimosso nel cleanup
+// successivo. Le funzioni client ``solveLLMOnly`` /
+// ``pipelineStart/Advance/Respond/Results`` in ``lib/api.ts``
+// restano per ora (rimozione in PR follow-up).
+const DEFAULT_SOLVER_METHOD: SolverMethod = 'deterministic-json';
 import { DashboardHeader } from '@/components/dashboard/DashboardHeader';
 import { KPISummary } from '@/components/dashboard/KPISummary';
 import { MachineGantt } from '@/components/dashboard/MachineGantt';
@@ -59,12 +75,19 @@ export const Route = createFileRoute("/")({
   component: Index,
 });
 
+// Wave 12: ``method-select`` rimosso dal flow. La Phase resta come
+// union type per minimizzare diff; il valore ``method-select`` non
+// e' piu' settato in nessun ``setPhase`` chiamato dal flow vivo.
 type Phase = 'setup' | 'method-select' | 'optimizing' | 'dashboard';
 
 function Index() {
   const [phase, setPhase] = useState<Phase>('setup');
   const [setupData, setSetupData] = useState<SetupData | null>(null);
-  const [solverMethod, setSolverMethod] = useState<SolverMethod | null>(null);
+  // Wave 12: SolverMethod e' costante (DEFAULT_SOLVER_METHOD).
+  // ``setSolverMethod`` resta solo per il reset (ridichiarazione
+  // della costante per chiarezza del data flow); non c'e' piu'
+  // selezione runtime.
+  const [solverMethod, setSolverMethod] = useState<SolverMethod | null>(DEFAULT_SOLVER_METHOD);
   const [backendResult, setBackendResult] = useState<unknown>(null);
   const [selectedOrder, setSelectedOrder] = useState<string | null>(null);
   const [replanOpen, setReplanOpen] = useState(false);
@@ -97,22 +120,11 @@ function Index() {
         <motion.div key="setup" exit={{ opacity: 0 }} transition={{ duration: 0.4 }}>
           <SetupPage onOptimize={(data) => {
             setSetupData(data);
-            setPhase('method-select');
+            // Wave 12: skip ``method-select`` step. Vai diretto a
+            // optimizing con ``deterministic-json`` (gia' settato in
+            // ``solverMethod`` come default Wave 12).
+            setPhase('optimizing');
           }} />
-        </motion.div>
-      )}
-
-      {phase === 'method-select' && (
-        <motion.div key="method-select" exit={{ opacity: 0 }} transition={{ duration: 0.4 }}>
-          <SolverMethodSelect
-            companySlug={setupData?.companySlug ?? null}
-            hasConsultation={setupData?.hasConsultation ?? false}
-            onSelect={(method) => {
-              setSolverMethod(method);
-              setPhase('optimizing');
-            }}
-            onBack={() => setPhase('setup')}
-          />
         </motion.div>
       )}
 
@@ -143,7 +155,10 @@ function Index() {
                 <DashboardHeader
                   onReplan={() => setReplanOpen(true)}
                   onAddData={() => setDataInputOpen(true)}
-                  onReset={() => { setPhase('setup'); setBackendResult(null); setSolverMethod(null); }}
+                  // Wave 12: reset riporta a 'setup' ma mantiene
+                  // ``solverMethod`` su DEFAULT_SOLVER_METHOD (non null)
+                  // per coerenza col nuovo flow lineare.
+                  onReset={() => { setPhase('setup'); setBackendResult(null); setSolverMethod(DEFAULT_SOLVER_METHOD); }}
                   companySlug={setupData?.companySlug ?? null}
                 />
                 <KPISummary />
