@@ -25,11 +25,11 @@ function AnimatedNumber({ value, suffix = '', prefix = '', decimals = 0, duratio
   return <span className="font-mono">{prefix}{parts.join(',')}{suffix}</span>;
 }
 
-export function KPISummary() {
-  const { kpis } = useDashboard();
+// Safe accessor: fallback to 0 for any undefined/NaN value
+const safe = (v: number | undefined) => (v != null && !isNaN(v) ? v : 0);
 
-  // Safe accessor: fallback to 0 for any undefined/NaN value
-  const safe = (v: number | undefined) => (v != null && !isNaN(v) ? v : 0);
+export function KPISummary() {
+  const { kpis, operators } = useDashboard();
 
   const primaryCards = useMemo(() => [
     {
@@ -71,44 +71,51 @@ export function KPISummary() {
     },
   ], [kpis]);
 
-  const costCards = useMemo(() => [
-    {
-      label: 'Costo Personale',
-      value: 4280,
-      prefix: '€ ',
-      suffix: '',
-      decimals: 0,
-      sublabel: '8 operatori × 3,2 gg, media €25/h',
-      icon: Users,
-    },
-    {
-      label: 'Costo Setup',
-      value: 855,
-      prefix: '',
-      suffix: ' min',
-      decimals: 0,
-      sublabel: `${Math.round(855 / (855 + 3690) * 100)}% del tempo totale macchina`,
-      icon: Wrench,
-    },
-    {
-      label: 'Costo Totale Produzione',
-      value: 12750,
-      prefix: '€ ',
-      suffix: '',
-      decimals: 0,
-      sublabel: 'Personale + macchine + energia',
-      icon: Euro,
-    },
-    {
-      label: 'Efficienza Energetica',
-      value: 82.5,
-      prefix: '',
-      suffix: '%',
-      decimals: 1,
-      sublabel: 'Utilizzo medio risorse',
-      icon: Zap,
-    },
-  ], []);
+  const costCards = useMemo(() => {
+    const setupMin = safe(kpis.totalSetupTime);
+    const procMin = safe(kpis.totalProcessingTime);
+    const setupShare = setupMin + procMin > 0
+      ? Math.round((setupMin / (setupMin + procMin)) * 100)
+      : 0;
+    return [
+      {
+        label: 'Costo Personale',
+        value: safe(kpis.costoOperatori),
+        prefix: '€ ',
+        suffix: '',
+        decimals: 0,
+        sublabel: `${operators.length} operatori coinvolti`,
+        icon: Users,
+      },
+      {
+        label: 'Costo Setup',
+        value: safe(kpis.costoSetup),
+        prefix: '€ ',
+        suffix: '',
+        decimals: 0,
+        sublabel: `${setupMin} min totali (${setupShare}% del tempo macchina)`,
+        icon: Wrench,
+      },
+      {
+        label: 'Costo Totale Produzione',
+        value: safe(kpis.costoTotale),
+        prefix: '€ ',
+        suffix: '',
+        decimals: 0,
+        sublabel: 'Personale + setup',
+        icon: Euro,
+      },
+      {
+        label: 'Efficienza Energetica',
+        value: 82.5,
+        prefix: '',
+        suffix: '%',
+        decimals: 1,
+        sublabel: 'Utilizzo medio risorse',
+        icon: Zap,
+      },
+    ];
+  }, [kpis, operators]);
   return (
     <div className="space-y-3">
       {/* Primary KPIs */}

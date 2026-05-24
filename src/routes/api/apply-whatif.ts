@@ -1,0 +1,848 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { z } from 'zod';
+import {
+  checkRateLimit,
+  getClientIp,
+  recordCost,
+} from '@/server/llm/client';
+import { translateWhatIfToConstraint } from '@/server/llm/constraint-translator';
+import { parseIntent } from '@/server/llm/intent-parser';
+import { routeIntent, type BaselineFasi } from '@/server/llm/strategy-router';
+import { loadCatalog } from '@/server/llm/catalog/loader';
+import { apply as applyDataModification, canApply as dataModifierCanApply } from '@/server/llm/data-modifier';
+import { buildFrozenPhases, type FrozenPhase } from '@/server/llm/frozen-window-builder';
+import { resolveTemplate } from '@/lib/api';
+
+/**
+ * Wave 7 BFF route — apply a what-if scenario as a real constraint
+ * change and re-solve.
+ *
+ * Two execution paths share the same SSE response:
+ *
+ *   Wave 7 (preferred, when body.managerText is set):
+ *     parsing_intent → intent_parsed → routed → [solving] → solved → done
+ *     The Haiku intent-parser classifies the manager utterance against
+ *     the closed catalog; the strategy router picks A (data_modification)
+ *     / B (rule_addition) / C (opus_translator fallback).
+ *
+ *   Wave 4.1 backward-compat (when body.managerText is absent):
+ *     translating → translated → solving → solved → done
+ *     Opus 4.7 translator builds the ConstraintChange directly from the
+ *     4-section whatif markdown. This path is unchanged.
+ *
+ * Wave 7 adds three optional body fields:
+ *   - managerText  → fed to the Haiku intent parser (raw utterance).
+ *   - currentTimeMin → planning clock; cutoffMin = currentTimeMin + cushionMin.
+ *   - cushionMin   → default 30, capped at 1440.
+ *
+ * The cutoffMin + frozen_phases (built from the baseline) are forwarded
+ * to /api/public/solve-template; the backend hard-locks pre-cutoff
+ * operations via `model.add(start == fp.start_min)`.
+ *
+ * Alternative terminal events:
+ *   aborted_unsupported → done   (router/translator marked the scenario
+ *                                 unsupported)
+ *   aborted → done               (client disconnect)
+ *   error                         (any fatal error; closes stream)
+ *
+ * Concurrency: per-IP AbortController guards against double-solve.
+ * Rate limit: 5/h on `${ip}:apply_whatif`.
+ *
+ * Cost: Haiku parser + (optional) Opus translator. Both surfaces are
+ * accumulated into a single cost record under surface 'whatif_apply'.
+ */
+
+const BodySchema = z.object({
+  slug: z.string().min(1),
+  originalSolution: z.unknown(),
+  kpis: z.record(z.string(), z.number()),
+  whatifText: z.string().min(3).max(20_000),
+  consultationMd: z.string().optional(),
+  dataSchemaMd: z.string().optional(),
+  // Wave 7 — raw manager utterance for the Haiku intent parser. Falls
+  // back to whatifText when absent, but the parser works better on the
+  // short raw text than on the 4-section markdown.
+  managerText: z.string().min(1).max(4_000).optional(),
+  // Wave 7 — current planning clock (minutes from horizon start). When
+  // absent, no frozen-window is computed (Wave 4.1 behaviour).
+  currentTimeMin: z.number().int().min(0).max(10_000_000).optional(),
+  // Wave 7 — buffer added to currentTimeMin before computing cutoff. Default
+  // matches Plan §2 D1 (30-min cushion). Capped to 24h so a misconfigured
+  // UI cannot push the cutoff past the planning horizon.
+  cushionMin: z.number().int().min(0).max(1_440).default(30),
+});
+
+type Body = z.infer<typeof BodySchema>;
+
+function sseEvent(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+function jsonError(status: number, code: string, message: string): Response {
+  return new Response(JSON.stringify({ error: code, message }), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+// Mirror src/lib/api.ts:_PROBLEM_TYPES so we can detect the company's
+// problem type from the consultation_md the client already supplied —
+// no need to re-fetch /api/public/company/<slug>.
+const PROBLEM_TYPES = ['fjsp', 'jssp', 'flow_shop', 'staff_rostering', 'workforce'] as const;
+type ProblemType = (typeof PROBLEM_TYPES)[number];
+
+function detectProblemTypeFromMd(md: string | undefined): ProblemType {
+  if (!md) return 'fjsp';
+  const m = md.match(/^##\s*Tipo problema:\s*([a-z_]+)/im);
+  if (!m) return 'fjsp';
+  const t = m[1].toLowerCase();
+  return (PROBLEM_TYPES as readonly string[]).includes(t) ? (t as ProblemType) : 'fjsp';
+}
+
+// DA-22: only emit a delta for KPIs present in BOTH baseline and next.
+// Emitting `-baseline` or `+next` for one-sided keys (DA-21 pre-fix) would
+// have suggested the KPI moved to/from zero, which is misleading. One-sided
+// keys instead surface as `missing_kpi:<name>` warnings the UI can render
+// as "metric unavailable" rather than "metric crashed to 0".
+function diffKpis(
+  baseline: Record<string, number>,
+  next: Record<string, number>,
+): { delta: Record<string, number>; warnings: string[] } {
+  const delta: Record<string, number> = {};
+  const warnings: string[] = [];
+  const keys = new Set<string>([...Object.keys(baseline), ...Object.keys(next)]);
+  for (const k of keys) {
+    const a = baseline[k];
+    const b = next[k];
+    if (typeof a === 'number' && typeof b === 'number') {
+      delta[k] = Math.round((b - a) * 1_000_000) / 1_000_000;
+    } else {
+      warnings.push(`missing_kpi:${k}`);
+    }
+  }
+  return { delta, warnings };
+}
+
+// F-W7-08 — describe the user-facing effect of a Wave 7 intent in short
+// Italian strings the SolutionDiff renders as an audit trail. The text
+// is about WHAT changed in the plan (the manager's mental model), not
+// which wire channel carries the payload. So it fires for both Strategy
+// A (data_modification) and Strategy B (rule_addition) variants of the
+// supported intents — the manager doesn't care about the routing detail.
+function describeIntentEffect(
+  intentId: string,
+  entities: Record<string, unknown>,
+): string[] {
+  if (intentId === 'machine_unavailability') {
+    const machineId = String(entities.machine_id ?? '');
+    const start = Number(entities.start_min);
+    const end = entities.end_min !== undefined ? Number(entities.end_min) : null;
+    const window = end !== null && Number.isFinite(end)
+      ? `[${start}, ${end}]`
+      : `[${start}, fine orizzonte]`;
+    return [`Bloccata macchina ${machineId} in finestra ${window} min`];
+  }
+  if (intentId === 'deadline_change') {
+    const orderId = String(entities.order_id ?? '');
+    const newDeadline = Number(entities.new_deadline_min);
+    return [`Aggiornata scadenza commessa ${orderId} → ${newDeadline} min`];
+  }
+  return [];
+}
+
+// Per-IP in-flight guard. Solve is expensive (Opus + backend CPU); a
+// second concurrent request from the same client almost always indicates
+// a runaway UI or a misclick — fail fast with 409 rather than double-pay.
+const _inFlight = new Map<string, AbortController>();
+
+// Per-slug in-flight guard (F-W7-04). Two managers on different IPs
+// can otherwise race on `companies/<slug>/plans/history` (warm-start
+// memory) and corrupt the persisted plan. The lock is scoped to the
+// company slug so unrelated tenants stay independent.
+const _inFlightBySlug = new Map<string, AbortController>();
+
+// Wave 7 — coerce the solution payload (which can be top-level fasi[]
+// or `{commessa: {fasi: []}}`) into the BaselineFasi shape the strategy
+// router expects. Tolerant to legacy fixtures that ship a flat fasi[]
+// at the root.
+function buildBaselineForRouter(originalSolution: unknown): BaselineFasi {
+  if (!originalSolution || typeof originalSolution !== 'object') {
+    return { fasi: [] };
+  }
+  const root = originalSolution as Record<string, unknown>;
+  const flatFasi = Array.isArray(root.fasi)
+    ? (root.fasi as Array<Record<string, unknown>>)
+    : null;
+  const machines = Array.isArray(root.machines) ? (root.machines as string[]) : undefined;
+  const orders = Array.isArray(root.orders) ? (root.orders as string[]) : undefined;
+  const operators = Array.isArray(root.operators) ? (root.operators as string[]) : undefined;
+  const fasi: BaselineFasi['fasi'] = [];
+
+  if (flatFasi) {
+    for (const f of flatFasi) {
+      const commessa = typeof f.commessa === 'string' ? f.commessa : '';
+      const macchina = typeof f.macchina === 'string'
+        ? f.macchina
+        : typeof f.machine_id === 'string'
+          ? (f.machine_id as string)
+          : '';
+      const operatore = typeof f.operatore === 'string' ? f.operatore : undefined;
+      const start_min = typeof f.start_min === 'number' ? f.start_min : 0;
+      const end_min = typeof f.end_min === 'number' ? f.end_min : 0;
+      if (commessa && macchina) {
+        fasi.push({ commessa, macchina, operatore, start_min, end_min });
+      }
+    }
+  } else {
+    // Nested shape `{commessa: {fasi: [...]}}` — flatten into the router's fasi[].
+    for (const [commessa, jobRaw] of Object.entries(root)) {
+      if (!jobRaw || typeof jobRaw !== 'object') continue;
+      const jobFasi = (jobRaw as { fasi?: unknown }).fasi;
+      if (!Array.isArray(jobFasi)) continue;
+      for (const f of jobFasi as Array<Record<string, unknown>>) {
+        const macchina = typeof f.macchina === 'string'
+          ? f.macchina
+          : typeof f.machine_id === 'string'
+            ? (f.machine_id as string)
+            : '';
+        const operatore = typeof f.operatore === 'string' ? f.operatore : undefined;
+        const start_min = typeof f.start_min === 'number' ? f.start_min : 0;
+        const end_min = typeof f.end_min === 'number' ? f.end_min : 0;
+        if (macchina) {
+          fasi.push({ commessa, macchina, operatore, start_min, end_min });
+        }
+      }
+    }
+  }
+  return { fasi, machines, orders, operators };
+}
+
+const SOLVE_TIMEOUT_MS = 60_000;
+// Apply-whatif is the most expensive surface (Opus translator + backend
+// re-solve). Cap below the shared default so even if the global env var
+// raises the others, apply-whatif stays at 5/h.
+const APPLY_WHATIF_LIMIT_PER_HOUR = 5;
+
+export const Route = createFileRoute('/api/apply-whatif')({
+  server: {
+    handlers: {
+      POST: async ({ request }) => {
+        const ip = getClientIp(request);
+        const rl = checkRateLimit(`${ip}:apply_whatif`, APPLY_WHATIF_LIMIT_PER_HOUR);
+        if (!rl.ok) {
+          return jsonError(
+            429,
+            'rate_limited',
+            `Limite di ${rl.limit} richieste/ora superato per apply-whatif.`,
+          );
+        }
+
+        const contentLength = Number(request.headers.get('content-length') || '0');
+        if (contentLength > 256_000) {
+          return jsonError(413, 'payload_too_large', 'Body massimo 256 KB.');
+        }
+
+        let raw: unknown;
+        try {
+          raw = await request.json();
+        } catch {
+          return jsonError(400, 'invalid_json', 'Body non e JSON valido.');
+        }
+
+        const parsed = BodySchema.safeParse(raw);
+        if (!parsed.success) {
+          return jsonError(
+            400,
+            'invalid_body',
+            parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          );
+        }
+        const input: Body = parsed.data;
+
+        if (_inFlight.has(ip)) {
+          return jsonError(
+            409,
+            'conflict',
+            'Un apply-whatif e gia in corso per questo client. Aspetta la conclusione.',
+          );
+        }
+        if (_inFlightBySlug.has(input.slug)) {
+          return jsonError(
+            409,
+            'slug_conflict',
+            `Un apply-whatif e gia in corso per ${input.slug}. Un altro manager sta ricalcolando il piano per questa azienda; riprova quando finisce.`,
+          );
+        }
+
+        const abort = new AbortController();
+        _inFlight.set(ip, abort);
+        _inFlightBySlug.set(input.slug, abort);
+        if (request.signal.aborted) {
+          abort.abort(request.signal.reason);
+        } else {
+          request.signal.addEventListener(
+            'abort',
+            () => abort.abort(request.signal.reason),
+            { once: true },
+          );
+        }
+
+        let lastUsage: {
+          cost_usd: number;
+          tokens_in: number;
+          tokens_out: number;
+          cache_read_tokens?: number;
+          cache_write_tokens?: number;
+        } | null = null;
+        let costRecorded = false;
+        const flushCost = () => {
+          if (costRecorded || !lastUsage) return;
+          costRecorded = true;
+          recordCost({
+            ts: Date.now(),
+            surface: 'whatif_apply',
+            cost_usd: lastUsage.cost_usd,
+            tokens_in: lastUsage.tokens_in,
+            tokens_out: lastUsage.tokens_out,
+            cache_read_tokens: lastUsage.cache_read_tokens,
+            cache_write_tokens: lastUsage.cache_write_tokens,
+          });
+        };
+
+        // Watchdog (w7-tester finding 2026-05-22): the stream's `cancel()`
+        // callback is NOT guaranteed to fire on every client disconnect —
+        // vite dev SSR and some runtimes drop the response without
+        // triggering cancel(). Without a watchdog, the in-flight maps
+        // leak the slug + IP entries forever and every subsequent
+        // request gets a 409 until the process restarts.
+        //
+        // Budget covers BOTH the first solve AND the F-W7-02 INFEASIBLE
+        // retry (each capped at SOLVE_TIMEOUT_MS) plus 30s grace for the
+        // SSE final flush. The earlier cap (SOLVE_TIMEOUT_MS + 30s = 90s)
+        // could fire mid-retry on a borderline INFEASIBLE/retry case (devils
+        // F-W8-05 2026-05-22): first solve 55s INFEASIBLE → retry 50s →
+        // 105s total > 90s → spurious slug-lock release + abort_signal
+        // mid-stream. Two solve budgets + grace = 150s removes the gap.
+        const WATCHDOG_MS = SOLVE_TIMEOUT_MS * 2 + 30_000;
+        let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+        const clearWatchdog = () => {
+          if (watchdogTimer !== null) {
+            clearTimeout(watchdogTimer);
+            watchdogTimer = null;
+          }
+        };
+        const cleanup = () => {
+          if (_inFlight.get(ip) === abort) _inFlight.delete(ip);
+          if (_inFlightBySlug.get(input.slug) === abort) _inFlightBySlug.delete(input.slug);
+          clearWatchdog();
+        };
+        watchdogTimer = setTimeout(() => {
+          // Identity check: only release if our specific abort instance is
+          // still the lock holder. A later, legitimate request that took
+          // ownership must not be dropped by our stale watchdog.
+          if (_inFlight.get(ip) === abort) _inFlight.delete(ip);
+          if (_inFlightBySlug.get(input.slug) === abort) _inFlightBySlug.delete(input.slug);
+          // Also abort the still-pending controller so the (likely orphaned)
+          // stream stops doing work.
+          if (!abort.signal.aborted) abort.abort('watchdog_timeout');
+        }, WATCHDOG_MS);
+
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream<Uint8Array>({
+          async start(controller) {
+            const write = (event: string, data: unknown) => {
+              try { controller.enqueue(encoder.encode(sseEvent(event, data))); }
+              catch { /* closed */ }
+            };
+
+            // Accumulator for the cost stats emitted by either the
+            // intent-parser (Haiku) or the Opus translator. Both call
+            // recordCost via flushCost() at the end of the stream.
+            const accumulateUsage = (u: {
+              cost_usd: number;
+              tokens_in: number;
+              tokens_out: number;
+              cache_read_tokens?: number;
+              cache_write_tokens?: number;
+            }) => {
+              if (!lastUsage) {
+                lastUsage = { ...u };
+              } else {
+                lastUsage.cost_usd += u.cost_usd;
+                lastUsage.tokens_in += u.tokens_in;
+                lastUsage.tokens_out += u.tokens_out;
+                if (u.cache_read_tokens) {
+                  lastUsage.cache_read_tokens = (lastUsage.cache_read_tokens ?? 0) + u.cache_read_tokens;
+                }
+                if (u.cache_write_tokens) {
+                  lastUsage.cache_write_tokens = (lastUsage.cache_write_tokens ?? 0) + u.cache_write_tokens;
+                }
+              }
+            };
+
+            try {
+              const problemType = detectProblemTypeFromMd(input.consultationMd);
+
+              // Wave 7 — frozen-window cutoff. Only computed when the
+              // caller passes currentTimeMin (Wave 4.1 callers omit this
+              // and get the legacy soft-hint behaviour).
+              const cutoffMin = input.currentTimeMin !== undefined
+                ? input.currentTimeMin + input.cushionMin
+                : undefined;
+              const frozenPhases: FrozenPhase[] = cutoffMin !== undefined
+                ? buildFrozenPhases(input.originalSolution, cutoffMin)
+                : [];
+
+              // ── Wave 7 path ────────────────────────────────────────
+              // When the caller passes managerText (the raw utterance) we
+              // run the Haiku intent parser + strategy router. Otherwise
+              // we keep the Wave 4.1 path (translator only).
+              let rulesForSolve: Record<string, unknown> = {};
+              let datasetOverrides: Record<string, unknown> | null = null;
+              let strategyKind: 'A' | 'B' | 'C' | 'unsupported' = 'C';
+              const wave7Warnings: string[] = [];
+              let unsupportedReason: string | null = null;
+              // F-W7-08 — audit trail for Strategy A. Manager must see in
+              // the UI what was changed at the dataset level (e.g.
+              // "Aggiunta finestra manutenzione: M02 [2160,2520]") rather
+              // than just "constraint applied".
+              const datasetOverridesSummary: string[] = [];
+
+              if (input.managerText) {
+                write('parsing_intent', { phase: 'parsing_intent', model: 'haiku-4.5' });
+                const parsed = await parseIntent(input.managerText, {
+                  signal: abort.signal,
+                  onUsage: (u) => { accumulateUsage(u); },
+                });
+                if (abort.signal.aborted || parsed.aborted) {
+                  flushCost();
+                  write('aborted', { reason: 'client_disconnect' });
+                  write('done', {
+                    cost_usd: lastUsage?.cost_usd ?? 0,
+                    tokens_in: lastUsage?.tokens_in ?? 0,
+                    tokens_out: lastUsage?.tokens_out ?? 0,
+                  });
+                  return;
+                }
+                write('intent_parsed', {
+                  intent_id: parsed.intent.intent_id,
+                  entities: parsed.intent.entities,
+                  confidence: parsed.intent.confidence,
+                  fallback_reasoning: parsed.intent.fallback_reasoning,
+                });
+
+                // F-W8-07 — low confidence classification warning. When
+                // Haiku says confidence='low' it has classified an intent
+                // but with multiple assumptions; the manager must be told
+                // the result may not match their intent. Continue the
+                // normal flow (do NOT short-circuit) so the constraint is
+                // still applied, but tag wave7Warnings so the UI renders
+                // a yellow banner. NB: this is DIFFERENT from B-W8-S-04
+                // short-circuit which fires only on (unknown + high).
+                //
+                // F-W9-04 — when intent_id is 'unknown', the yellow
+                // low_confidence banner contradicts the
+                // aborted_unsupported event that fires downstream.
+                // Skip the banner for unknown intents — the manager
+                // will see the explicit unsupported toast instead, no
+                // need to also tell them "low confidence on a result
+                // that didn't apply anyway".
+                if (
+                  parsed.intent.confidence === 'low'
+                  && parsed.intent.intent_id !== 'unknown'
+                ) {
+                  wave7Warnings.push('low_confidence_classification');
+                  console.warn(
+                    '[apply-whatif] low_confidence_classification',
+                    {
+                      intent_id: parsed.intent.intent_id,
+                      fallback_reasoning: parsed.intent.fallback_reasoning,
+                      manager_text: input.managerText?.slice(0, 200),
+                    },
+                  );
+                }
+
+                // B-W8-S-04 — short-circuit the Opus cascade when Haiku
+                // confidently classified the utterance as out-of-catalog.
+                // Previously the router returned `opus_translator` for
+                // every `intent_id === 'unknown'` (strategy-router.ts:452),
+                // which fired the Opus 4.7 translator only to have it
+                // also return `unsupported`. Cost: $0.20 per stress
+                // cycle × 5 = $1.00 wasted per stress run.
+                //
+                // When Haiku says "definitely outside the 5 catalog
+                // intents" (intent_id=unknown + confidence=high), trust
+                // it and emit aborted_unsupported directly. We still
+                // run the cascade for confidence=medium/low so the
+                // Opus translator can rescue ambiguous classifications.
+                if (
+                  parsed.intent.intent_id === 'unknown'
+                  && parsed.intent.confidence === 'high'
+                ) {
+                  strategyKind = 'unsupported';
+                  const reason = parsed.intent.fallback_reasoning
+                    ?? 'haiku_classified_unknown_high_confidence';
+                  wave7Warnings.push('haiku_unknown_high_no_cascade');
+                  write('routed', {
+                    strategy: 'unsupported',
+                    intent_id: 'unknown',
+                    warnings: ['haiku_unknown_high_no_cascade'],
+                  });
+                  flushCost();
+                  write('aborted_unsupported', {
+                    reason,
+                    warnings: wave7Warnings,
+                  });
+                  write('done', {
+                    cost_usd: lastUsage?.cost_usd ?? 0,
+                    tokens_in: lastUsage?.tokens_in ?? 0,
+                    tokens_out: lastUsage?.tokens_out ?? 0,
+                    cache_read_tokens: lastUsage?.cache_read_tokens,
+                    cache_write_tokens: lastUsage?.cache_write_tokens,
+                  });
+                  return;
+                }
+
+                const baselineForRouter = buildBaselineForRouter(input.originalSolution);
+                const catalog = loadCatalog();
+                const outcome = routeIntent({
+                  intent: parsed.intent,
+                  baseline: baselineForRouter,
+                  catalog,
+                  tryDataModification: (intentId, entities) =>
+                    dataModifierCanApply(intentId)
+                      ? applyDataModification(intentId, entities).modified
+                      : null,
+                });
+
+                if (outcome.kind === 'data_modification') {
+                  strategyKind = 'A';
+                  const modRes = applyDataModification(outcome.intent_id, outcome.entities);
+                  if (modRes.modified) {
+                    datasetOverrides = modRes.dataset_overrides;
+                    if (modRes.rules_fallback) {
+                      // Pure Strategy A path uses rules_fallback because
+                      // the backend's dataset-merge is not deep enough
+                      // for the orders shape today.
+                      rulesForSolve = modRes.rules_fallback;
+                      wave7Warnings.push('strategy_a_via_rule_fallback');
+                    }
+                    datasetOverridesSummary.push(
+                      ...describeIntentEffect(outcome.intent_id, outcome.entities),
+                    );
+                  } else {
+                    // Router promised A but modifier rejected — fall back
+                    // to the Opus translator path. Warn but don't fail.
+                    strategyKind = 'C';
+                    wave7Warnings.push('data_modifier_rejected_post_route');
+                  }
+                  wave7Warnings.push(...outcome.warnings);
+                } else if (outcome.kind === 'rule_addition') {
+                  strategyKind = 'B';
+                  rulesForSolve = outcome.rules;
+                  wave7Warnings.push(...outcome.warnings);
+                  // F-W7-08 — emit audit summary for Strategy B too. The
+                  // manager sees what changed regardless of whether the
+                  // intent routed through data_modification or
+                  // rule_addition (machine_unavailability lives here now
+                  // per team-lead 2026-05-22 directive).
+                  datasetOverridesSummary.push(
+                    ...describeIntentEffect(outcome.intent_id, outcome.entities),
+                  );
+                } else if (outcome.kind === 'unsupported') {
+                  strategyKind = 'unsupported';
+                  unsupportedReason = outcome.reason;
+                  wave7Warnings.push(...outcome.warnings);
+                } else {
+                  strategyKind = 'C';
+                  wave7Warnings.push(...outcome.warnings);
+                  wave7Warnings.push(`route_reason:${outcome.reason}`);
+                }
+                write('routed', {
+                  strategy: strategyKind,
+                  intent_id: parsed.intent.intent_id,
+                  warnings: outcome.warnings,
+                });
+
+                if (strategyKind === 'unsupported') {
+                  flushCost();
+                  write('aborted_unsupported', {
+                    reason: unsupportedReason ?? 'unsupported',
+                    warnings: wave7Warnings,
+                  });
+                  write('done', {
+                    cost_usd: lastUsage?.cost_usd ?? 0,
+                    tokens_in: lastUsage?.tokens_in ?? 0,
+                    tokens_out: lastUsage?.tokens_out ?? 0,
+                  });
+                  return;
+                }
+              }
+
+              // Strategy C path — also taken when managerText is absent
+              // (Wave 4.1 backward-compat) or when the router asked for
+              // the Opus translator.
+              if (!input.managerText || strategyKind === 'C') {
+                write('translating', { phase: 'translating' });
+                const tr = await translateWhatIfToConstraint(
+                  {
+                    whatifText: input.whatifText,
+                    originalSolution: input.originalSolution,
+                    kpis: input.kpis,
+                    consultationMd: input.consultationMd,
+                  },
+                  {
+                    signal: abort.signal,
+                    onUsage: (u) => { accumulateUsage(u); },
+                  },
+                );
+                write('translated', { change: tr.change });
+
+                if (abort.signal.aborted || tr.aborted) {
+                  flushCost();
+                  write('aborted', { reason: 'client_disconnect' });
+                  write('done', {
+                    cost_usd: lastUsage?.cost_usd ?? 0,
+                    tokens_in: lastUsage?.tokens_in ?? 0,
+                    tokens_out: lastUsage?.tokens_out ?? 0,
+                  });
+                  return;
+                }
+                if (tr.change.type === 'unsupported') {
+                  flushCost();
+                  write('aborted_unsupported', {
+                    reason: tr.change.unsupportedReason ?? 'unsupported',
+                    warnings: [...wave7Warnings, ...tr.change.warnings],
+                  });
+                  write('done', {
+                    cost_usd: lastUsage?.cost_usd ?? 0,
+                    tokens_in: lastUsage?.tokens_in ?? 0,
+                    tokens_out: lastUsage?.tokens_out ?? 0,
+                  });
+                  return;
+                }
+                rulesForSolve = tr.change.rules;
+                wave7Warnings.push(...(tr.change.warnings ?? []));
+              }
+
+              // Phase 2: solve. No additional LLM cost here.
+              write('solving', { phase: 'solving', strategy: strategyKind });
+
+              // Race the backend call against a 60s timeout that also
+              // listens to the client's abort signal so the BFF doesn't
+              // hold the SSE open forever if daino-backend-definitivo
+              // stalls.
+              // Devils F-W8-04 fix (2026-05-22): an `abort` listener added
+              // to an already-aborted AbortSignal does NOT fire (verified via
+              // node repl). If the client disconnects between awaiting and
+              // arming this race, the setTimeout would tick for the full
+              // SOLVE_TIMEOUT_MS before reject — 60s of stalled SSE. Wrap the
+              // race in a helper that rejects synchronously when the signal
+              // is already aborted, and the listener-arm is guarded by a
+              // second check after the listener registers.
+              const raceWithTimeout = <T>(work: Promise<T>): Promise<T> => {
+                if (abort.signal.aborted) {
+                  return Promise.reject(new Error('aborted'));
+                }
+                const timeoutPromise = new Promise<never>((_, reject) => {
+                  const t = setTimeout(
+                    () => reject(new Error('solve_timeout: il backend non ha risposto entro 60 secondi.')),
+                    SOLVE_TIMEOUT_MS,
+                  );
+                  const onAbort = () => { clearTimeout(t); reject(new Error('aborted')); };
+                  abort.signal.addEventListener('abort', onAbort, { once: true });
+                  // Re-check after addEventListener: if the signal aborted
+                  // synchronously between the entry check and the listener
+                  // attachment, onAbort never fires. Reject now.
+                  if (abort.signal.aborted) onAbort();
+                });
+                return Promise.race([work, timeoutPromise]);
+              };
+
+              let solveResult = await raceWithTimeout(
+                resolveTemplate(
+                  input.slug,
+                  problemType,
+                  rulesForSolve,
+                  cutoffMin,
+                  frozenPhases,
+                  datasetOverrides,
+                ),
+              );
+
+              // F-W7-02 — INFEASIBLE recovery (plan §2 D2: "lock duro +
+              // fallback soft"). If the hard-lock on pre-cutoff phases
+              // made the model infeasible (e.g. the new constraint clashes
+              // with the frozen window), re-solve once in HINT mode so
+              // the solver biases toward the consolidated slots but is
+              // not pinned to them. The manager sees a warning so they
+              // know the production-invariant guarantee was relaxed.
+              if (
+                solveResult.status === 'INFEASIBLE'
+                && frozenPhases.length > 0
+                && !abort.signal.aborted
+              ) {
+                // Backend (commit bba231a) populates wave7.apply_rules even on
+                // INFEASIBLE responses, so the manager/UI can see *which* rules
+                // the solver tried to honour before declaring infeasibility.
+                // Surface that on the lock_relaxing event for a richer toast.
+                //
+                // F-W8-06 Wave 9 OPT 1 (w9-backend-lock-mode 2026-05-23):
+                // backend now accepts `frozen_lock_mode: 'hint'`. The retry
+                // re-submits the SAME frozen_phases list but with the
+                // soft-preference mode, so the consolidated set is
+                // preserved as `model.AddHint` instead of being dropped
+                // wholesale (the Wave 8 Opt 2 fallback). The emitted
+                // warning marker changes from `__plan_recomputed_from_scratch`
+                // (which triggered a red banner) to
+                // `__consolidated_preserved_as_hint` (which keeps the
+                // banner amber).
+                const failedAttempt = solveResult.wave7 ?? null;
+                write('lock_relaxing', {
+                  reason: 'infeasible_with_hard_lock',
+                  frozen_count: frozenPhases.length,
+                  attempted_locks: failedAttempt?.locked_count ?? 0,
+                  attempted_rules: failedAttempt?.apply_rules?.length ?? 0,
+                  // F-W8-06 Wave 9 honest signal: the consolidated phases
+                  // are kept and re-submitted as soft hints — the plan
+                  // is NOT being recomputed from scratch.
+                  recompute_mode: 'frozen_phases_as_hint',
+                });
+                // Devils F-W8-04: explicit re-check between the SSE write and
+                // the retry race. If the client aborted while we were emitting
+                // lock_relaxing, the retry race would otherwise sit on a
+                // 60-second setTimeout (see raceWithTimeout for the deeper
+                // fix). Skip the retry and let the outer try/catch surface
+                // the abort cleanly.
+                if (abort.signal.aborted) {
+                  throw new Error('aborted');
+                }
+                const relaxedResult = await raceWithTimeout(
+                  resolveTemplate(
+                    input.slug,
+                    problemType,
+                    rulesForSolve,
+                    cutoffMin,
+                    frozenPhases, // F-W8-06 Wave 9 OPT 1: full list, NOT [].
+                    datasetOverrides,
+                    'hint', // F-W8-06 Wave 9 OPT 1: soft preference.
+                  ),
+                );
+                solveResult = {
+                  ...relaxedResult,
+                  // F-W8-06 Wave 9 OPT 1 marker. Keep the legacy
+                  // `lock_relaxed_to_soft` so old UIs still light up the
+                  // amber banner; add the new
+                  // `__consolidated_preserved_as_hint` suffix so the UI
+                  // can upgrade the copy to reflect that consolidated
+                  // phases were NOT dropped.
+                  warnings: [
+                    'lock_relaxed_to_soft',
+                    'lock_relaxed_to_soft__consolidated_preserved_as_hint',
+                    ...(relaxedResult.warnings ?? []),
+                  ],
+                };
+              }
+
+              const newKpis: Record<string, number> = solveResult.kpis ?? {};
+              const { delta: deltaKpis, warnings: kpiWarnings } = diffKpis(input.kpis, newKpis);
+
+              flushCost();
+              // Wave 7 — emit the full frozen-phases list on solved so
+              // the UI can populate the "Fasi consolidate (invariate)"
+              // accordion. Each entry already carries both the
+              // backend-required field names (job_id, seq, machine_id,
+              // worker_id) and the legacy-Italian aliases (commessa,
+              // operazione, operatore) from `buildFrozenPhases`. We
+              // also normalise `macchina` so the UI's existing
+              // FrozenPhase shape `{commessa, operazione, macchina,
+              // start_min, end_min}` works without remapping.
+              const lockedPhasesOut = frozenPhases.map((fp) => ({
+                ...fp,
+                macchina: fp.machine_id,
+              }));
+              // Read counts from the backend's Wave 7 envelope. `wave7`
+              // is `null` when no cutoff/frozen/overrides were sent
+              // (Wave 4.1 backward-compat) — keep counts at 0 in that case.
+              const wave7Env = solveResult.wave7 ?? null;
+              const lockedCount = wave7Env?.locked_count ?? 0;
+              // modified_count is the number of dynamic rules that
+              // ACTUALLY took effect on the model. `apply_rules` also
+              // contains skipped/passthrough entries (unknown machine,
+              // extra_capacity routed to wrong layer, etc.) — those
+              // would inflate the count. We split into applied vs
+              // skipped/passthrough so the UI can render either total.
+              const applyRules = wave7Env?.apply_rules ?? [];
+              const isAppliedEntry = (entry: Record<string, unknown>): boolean => {
+                const t = typeof entry.type === 'string' ? entry.type : '';
+                if (t === '') return false;
+                if (t.endsWith('_skipped')) return false;
+                if (t === 'apply_rules_failed') return false;
+                if (t.endsWith('_data_layer_passthrough')) return false;
+                return true;
+              };
+              const modifiedCount = applyRules.filter(isAppliedEntry).length;
+              const skippedRulesCount = applyRules.length - modifiedCount;
+              write('solved', {
+                newSolution: solveResult.solution ?? {},
+                newKpis,
+                deltaKpis,
+                warnings: [
+                  ...wave7Warnings,
+                  ...(solveResult.warnings ?? []),
+                  ...kpiWarnings,
+                ],
+                status: solveResult.status,
+                objective_value: solveResult.objective_value,
+                strategy: strategyKind,
+                cutoff_min: cutoffMin,
+                frozen_count: frozenPhases.length,
+                locked_count: lockedCount,
+                modified_count: modifiedCount,
+                skipped_rules_count: skippedRulesCount,
+                dataset_overrides_summary: datasetOverridesSummary,
+                locked_phases: lockedPhasesOut,
+                // Pass the raw backend envelope through for diagnostics
+                // (devil's advocate + UI can introspect skipped entries).
+                wave7: wave7Env,
+              });
+              write('done', {
+                cost_usd: lastUsage?.cost_usd ?? 0,
+                tokens_in: lastUsage?.tokens_in ?? 0,
+                tokens_out: lastUsage?.tokens_out ?? 0,
+                cache_read_tokens: lastUsage?.cache_read_tokens,
+                cache_write_tokens: lastUsage?.cache_write_tokens,
+              });
+            } catch (err) {
+              flushCost();
+              const msg = err instanceof Error ? err.message : String(err);
+              const code = abort.signal.aborted
+                ? 'aborted'
+                : msg.startsWith('solve_timeout')
+                  ? 'solve_timeout'
+                  : 'apply_failed';
+              write('error', { code, message: msg });
+            } finally {
+              flushCost();
+              cleanup();
+              try { controller.close(); } catch { /* closed */ }
+            }
+          },
+          cancel() {
+            abort.abort('client_disconnect');
+            flushCost();
+            cleanup();
+          },
+        });
+
+        return new Response(stream, {
+          headers: {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-cache, no-transform',
+            'x-rate-limit-remaining': String(rl.remaining),
+          },
+        });
+      },
+    },
+  },
+});

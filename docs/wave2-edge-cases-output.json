@@ -1,0 +1,118 @@
+{
+  "base_url": "/",
+  "total": 10,
+  "passed": 0,
+  "failed": 10,
+  "results": [
+    {
+      "fixture": "optimal",
+      "endpoint": "explain",
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/explain"
+      ],
+      "ms": 0
+    },
+    {
+      "fixture": "optimal",
+      "endpoint": "advise",
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/advise"
+      ],
+      "ms": 0
+    },
+    {
+      "fixture": "feasible-warning",
+      "endpoint": "explain",
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/explain"
+      ],
+      "ms": 0
+    },
+    {
+      "fixture": "feasible-warning",
+      "endpoint": "advise",
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/advise"
+      ],
+      "ms": 0
+    },
+    {
+      "fixture": "infeasible",
+      "endpoint": "explain",
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/explain"
+      ],
+      "ms": 0
+    },
+    {
+      "fixture": "infeasible",
+      "endpoint": "advise",
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/advise"
+      ],
+      "ms": 0
+    },
+    {
+      "fixture": "empty",
+      "endpoint": "explain",
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/explain"
+      ],
+      "ms": 0
+    },
+    {
+      "fixture": "empty",
+      "endpoint": "advise",
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/advise"
+      ],
+      "ms": 0
+    },
+    {
+      "fixture": "malformed",
+      "endpoint": "explain",
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/explain"
+      ],
+      "ms": 0
+    },
+    {
+      "fixture": "malformed",
+      "endpoint": "advise",
+      "status": 0,
+      "pass": false,
+      "preview": "",
+      "reasons": [
+        "Exception: Failed to parse URL from //api/advise"
+      ],
+      "ms": 0
+    }
+  ]
+}

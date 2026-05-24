@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Building2, Package, Wrench, Users, ChevronRight, ChevronLeft, Upload, Plus, Trash2, Zap, CheckCircle2, Loader2, Database } from 'lucide-react';
-import { listCompanies, getCompany, type CompanySummary, type CompanyDetail } from '@/lib/api';
+import { toast } from 'sonner';
+import { listCompanies, getCompany, uploadData, type CompanySummary, type CompanyDetail } from '@/lib/api';
 
 export interface SetupData {
   companyName: string;
@@ -40,7 +41,43 @@ export function SetupPage({ onOptimize }: { onOptimize: (data: SetupData) => voi
   const [companyLoaded, setCompanyLoaded] = useState<CompanyDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
+  const [uploadingCsv, setUploadingCsv] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const csvFileRef = useRef<HTMLInputElement>(null);
+
+  const handleCsvButtonClick = () => {
+    if (!data.companySlug) {
+      toast.error('Seleziona prima un\'azienda — l\'upload e\' legato al tenant.');
+      return;
+    }
+    csvFileRef.current?.click();
+  };
+
+  const handleCsvFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!data.companySlug) {
+      toast.error('Manca lo slug azienda.');
+      return;
+    }
+    setUploadingCsv(true);
+    try {
+      const result = await uploadData(file, data.companySlug);
+      toast.success(`File "${file.name}" caricato (${result.source ?? 'ok'}).`);
+      // Re-fetch company detail so dataFiles is fresh
+      try {
+        const detail = await getCompany(data.companySlug);
+        setCompanyLoaded(detail);
+        setData(prev => ({ ...prev, dataFiles: detail.data_files }));
+      } catch { /* non-fatal */ }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Errore upload');
+    } finally {
+      setUploadingCsv(false);
+      // Reset input so same file can be re-selected
+      if (csvFileRef.current) csvFileRef.current.value = '';
+    }
+  };
 
   // Fetch companies on mount
   useEffect(() => {
@@ -344,10 +381,21 @@ export function SetupPage({ onOptimize }: { onOptimize: (data: SetupData) => voi
                       <h2 className="text-lg font-semibold text-foreground mb-1">Ordini da Pianificare</h2>
                       <p className="text-sm text-muted-foreground">Aggiungi i prodotti da schedulare</p>
                     </div>
-                    <button className="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 px-3 py-1.5 rounded-lg border border-primary/20 hover:bg-primary/5 transition-colors">
-                      <Upload className="w-3.5 h-3.5" />
-                      Importa CSV
+                    <button
+                      onClick={handleCsvButtonClick}
+                      disabled={uploadingCsv}
+                      className="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 px-3 py-1.5 rounded-lg border border-primary/20 hover:bg-primary/5 disabled:opacity-50 transition-colors"
+                    >
+                      {uploadingCsv ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                      {uploadingCsv ? 'Carico...' : 'Importa CSV'}
                     </button>
+                    <input
+                      ref={csvFileRef}
+                      type="file"
+                      accept=".csv,.xlsx,.xls,.pdf"
+                      onChange={handleCsvFileChange}
+                      className="hidden"
+                    />
                   </div>
                   <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
                     {data.orders.map((order, i) => (

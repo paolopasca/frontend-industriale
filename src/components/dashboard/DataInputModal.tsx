@@ -1,6 +1,8 @@
-import { useState } from 'react';
-import { X, Plus, Trash2, Upload, Send, Package, Cpu, Users, Settings, ChevronRight } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { X, Plus, Trash2, Upload, Send, Package, Cpu, Users, Settings, ChevronRight, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { toast } from 'sonner';
+import { pipelineStart, uploadData } from '@/lib/api';
 
 type Tab = 'ordini' | 'macchine' | 'operatori' | 'vincoli';
 
@@ -39,13 +41,110 @@ const tabs: { key: Tab; label: string; icon: typeof Package }[] = [
   { key: 'vincoli', label: 'Vincoli', icon: Settings },
 ];
 
-export function DataInputModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function DataInputModal({
+  open,
+  onClose,
+  companySlug = null,
+  onOptimizeStart,
+}: {
+  open: boolean;
+  onClose: () => void;
+  companySlug?: string | null;
+  onOptimizeStart?: () => void;
+}) {
   const [activeTab, setActiveTab] = useState<Tab>('ordini');
   const [orders, setOrders] = useState<OrderInput[]>([{ ...emptyOrder, id: 'COM-021' }]);
   const [machineInputs, setMachineInputs] = useState<MachineInput[]>([{ ...emptyMachine }]);
   const [operatorInputs, setOperatorInputs] = useState<OperatorInput[]>([{ ...emptyOperator }]);
   const [constraints, setConstraints] = useState('');
   const [maintenanceNotes, setMaintenanceNotes] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const csvFileRef = useRef<HTMLInputElement>(null);
+  const dropFileRef = useRef<HTMLInputElement>(null);
+
+  const handleUpload = async (file: File) => {
+    if (!companySlug) {
+      toast.error('Manca lo slug azienda — non posso caricare il file.');
+      return;
+    }
+    setUploading(true);
+    try {
+      const r = await uploadData(file, companySlug);
+      toast.success(`"${file.name}" caricato (${r.source ?? 'ok'}).`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Errore upload');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleCsvButtonClick = () => csvFileRef.current?.click();
+  const handleDropZoneClick = () => dropFileRef.current?.click();
+
+  const handleCsvFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) await handleUpload(file);
+    if (csvFileRef.current) csvFileRef.current.value = '';
+  };
+
+  const handleDropFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) await handleUpload(file);
+    if (dropFileRef.current) dropFileRef.current.value = '';
+  };
+
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) await handleUpload(file);
+  };
+
+  const handleOptimize = async () => {
+    if (!companySlug) {
+      toast.error('Manca lo slug azienda — apri prima il setup.');
+      return;
+    }
+    // Build a description from the modal state for the LLM pipeline
+    const desc = [
+      orders.length > 0
+        ? `Ordini (${orders.length}): ` +
+          orders
+            .filter(o => o.product || o.client)
+            .map(o => `${o.id || '?'} ${o.product || ''} x${o.quantity || '?'} (${o.priority}, scadenza ${o.deadline || '?'})`)
+            .join('; ')
+        : '',
+      machineInputs.length > 0
+        ? `Macchine (${machineInputs.length}): ` +
+          machineInputs.filter(m => m.name || m.type).map(m => `${m.id || '?'} ${m.name} [${m.type}]`).join('; ')
+        : '',
+      operatorInputs.length > 0
+        ? `Operatori (${operatorInputs.length}): ` +
+          operatorInputs.filter(o => o.name).map(o => `${o.name} (${o.shift}, ${o.costPerHour || '?'} eur/h)`).join('; ')
+        : '',
+      constraints ? `Vincoli: ${constraints}` : '',
+      maintenanceNotes ? `Manutenzione: ${maintenanceNotes}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    setSubmitting(true);
+    try {
+      // Backend definitivo accepts only 'compose' (codegen-pipeline was retired in W1+C6).
+      const res = await pipelineStart(companySlug, desc || 'Ottimizzazione richiesta dall\'utente.', 'compose');
+      toast.success(`Pipeline avviata (session ${res.session_id.slice(0, 8)}…).`);
+      onClose();
+      // Trigger optimizing phase only if caller explicitly opts in;
+      // safer default is to stay on dashboard and let the user see the toast.
+      onOptimizeStart?.();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Errore avvio pipeline');
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const addOrder = () => {
     const nextNum = orders.length + 21;
@@ -128,10 +227,21 @@ export function DataInputModal({ open, onClose }: { open: boolean; onClose: () =
                   <div className="flex items-center justify-between mb-2">
                     <p className="text-sm text-muted-foreground">Aggiungi gli ordini cliente da pianificare</p>
                     <div className="flex gap-2">
-                      <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-xs text-muted-foreground hover:bg-accent transition-colors">
-                        <Upload className="w-3.5 h-3.5" />
-                        Importa CSV
+                      <button
+                        onClick={handleCsvButtonClick}
+                        disabled={uploading}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-xs text-muted-foreground hover:bg-accent disabled:opacity-50 transition-colors"
+                      >
+                        {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                        {uploading ? 'Carico...' : 'Importa CSV'}
                       </button>
+                      <input
+                        ref={csvFileRef}
+                        type="file"
+                        accept=".csv,.xlsx,.xls,.pdf"
+                        onChange={handleCsvFileChange}
+                        className="hidden"
+                      />
                       <button onClick={addOrder} className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary/10 text-xs text-primary font-medium hover:bg-primary/20 transition-colors">
                         <Plus className="w-3.5 h-3.5" />
                         Aggiungi
@@ -338,10 +448,31 @@ export function DataInputModal({ open, onClose }: { open: boolean; onClose: () =
                   </div>
                   <div>
                     <label className="text-sm font-medium text-foreground block mb-2">Upload File Dati</label>
-                    <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/30 transition-colors cursor-pointer">
-                      <Upload className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
-                      <p className="text-sm text-muted-foreground">Trascina file CSV/Excel o clicca per caricare</p>
-                      <p className="text-xs text-muted-foreground/60 mt-1">Formati supportati: .csv, .xlsx, .json</p>
+                    <div
+                      onClick={handleDropZoneClick}
+                      onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                      onDragLeave={() => setDragOver(false)}
+                      onDrop={handleDrop}
+                      className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer ${
+                        dragOver ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/30'
+                      } ${uploading ? 'opacity-60 pointer-events-none' : ''}`}
+                    >
+                      {uploading ? (
+                        <Loader2 className="w-8 h-8 text-primary mx-auto mb-2 animate-spin" />
+                      ) : (
+                        <Upload className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+                      )}
+                      <p className="text-sm text-muted-foreground">
+                        {uploading ? 'Caricamento in corso...' : 'Trascina file CSV/Excel o clicca per caricare'}
+                      </p>
+                      <p className="text-xs text-muted-foreground/60 mt-1">Formati supportati: .csv, .xlsx, .xls</p>
+                      <input
+                        ref={dropFileRef}
+                        type="file"
+                        accept=".csv,.xlsx,.xls,.pdf"
+                        onChange={handleDropFileChange}
+                        className="hidden"
+                      />
                     </div>
                   </div>
                 </div>
@@ -357,10 +488,14 @@ export function DataInputModal({ open, onClose }: { open: boolean; onClose: () =
                 <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-muted-foreground hover:bg-accent transition-colors">
                   Annulla
                 </button>
-                <button className="flex items-center gap-2 px-5 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors">
-                  <Send className="w-4 h-4" />
-                  Ottimizza con AI
-                  <ChevronRight className="w-3.5 h-3.5" />
+                <button
+                  onClick={handleOptimize}
+                  disabled={submitting}
+                  className="flex items-center gap-2 px-5 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                >
+                  {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                  {submitting ? 'Avvio...' : 'Ottimizza con AI'}
+                  {!submitting && <ChevronRight className="w-3.5 h-3.5" />}
                 </button>
               </div>
             </div>

@@ -1,0 +1,218 @@
+{
+  "timestamp": "2026-05-22T21:04:05.619Z",
+  "base_url": "http://localhost:8080",
+  "backend_url": "http://localhost:8001",
+  "total_cycles": 10,
+  "cycles": [
+    {
+      "index": 0,
+      "scenario": "M01 si è rotta al gg1 ore 8, deve restare ferma fino a ore 11.",
+      "machine": "M01",
+      "window_start_min": 480,
+      "window_end_min": 660,
+      "status": "ok",
+      "latency_ms": 11346,
+      "cost_usd": 0.005904,
+      "lock_fired": false,
+      "lock_count": 0,
+      "constraint_respected": true,
+      "candidate_phase_count": 59,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability",
+        "missing_kpi:carico_macchine"
+      ]
+    },
+    {
+      "index": 1,
+      "scenario": "Posso fermare M02 il gg2 dalle 9 alle 13 per manutenzione?",
+      "machine": "M02",
+      "window_start_min": 1980,
+      "window_end_min": 2220,
+      "status": "ok",
+      "latency_ms": 11658,
+      "cost_usd": 0.000933,
+      "lock_fired": false,
+      "lock_count": 0,
+      "constraint_respected": true,
+      "candidate_phase_count": 59,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability",
+        "missing_kpi:carico_macchine"
+      ]
+    },
+    {
+      "index": 2,
+      "scenario": "M03 indisponibile gg3 10-15, vincolo da consolidare.",
+      "machine": "M03",
+      "window_start_min": 3480,
+      "window_end_min": 3780,
+      "status": "ok",
+      "latency_ms": 11443,
+      "cost_usd": 0.000931,
+      "lock_fired": false,
+      "lock_count": 0,
+      "constraint_respected": true,
+      "candidate_phase_count": 59,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability",
+        "missing_kpi:carico_macchine"
+      ]
+    },
+    {
+      "index": 3,
+      "scenario": "Stop M04 gg1 11:00 → 17:00, manutenzione preventiva.",
+      "machine": "M04",
+      "window_start_min": 660,
+      "window_end_min": 1020,
+      "status": "ok",
+      "latency_ms": 11436,
+      "cost_usd": 0.000935,
+      "lock_fired": false,
+      "lock_count": 0,
+      "constraint_respected": true,
+      "candidate_phase_count": 59,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability",
+        "missing_kpi:carico_macchine"
+      ]
+    },
+    {
+      "index": 4,
+      "scenario": "M05 si è rotta al gg2 ore 12, deve restare ferma fino a ore 15.",
+      "machine": "M05",
+      "window_start_min": 2160,
+      "window_end_min": 2340,
+      "status": "ok",
+      "latency_ms": 1291,
+      "cost_usd": 0.000742,
+      "lock_fired": false,
+      "lock_count": 0,
+      "constraint_respected": null,
+      "candidate_phase_count": 0,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability",
+        "missing_kpi:makespan",
+        "missing_kpi:costo_totale_operatori",
+        "missing_kpi:costo_totale_setup",
+        "missing_kpi:ritardo_pesato_totale"
+      ]
+    },
+    {
+      "index": 5,
+      "scenario": "Posso fermare M01 il gg3 dalle 13 alle 17 per manutenzione?",
+      "machine": "M01",
+      "window_start_min": 3660,
+      "window_end_min": 3900,
+      "status": "ok",
+      "latency_ms": 11481,
+      "cost_usd": 0.000933,
+      "lock_fired": false,
+      "lock_count": 0,
+      "constraint_respected": true,
+      "candidate_phase_count": 59,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability",
+        "missing_kpi:carico_macchine"
+      ]
+    },
+    {
+      "index": 6,
+      "scenario": "M02 indisponibile gg1 14-19, vincolo da consolidare.",
+      "machine": "M02",
+      "window_start_min": 840,
+      "window_end_min": 1140,
+      "status": "ok",
+      "latency_ms": 11439,
+      "cost_usd": 0.000926,
+      "lock_fired": false,
+      "lock_count": 0,
+      "constraint_respected": true,
+      "candidate_phase_count": 59,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability",
+        "missing_kpi:carico_macchine"
+      ]
+    },
+    {
+      "index": 7,
+      "scenario": "Stop M03 gg2 15:00 → 21:00, manutenzione preventiva.",
+      "machine": "M03",
+      "window_start_min": 2340,
+      "window_end_min": 2700,
+      "status": "ok",
+      "latency_ms": 11735,
+      "cost_usd": 0.00094,
+      "lock_fired": false,
+      "lock_count": 0,
+      "constraint_respected": true,
+      "candidate_phase_count": 59,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability",
+        "missing_kpi:carico_macchine"
+      ]
+    },
+    {
+      "index": 8,
+      "scenario": "M04 si è rotta al gg3 ore 8, deve restare ferma fino a ore 11.",
+      "machine": "M04",
+      "window_start_min": 3360,
+      "window_end_min": 3540,
+      "status": "ok",
+      "latency_ms": 11236,
+      "cost_usd": 0.000872,
+      "lock_fired": false,
+      "lock_count": 0,
+      "constraint_respected": true,
+      "candidate_phase_count": 59,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability",
+        "missing_kpi:carico_macchine"
+      ]
+    },
+    {
+      "index": 9,
+      "scenario": "Posso fermare M05 il gg1 dalle 9 alle 13 per manutenzione?",
+      "machine": "M05",
+      "window_start_min": 540,
+      "window_end_min": 780,
+      "status": "ok",
+      "latency_ms": 1138,
+      "cost_usd": 0.000923,
+      "lock_fired": false,
+      "lock_count": 0,
+      "constraint_respected": null,
+      "candidate_phase_count": 0,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability",
+        "missing_kpi:makespan",
+        "missing_kpi:costo_totale_operatori",
+        "missing_kpi:costo_totale_setup",
+        "missing_kpi:ritardo_pesato_totale"
+      ]
+    }
+  ],
+  "summary": {
+    "ok": 10,
+    "unsupported": 0,
+    "errors": 0,
+    "lock_fired_count": 0,
+    "lock_fired_pct": 0,
+    "respected_count": 8,
+    "violated_count": 0,
+    "respected_pct_of_ok": 0.8,
+    "latency_ms": {
+      "p50": 11436,
+      "p95": 11735,
+      "max": 11735
+    },
+    "cost": {
+      "mean_usd": 0.0014039,
+      "total_usd": 0.014039,
+      "max_usd": 0.005904
+    },
+    "targets_passed": false,
+    "target_fails": [
+      "respected rate (of OK)"
+    ]
+  }
+}

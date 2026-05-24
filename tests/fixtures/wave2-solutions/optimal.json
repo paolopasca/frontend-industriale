@@ -1,0 +1,23 @@
+{
+  "slug": "demo-commesse",
+  "solution": {
+    "status": "OPTIMAL",
+    "fasi": [
+      {"commessa": "COM-001", "operazione": "taglio", "macchina": "M-1", "operatore": "O-1", "start_min": 0, "end_min": 120, "setup_min": 15, "processing_min": 105},
+      {"commessa": "COM-001", "operazione": "fresatura", "macchina": "M-3", "operatore": "O-2", "start_min": 120, "end_min": 300, "setup_min": 20, "processing_min": 160},
+      {"commessa": "COM-002", "operazione": "taglio", "macchina": "M-2", "operatore": "O-1", "start_min": 0, "end_min": 90, "setup_min": 15, "processing_min": 75},
+      {"commessa": "COM-002", "operazione": "fresatura", "macchina": "M-3", "operatore": "O-2", "start_min": 300, "end_min": 480, "setup_min": 25, "processing_min": 155}
+    ]
+  },
+  "kpis": {
+    "makespan_min": 2880,
+    "on_time_rate": 0.95,
+    "cost_usd": 4380,
+    "max_machine_util": 0.92,
+    "n_commesse": 21,
+    "setup_cost_usd": 410,
+    "operator_cost_usd": 3970,
+    "n_macchine_attive": 13,
+    "saturation_avg": 0.74
+  }
+}

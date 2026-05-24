@@ -1,7 +1,27 @@
 import { motion } from 'framer-motion';
-import { RefreshCw, FileDown, Plus } from 'lucide-react';
+import { RefreshCw, FileDown, Plus, ArrowLeft } from 'lucide-react';
+import { toast } from 'sonner';
+import { clearSlugScoped } from '@/lib/storage';
 
-export function DashboardHeader({ onReplan, onAddData }: { onReplan: () => void; onAddData: () => void }) {
+export function DashboardHeader({
+  onReplan,
+  onAddData,
+  onReset,
+  companySlug,
+}: {
+  onReplan: () => void;
+  onAddData: () => void;
+  onReset?: () => void;
+  companySlug?: string | null;
+}) {
+  const handleExportPdf = () => {
+    toast.info('Apertura finestra di stampa — scegli "Salva come PDF" per esportare.');
+    setTimeout(() => window.print(), 250);
+  };
+  const handleReset = () => {
+    if (companySlug) clearSlugScoped(companySlug);
+    onReset?.();
+  };
   return (
     <motion.header
       initial={{ opacity: 0, y: -20 }}
@@ -21,7 +41,16 @@ export function DashboardHeader({ onReplan, onAddData }: { onReplan: () => void;
           </p>
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 no-print">
+        {onReset && (
+          <button
+            onClick={handleReset}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg border border-border text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Nuova Ottimizzazione
+          </button>
+        )}
         <button
           onClick={onAddData}
           className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
@@ -36,7 +65,10 @@ export function DashboardHeader({ onReplan, onAddData }: { onReplan: () => void;
           <RefreshCw className="w-4 h-4" />
           Ripianifica
         </button>
-        <button className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-sm font-medium text-foreground hover:bg-accent/80 transition-colors">
+        <button
+          onClick={handleExportPdf}
+          className="no-print flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-sm font-medium text-foreground hover:bg-accent/80 transition-colors"
+        >
           <FileDown className="w-4 h-4" />
           Esporta PDF
         </button>

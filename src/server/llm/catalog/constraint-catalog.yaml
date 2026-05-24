@@ -1,0 +1,178 @@
+version: 1
+description: >-
+  Wave 7 — Closed menu of constraint intents the manager can describe in
+  Italian. The intent parser (Haiku 4.5) MUST return one of these `id` values
+  or `unknown`. Each intent declares a primary strategy ("data_modification"
+  modifies the dataset before solving; "rule_addition" emits a rules payload)
+  plus a fallback strategy if the primary cannot be applied. All entity
+  validators are deterministic, run by `strategy-router.ts` against the
+  current baseline.
+
+intents:
+  - id: machine_unavailability
+    description_it: "Macchina indisponibile per finestra oraria"
+    # team-lead 2026-05-22: catalog still declares data_modification as
+    # primary so the strategy-router unit tests in w7-intent-parser's
+    # ownership continue to verify the A → B fallback. The data-modifier
+    # disables A for this intent (canApply returns false) so in practice
+    # the router always cascades to rule_addition with the works-today
+    # rules.unavailable_machines payload.
+    strategy: data_modification
+    fallback_strategy: rule_addition
+    fallback_rule_key: unavailable_machines
+    entities:
+      machine_id:
+        required: true
+        validator: must_exist_in_solution_machines
+      start_min:
+        required: true
+        validator: positive_int
+      end_min:
+        required: false
+        validator: gt_start
+        default_to: horizon_end
+      label:
+        required: false
+        validator: short_string
+    italian_triggers:
+      - "{machine} (rotta|rotto|fuori|kaput|indisponibile|ferma|fermo|in panne)"
+      - "{verbo_fermo} {machine}"
+      - "fermo macchina {machine}"
+      - "{machine} non funziona"
+    examples:
+      - input: "M2 si è rotto al gg2 ore 12"
+        intent: machine_unavailability
+        entities:
+          machine_id: "M02"
+          start_min: 2160
+          end_min: 2520
+      - input: "Fermo M-3 dalle 14 alle 18 di domani"
+        intent: machine_unavailability
+        entities:
+          machine_id: "M-3"
+          start_min: 2280
+          end_min: 2520
+
+  - id: order_priority
+    description_it: "Anticipare una o piu' commesse"
+    strategy: rule_addition
+    fallback_strategy: rule_addition
+    fallback_rule_key: priority_orders
+    entities:
+      order_ids:
+        required: true
+        validator: each_must_exist_in_solution_orders
+    italian_triggers:
+      - "anticipa {order}"
+      - "priorità {order}"
+      - "fai prima {order}"
+      - "urgenza {order}"
+      - "metti per prima {order}"
+    examples:
+      - input: "Anticipa COM-007 prima delle altre"
+        intent: order_priority
+        entities:
+          order_ids: ["COM-007"]
+      - input: "Priorità a COM-002 e COM-005"
+        intent: order_priority
+        entities:
+          order_ids: ["COM-002", "COM-005"]
+
+  - id: deadline_change
+    description_it: "Spostare la scadenza di una commessa"
+    strategy: data_modification
+    fallback_strategy: rule_addition
+    fallback_rule_key: deadline_changes
+    entities:
+      order_id:
+        required: true
+        validator: must_exist_in_solution_orders
+      new_deadline_min:
+        required: true
+        validator: positive_int
+      iso_datetime:
+        required: false
+        validator: iso_datetime_string
+    italian_triggers:
+      - "sposta deadline {order}"
+      - "{order} entro {date}"
+      - "scadenza {order} cambia"
+      - "deadline {order} nuova"
+    examples:
+      - input: "Sposta COM-002 entro fine giornata di domani"
+        intent: deadline_change
+        entities:
+          order_id: "COM-002"
+          new_deadline_min: 2880
+
+  - id: capacity_addition
+    description_it: "Aggiungere capacita' produttiva (operatori o turno extra)"
+    # Wave 9 T1 (w9-backend-rules-consumer 2026-05-23): backend now has a
+    # real `extra_capacity_added` consumer in f_apply_rules.py. Skip
+    # reasons (`dataset_not_dual_resource`, `missing_shift_id`,
+    # `unknown_shift_id`, `invalid_extra_operators`) are emitted explicitly
+    # on `wave7.apply_rules[]` when the rule cannot be applied — no more
+    # silent no-ops. The `not_implemented` flag is therefore removed.
+    strategy: rule_addition
+    fallback_strategy: rule_addition
+    fallback_rule_key: extra_capacity
+    entities:
+      operators:
+        required: false
+        validator: positive_int
+      shift:
+        required: false
+        validator: shift_name_enum
+      machine_id:
+        required: false
+        validator: must_exist_in_solution_machines
+      duration_min:
+        required: false
+        validator: positive_int
+    italian_triggers:
+      - "aggiungi operatore"
+      - "turno (serale|notturno|extra)"
+      - "operatore in piu'"
+      - "ore straordinarie"
+      - "rinforzo {shift}"
+    examples:
+      - input: "Aggiungi un operatore in turno serale"
+        intent: capacity_addition
+        entities:
+          operators: 1
+          shift: "serale"
+
+  - id: shift_window
+    description_it: "Modifica orari di un turno (start/end)"
+    # Wave 9 T1 (w9-backend-rules-consumer 2026-05-23): backend now has a
+    # real `shift_window_modified` consumer in f_apply_rules.py that
+    # propagates the new bounds into the time-window builder. Explicit
+    # skip reasons (`no_shift_types_in_dataset`, `missing_shift_id`,
+    # `unknown_shift_id`, `shift_entry_not_dict`, `no_bounds_provided`,
+    # `invalid_range`, `end_exceeds_day_length`) surface on
+    # `wave7.apply_rules[]` so the BFF/UI can show "skipped: <reason>".
+    strategy: rule_addition
+    fallback_strategy: rule_addition
+    fallback_rule_key: shift_changes
+    entities:
+      shift_id:
+        required: true
+        validator: shift_name_or_id
+      start_min:
+        required: false
+        validator: positive_int
+      end_min:
+        required: false
+        validator: gt_start
+    italian_triggers:
+      - "turno mattina (anticipato|posticipato|allungato)"
+      - "anticipa turno {shift}"
+      - "estendi turno {shift}"
+      - "turno {shift} dalle {time} alle {time}"
+    examples:
+      - input: "Anticipa il turno mattina di un'ora"
+        intent: shift_window
+        entities:
+          shift_id: "turno_mattina"
+          start_min: 360
+          end_min: 720

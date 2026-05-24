@@ -1,0 +1,69 @@
+{
+  "base_url": "/",
+  "fixtures": [
+    "optimal",
+    "feasible-warning",
+    "infeasible",
+    "empty",
+    "malformed"
+  ],
+  "scenario": "Analizza la criticità principale del piano corrente e dimmi cosa rischio se non intervengo.",
+  "pass_threshold": 0.95,
+  "fail_threshold": 0.9,
+  "total_cost_usd": 0,
+  "global": {
+    "cited": 0,
+    "verified": 0,
+    "ratio": 1,
+    "verdict": "WARN",
+    "strict_call_count": 0
+  },
+  "per_fixture": [
+    {
+      "fixture": "optimal",
+      "status": "fail",
+      "cited": 0,
+      "verified": 0,
+      "ratio": null,
+      "ms": 25,
+      "error": "Failed to parse URL from //api/whatif"
+    },
+    {
+      "fixture": "feasible-warning",
+      "status": "fail",
+      "cited": 0,
+      "verified": 0,
+      "ratio": null,
+      "ms": 0,
+      "error": "Failed to parse URL from //api/whatif"
+    },
+    {
+      "fixture": "infeasible",
+      "status": "fail",
+      "cited": 0,
+      "verified": 0,
+      "ratio": null,
+      "ms": 0,
+      "error": "Failed to parse URL from //api/whatif"
+    },
+    {
+      "fixture": "empty",
+      "status": "fail",
+      "cited": 0,
+      "verified": 0,
+      "ratio": null,
+      "ms": 1,
+      "error": "Failed to parse URL from //api/whatif"
+    },
+    {
+      "fixture": "malformed",
+      "status": "fail",
+      "cited": 0,
+      "verified": 0,
+      "ratio": null,
+      "ms": 0,
+      "error": "Failed to parse URL from //api/whatif"
+    }
+  ],
+  "unverified_samples": []
+}

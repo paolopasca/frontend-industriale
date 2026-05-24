@@ -27,6 +27,11 @@ export interface Operation {
   startMinute: number;
   sequence: number;
   description: string;
+  // Wall-clock timestamps emitted by the backend ("YYYY-MM-DD HH:MM").
+  // Present whenever the FJSP solver produced a real schedule; absent on
+  // mock fallback data so callers must guard.
+  startDatetime?: string;
+  endDatetime?: string;
 }
 
 export interface Order {
@@ -267,6 +272,9 @@ export const kpis = {
   ordersOnTime: 17,
   ordersLate: 3,
   totalOrders: 20,
+  costoOperatori: 4280,
+  costoSetup: 855,
+  costoTotale: 5135,
 };
 
 // ==================== HELPERS ====================

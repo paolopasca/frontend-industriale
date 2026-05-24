@@ -1,0 +1,822 @@
+{
+  "timestamp": "2026-05-22T22:01:57.582Z",
+  "base_url": "http://localhost:8080",
+  "backend_url": "http://localhost:8001",
+  "slug": "demo-commesse",
+  "cost_cap_usd": 1,
+  "total_scenarios": 18,
+  "cycles": [
+    {
+      "index": 0,
+      "scenario_id": "wf_mu_01_smoke",
+      "category": "standard",
+      "utterance": "Senti, M03 ha cominciato a fumare stamattina, dobbiamo lasciarla ferma fino a stasera",
+      "expected_intent_ids": [
+        "machine_unavailability"
+      ],
+      "expected_strategy": "B",
+      "parsed_intent_id": "machine_unavailability",
+      "parsed_entities": {
+        "machine_id": "M03",
+        "start_min": 480,
+        "end_min": 1080
+      },
+      "parsed_confidence": "medium",
+      "strategy": "B",
+      "solve_status": "INFEASIBLE",
+      "locked_count": 0,
+      "modified_count": 1,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": true,
+      "constraint_respected": null,
+      "regression_failures": [],
+      "cost_usd": 0.006331,
+      "latency_ms": 17879,
+      "current_time_min": 0,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability",
+        "missing_kpi:makespan",
+        "missing_kpi:costo_totale_operatori",
+        "missing_kpi:costo_totale_setup",
+        "missing_kpi:ritardo_pesato_totale"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 1,
+      "scenario_id": "wf_mu_02_maintenance",
+      "category": "standard",
+      "utterance": "Fermo M02 dalle 14 alle 18 di domani per manutenzione programmata",
+      "expected_intent_ids": [
+        "machine_unavailability"
+      ],
+      "expected_strategy": "B",
+      "parsed_intent_id": "machine_unavailability",
+      "parsed_entities": {
+        "machine_id": "M02",
+        "start_min": 2280,
+        "end_min": 2520,
+        "label": "manutenzione programmata"
+      },
+      "parsed_confidence": "high",
+      "strategy": "B",
+      "solve_status": "FEASIBLE",
+      "locked_count": 0,
+      "modified_count": 1,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": true,
+      "constraint_respected": true,
+      "regression_failures": [],
+      "cost_usd": 0.00094,
+      "latency_ms": 11465,
+      "current_time_min": 0,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability",
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 2,
+      "scenario_id": "wf_mu_03_full_gg2",
+      "category": "standard",
+      "utterance": "M04 indisponibile tutto il gg2 per intervento elettricista",
+      "expected_intent_ids": [
+        "machine_unavailability"
+      ],
+      "expected_strategy": "B",
+      "parsed_intent_id": "machine_unavailability",
+      "parsed_entities": {
+        "machine_id": "M04",
+        "start_min": 1440,
+        "end_min": 2880,
+        "label": "intervento elettricista"
+      },
+      "parsed_confidence": "high",
+      "strategy": "B",
+      "solve_status": "FEASIBLE",
+      "locked_count": 0,
+      "modified_count": 1,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": true,
+      "constraint_respected": true,
+      "regression_failures": [],
+      "cost_usd": 0.00093,
+      "latency_ms": 28374,
+      "current_time_min": 0,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability",
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 3,
+      "scenario_id": "wf_mu_04_pomeriggio",
+      "category": "standard",
+      "utterance": "Stop a M01 nel pomeriggio di oggi fino a fine giornata",
+      "expected_intent_ids": [
+        "machine_unavailability"
+      ],
+      "expected_strategy": "B",
+      "parsed_intent_id": "machine_unavailability",
+      "parsed_entities": {
+        "machine_id": "M01",
+        "start_min": 840,
+        "end_min": 1080
+      },
+      "parsed_confidence": "high",
+      "strategy": "B",
+      "solve_status": "FEASIBLE",
+      "locked_count": 0,
+      "modified_count": 1,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": true,
+      "constraint_respected": true,
+      "regression_failures": [],
+      "cost_usd": 0.000859,
+      "latency_ms": 11335,
+      "current_time_min": 0,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability",
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 4,
+      "scenario_id": "wf_op_01_urgent_client",
+      "category": "standard",
+      "utterance": "Il caposquadra dice che dobbiamo sbrigarci con COM-007, il cliente sta facendo un casino al telefono",
+      "expected_intent_ids": [
+        "order_priority"
+      ],
+      "expected_strategy": "B",
+      "parsed_intent_id": "order_priority",
+      "parsed_entities": {
+        "order_ids": [
+          "COM-007"
+        ]
+      },
+      "parsed_confidence": "high",
+      "strategy": "B",
+      "solve_status": "FEASIBLE",
+      "locked_count": 0,
+      "modified_count": 1,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": true,
+      "constraint_respected": true,
+      "regression_failures": [],
+      "cost_usd": 0.000766,
+      "latency_ms": 11262,
+      "current_time_min": 0,
+      "warnings": [
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 5,
+      "scenario_id": "wf_op_02_explicit",
+      "category": "standard",
+      "utterance": "Dai priorità alla commessa COM-003 rispetto alle altre",
+      "expected_intent_ids": [
+        "order_priority"
+      ],
+      "expected_strategy": "B",
+      "parsed_intent_id": "order_priority",
+      "parsed_entities": {
+        "order_ids": [
+          "COM-003"
+        ]
+      },
+      "parsed_confidence": "high",
+      "strategy": "B",
+      "solve_status": "FEASIBLE",
+      "locked_count": 0,
+      "modified_count": 1,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": true,
+      "constraint_respected": true,
+      "regression_failures": [],
+      "cost_usd": 0.000751,
+      "latency_ms": 27667,
+      "current_time_min": 0,
+      "warnings": [
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 6,
+      "scenario_id": "wf_op_03_two_orders",
+      "category": "standard",
+      "utterance": "Tira fuori prima COM-001 e COM-008, sono in scadenza",
+      "expected_intent_ids": [
+        "order_priority"
+      ],
+      "expected_strategy": "B",
+      "parsed_intent_id": "order_priority",
+      "parsed_entities": {
+        "order_ids": [
+          "COM-001",
+          "COM-008"
+        ]
+      },
+      "parsed_confidence": "high",
+      "strategy": "B",
+      "solve_status": "FEASIBLE",
+      "locked_count": 0,
+      "modified_count": 1,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": true,
+      "constraint_respected": true,
+      "regression_failures": [],
+      "cost_usd": 0.000691,
+      "latency_ms": 11094,
+      "current_time_min": 0,
+      "warnings": [
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 7,
+      "scenario_id": "wf_dc_01_explicit_day",
+      "category": "standard",
+      "utterance": "Aggiorna la scadenza di COM-005: deve essere finita entro fine giornata di domani",
+      "expected_intent_ids": [
+        "deadline_change"
+      ],
+      "expected_strategy": "A",
+      "parsed_intent_id": "deadline_change",
+      "parsed_entities": {
+        "order_id": "COM-005",
+        "new_deadline_min": 2520
+      },
+      "parsed_confidence": "high",
+      "strategy": "A",
+      "solve_status": "FEASIBLE",
+      "locked_count": 0,
+      "modified_count": 1,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": true,
+      "constraint_respected": true,
+      "regression_failures": [],
+      "cost_usd": 0.000822,
+      "latency_ms": 27834,
+      "current_time_min": 0,
+      "warnings": [
+        "strategy_a_via_rule_fallback",
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 8,
+      "scenario_id": "wf_dc_02_two_days",
+      "category": "standard",
+      "utterance": "Sposta in avanti la scadenza di COM-002 a fine gg3",
+      "expected_intent_ids": [
+        "deadline_change"
+      ],
+      "expected_strategy": "A",
+      "parsed_intent_id": "deadline_change",
+      "parsed_entities": {
+        "order_id": "COM-002",
+        "new_deadline_min": 3960
+      },
+      "parsed_confidence": "high",
+      "strategy": "A",
+      "solve_status": "FEASIBLE",
+      "locked_count": 0,
+      "modified_count": 1,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": true,
+      "constraint_respected": true,
+      "regression_failures": [],
+      "cost_usd": 0.000816,
+      "latency_ms": 46219,
+      "current_time_min": 0,
+      "warnings": [
+        "strategy_a_via_rule_fallback",
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 9,
+      "scenario_id": "wf_dc_03_anticipate",
+      "category": "standard",
+      "utterance": "COM-004 deve essere chiusa entro mezzogiorno di domani",
+      "expected_intent_ids": [
+        "deadline_change"
+      ],
+      "expected_strategy": "A",
+      "parsed_intent_id": "deadline_change",
+      "parsed_entities": {
+        "order_id": "COM-004",
+        "new_deadline_min": 2160
+      },
+      "parsed_confidence": "high",
+      "strategy": "A",
+      "solve_status": "FEASIBLE",
+      "locked_count": 0,
+      "modified_count": 1,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": true,
+      "constraint_respected": true,
+      "regression_failures": [],
+      "cost_usd": 0.000703,
+      "latency_ms": 27576,
+      "current_time_min": 0,
+      "warnings": [
+        "strategy_a_via_rule_fallback",
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 10,
+      "scenario_id": "adv_dialect",
+      "category": "adversarial",
+      "adversarial_kind": "dialect_regional",
+      "utterance": "Sta camola fa scintille, fermala finché nu vengo a 'ddà",
+      "expected_intent_ids": [
+        "unknown"
+      ],
+      "expected_strategy": "unsupported",
+      "parsed_intent_id": "machine_unavailability",
+      "parsed_entities": {
+        "machine_id": "camola",
+        "start_min": 0
+      },
+      "parsed_confidence": "medium",
+      "strategy": "unsupported",
+      "solve_status": null,
+      "locked_count": 0,
+      "modified_count": 0,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": false,
+      "strategy_correct": true,
+      "constraint_respected": null,
+      "regression_failures": [],
+      "cost_usd": 0.25485599999999997,
+      "latency_ms": 8344,
+      "current_time_min": 0,
+      "warnings": [
+        "default_applied:end_min=horizon_end(1814)",
+        "route_reason:entity_validation_failed:machine_id:unknown_machine:camola",
+        "unknown_machine:camola",
+        "missing_time_window",
+        "scenario_text_ambiguous"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "translating",
+        "translated",
+        "aborted_unsupported",
+        "done"
+      ]
+    },
+    {
+      "index": 11,
+      "scenario_id": "adv_ambiguous_ref",
+      "category": "adversarial",
+      "adversarial_kind": "ambiguous_machine_ref",
+      "utterance": "La macchina nuova, quella vicino alla porta del magazzino, lasciamola spenta oggi pomeriggio",
+      "expected_intent_ids": [
+        "unknown"
+      ],
+      "expected_strategy": "unsupported",
+      "parsed_intent_id": "unknown",
+      "parsed_entities": {},
+      "parsed_confidence": "high",
+      "strategy": "unsupported",
+      "solve_status": null,
+      "locked_count": 0,
+      "modified_count": 0,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": true,
+      "constraint_respected": null,
+      "regression_failures": [],
+      "cost_usd": 0.200217,
+      "latency_ms": 7994,
+      "current_time_min": 0,
+      "warnings": [
+        "route_reason:la macchina non è identificata con un ID standard (es. M01, M2, M-3); la descrizione 'macchina nuova vicino alla porta del magazzino' è un riferimento naturale ma non è un machine_id valido per il catalogo chiuso",
+        "unknown_machine:descrizione_fisica_non_mappata",
+        "assumed_afternoon_window_not_resolvable"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "translating",
+        "translated",
+        "aborted_unsupported",
+        "done"
+      ]
+    },
+    {
+      "index": 12,
+      "scenario_id": "adv_multi_intent",
+      "category": "adversarial",
+      "adversarial_kind": "multi_intent",
+      "utterance": "M02 è rotta dalle 10 e ho un operatore in più stasera, anticipa anche COM-001",
+      "expected_intent_ids": [
+        "unknown"
+      ],
+      "expected_strategy": "unsupported",
+      "parsed_intent_id": "unknown",
+      "parsed_entities": {},
+      "parsed_confidence": "high",
+      "strategy": "unsupported",
+      "solve_status": null,
+      "locked_count": 0,
+      "modified_count": 0,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": true,
+      "constraint_respected": null,
+      "regression_failures": [],
+      "cost_usd": 0.203211,
+      "latency_ms": 8668,
+      "current_time_min": 0,
+      "warnings": [
+        "route_reason:utterance contiene tre intent distinti (machine_unavailability + capacity_addition + order_priority) in una singola richiesta; il parser deterministico mappa una frase a un solo intent. il router downstream deve frammentare e re-inviare al parser",
+        "multiple_intents_detected:block_machine+add_capacity+force_priority",
+        "ambiguous_start_time=10:00 senza giorno esplicito",
+        "ambiguous_end_window for M02 breakdown",
+        "ambiguous_shift='stasera' for extra operator"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "translating",
+        "translated",
+        "aborted_unsupported",
+        "done"
+      ]
+    },
+    {
+      "index": 13,
+      "scenario_id": "adv_negation",
+      "category": "adversarial",
+      "adversarial_kind": "negation",
+      "utterance": "NON spostare la scadenza di COM-002, lascia tutto come sta",
+      "expected_intent_ids": [
+        "unknown"
+      ],
+      "expected_strategy": "unsupported",
+      "parsed_intent_id": "unknown",
+      "parsed_entities": {},
+      "parsed_confidence": "high",
+      "strategy": "unsupported",
+      "solve_status": null,
+      "locked_count": 0,
+      "modified_count": 0,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": true,
+      "constraint_respected": null,
+      "regression_failures": [],
+      "cost_usd": 0.194958,
+      "latency_ms": 6284,
+      "current_time_min": 0,
+      "warnings": [
+        "route_reason:l'utterance esprime un'istruzione negativa ('NON spostare') che non corrisponde a nessun intent del catalogo chiuso; nessuna richiesta di modifica o azione classificabile",
+        "no_actionable_constraint"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "translating",
+        "translated",
+        "aborted_unsupported",
+        "done"
+      ]
+    },
+    {
+      "index": 14,
+      "scenario_id": "adv_typo",
+      "category": "adversarial",
+      "adversarial_kind": "typo",
+      "utterance": "anitcipa la commesa COM 007 prma delle altre",
+      "expected_intent_ids": [
+        "unknown",
+        "order_priority"
+      ],
+      "parsed_intent_id": "order_priority",
+      "parsed_entities": {
+        "order_ids": [
+          "COM-007"
+        ]
+      },
+      "parsed_confidence": "high",
+      "strategy": "B",
+      "solve_status": "FEASIBLE",
+      "locked_count": 0,
+      "modified_count": 1,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": null,
+      "constraint_respected": null,
+      "regression_failures": [],
+      "cost_usd": 0.000751,
+      "latency_ms": 19707,
+      "current_time_min": 0,
+      "warnings": [
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 15,
+      "scenario_id": "reg_01_m2_no_zero",
+      "category": "regression",
+      "utterance": "M2 si è rotto stamattina, fermala fino a fine giornata",
+      "expected_intent_ids": [
+        "machine_unavailability"
+      ],
+      "expected_strategy": "B",
+      "parsed_intent_id": "machine_unavailability",
+      "parsed_entities": {
+        "machine_id": "M2",
+        "start_min": 480,
+        "end_min": 1080
+      },
+      "parsed_confidence": "high",
+      "strategy": "B",
+      "solve_status": "FEASIBLE",
+      "locked_count": 0,
+      "modified_count": 1,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": true,
+      "constraint_respected": false,
+      "regression_failures": [],
+      "cost_usd": 0.00086,
+      "latency_ms": 11054,
+      "current_time_min": 0,
+      "warnings": [
+        "canonicalised:machine_id:M2->M02",
+        "data_modifier_no_implementation:machine_unavailability",
+        "missing_kpi:carico_macchine"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "solving",
+        "solved",
+        "done"
+      ]
+    },
+    {
+      "index": 16,
+      "scenario_id": "reg_02_vague_window_gg3",
+      "category": "regression",
+      "utterance": "M05 in panne, vincolo da consolidare per il gg3",
+      "expected_intent_ids": [
+        "machine_unavailability"
+      ],
+      "parsed_intent_id": "machine_unavailability",
+      "parsed_entities": {
+        "machine_id": "M05",
+        "start_min": 2880
+      },
+      "parsed_confidence": "medium",
+      "strategy": "unsupported",
+      "solve_status": null,
+      "locked_count": 0,
+      "modified_count": 0,
+      "skipped_rules_count": 0,
+      "frozen_count": 0,
+      "intent_correct": true,
+      "strategy_correct": null,
+      "constraint_respected": null,
+      "regression_failures": [
+        "cost_above_ceiling:$0.19240>$0.05000",
+        "classified_as_unsupported_but_should_not_be"
+      ],
+      "cost_usd": 0.192401,
+      "latency_ms": 5700,
+      "current_time_min": 0,
+      "warnings": [
+        "default_applied:end_min=horizon_end(1814)",
+        "route_reason:entity_validation_failed:end_min:end_min_not_greater_than_start_min",
+        "assumed_full_day_block=gg3 00:00-24:00 from 'gg3'",
+        "no_explicit_time_window_provided",
+        "safety_gate:window_exceeds_half_horizon:1440min"
+      ],
+      "events_seen": [
+        "parsing_intent",
+        "intent_parsed",
+        "routed",
+        "translating",
+        "translated",
+        "aborted_unsupported",
+        "done"
+      ]
+    }
+  ],
+  "summary": {
+    "intent_correct": 16,
+    "intent_total": 17,
+    "intent_pct": 0.9411764705882353,
+    "strategy_correct": 15,
+    "strategy_scored": 15,
+    "strategy_pct": 1,
+    "respected": 9,
+    "verifiable": 10,
+    "violations": 1,
+    "errors": 0,
+    "by_category": {
+      "standard": {
+        "total": 10,
+        "intent_ok": 10,
+        "strategy_ok": 10
+      },
+      "adversarial": {
+        "total": 5,
+        "intent_ok": 4,
+        "strategy_ok": 4
+      },
+      "regression": {
+        "total": 2,
+        "intent_ok": 2,
+        "strategy_ok": 1
+      }
+    },
+    "cost": {
+      "mean": 0.06240370588235294,
+      "total": 1.060863,
+      "p50": 0.00086,
+      "p95": 0.25485599999999997,
+      "p99": 0.25485599999999997
+    },
+    "latency_ms": {
+      "p50": 11335,
+      "p95": 46219,
+      "max": 46219
+    },
+    "diverse_slugs": false,
+    "verdict": "NO-GO",
+    "target_results": [
+      {
+        "name": "Intent correct ≥ 80% (12/15)",
+        "pass": true,
+        "detail": "16/17"
+      },
+      {
+        "name": "Strategy correct (when scored) ≥ 80%",
+        "pass": true,
+        "detail": "15/15"
+      },
+      {
+        "name": "Constraint respected ≥ 87% (of verifiable)",
+        "pass": true,
+        "detail": "9/10"
+      },
+      {
+        "name": "Cost per cycle < $0.05",
+        "pass": false,
+        "detail": "$0.06240"
+      },
+      {
+        "name": "Error rate < 5%",
+        "pass": true,
+        "detail": "0/17"
+      },
+      {
+        "name": "Total cost within cap",
+        "pass": false,
+        "detail": "$1.0609 / $1.00"
+      },
+      {
+        "name": "Well-formed: catalog-intent classified",
+        "pass": true,
+        "detail": "10/10"
+      },
+      {
+        "name": "Adversarial: classified as unknown (or fail-soft)",
+        "pass": true,
+        "detail": "4/5"
+      },
+      {
+        "name": "All regression scenarios pass",
+        "pass": false,
+        "detail": "1/2"
+      }
+    ]
+  }
+}

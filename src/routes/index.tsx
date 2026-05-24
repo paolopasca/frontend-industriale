@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
+import { migrateLegacyKeys } from '@/lib/storage';
 import { AnimatePresence, motion } from 'framer-motion';
 import { SetupPage, type SetupData } from '@/components/onboarding/SetupPage';
 import { SolverMethodSelect, type SolverMethod } from '@/components/onboarding/SolverMethodSelect';
@@ -16,8 +17,43 @@ import { ReplanModal } from '@/components/dashboard/ReplanModal';
 import { DataInputModal } from '@/components/dashboard/DataInputModal';
 import { GanttSection } from '@/components/dashboard/GanttSection';
 import { WhatIfAnalysis } from '@/components/dashboard/WhatIfAnalysis';
+import { SplitSuggestion } from '@/components/dashboard/SplitSuggestion';
+import { ExplanationPanel } from '@/components/dashboard/ExplanationPanel';
+import { AdvisorPanel } from '@/components/dashboard/AdvisorPanel';
+import { ManagerChatPanel } from '@/components/dashboard/ManagerChatPanel';
 import { DashboardContext } from '@/data/DashboardContext';
 import { adaptResult, type DashboardData } from '@/data/resultAdapter';
+import { Toaster } from '@/components/ui/sonner';
+
+// Extract the raw `solution` + `kpis` blocks (flat Record<string, number>)
+// from whatever shape the backend returned. solveTemplate → top-level
+// `solution`/`kpis`; solveLLMOnly → nested under `result.kpi`/`result.piano`.
+function extractAiInputs(raw: unknown): { solution: unknown; kpis: Record<string, number> } {
+  if (!raw || typeof raw !== 'object') return { solution: null, kpis: {} };
+  const r = raw as Record<string, unknown>;
+  // Template / FJSP shape
+  if (r.solution !== undefined) {
+    const k = (r.kpis ?? {}) as Record<string, unknown>;
+    return { solution: r.solution, kpis: toNumberMap(k) };
+  }
+  // LLM-only legacy shape
+  const result = r.result as Record<string, unknown> | undefined;
+  if (result) {
+    return {
+      solution: result.piano ?? result,
+      kpis: toNumberMap((result.kpi ?? {}) as Record<string, unknown>),
+    };
+  }
+  return { solution: raw, kpis: {} };
+}
+
+function toNumberMap(rec: Record<string, unknown>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(rec)) {
+    if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+  }
+  return out;
+}
 
 export const Route = createFileRoute("/")({
   component: Index,
@@ -35,6 +71,10 @@ function Index() {
   const [dataInputOpen, setDataInputOpen] = useState(false);
   const [ganttScroll, setGanttScroll] = useState(0);
 
+  useEffect(() => {
+    migrateLegacyKeys();
+  }, []);
+
   const handleMachineScroll = useCallback((sl: number) => setGanttScroll(sl), []);
   const handleOperatorScroll = useCallback((sl: number) => setGanttScroll(sl), []);
 
@@ -47,7 +87,11 @@ function Index() {
     }
   }, [backendResult, solverMethod]);
 
+  const aiInputs = useMemo(() => extractAiInputs(backendResult), [backendResult]);
+
   return (
+    <>
+    <Toaster position="top-right" richColors />
     <AnimatePresence mode="wait">
       {phase === 'setup' && (
         <motion.div key="setup" exit={{ opacity: 0 }} transition={{ duration: 0.4 }}>
@@ -96,8 +140,30 @@ function Index() {
           >
             <div className="min-h-screen bg-background">
               <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-6 space-y-6">
-                <DashboardHeader onReplan={() => setReplanOpen(true)} onAddData={() => setDataInputOpen(true)} />
+                <DashboardHeader
+                  onReplan={() => setReplanOpen(true)}
+                  onAddData={() => setDataInputOpen(true)}
+                  onReset={() => { setPhase('setup'); setBackendResult(null); setSolverMethod(null); }}
+                  companySlug={setupData?.companySlug ?? null}
+                />
                 <KPISummary />
+
+                <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+                  <div className="lg:col-span-3">
+                    <ExplanationPanel
+                      slug={setupData?.companySlug ?? null}
+                      solution={aiInputs.solution}
+                      kpis={aiInputs.kpis}
+                    />
+                  </div>
+                  <div className="lg:col-span-2">
+                    <AdvisorPanel
+                      slug={setupData?.companySlug ?? null}
+                      solution={aiInputs.solution}
+                      kpis={aiInputs.kpis}
+                    />
+                  </div>
+                </div>
 
                 <GanttSection title="Gantt Macchine" defaultOpen={false}>
                   <MachineGantt
@@ -117,7 +183,16 @@ function Index() {
                 </GanttSection>
 
                 <BottleneckChart />
-                <WhatIfAnalysis />
+                <WhatIfAnalysis
+                  slug={setupData?.companySlug ?? null}
+                  solution={aiInputs.solution}
+                  kpis={aiInputs.kpis}
+                />
+                <SplitSuggestion
+                  slug={setupData?.companySlug ?? null}
+                  solution={aiInputs.solution}
+                  kpis={aiInputs.kpis}
+                />
 
                 <KeyDecisions />
 
@@ -129,12 +204,27 @@ function Index() {
                 </div>
               </div>
 
-              <ReplanModal open={replanOpen} onClose={() => setReplanOpen(false)} />
-              <DataInputModal open={dataInputOpen} onClose={() => setDataInputOpen(false)} />
+              <ReplanModal
+                open={replanOpen}
+                onClose={() => setReplanOpen(false)}
+                companySlug={setupData?.companySlug ?? null}
+                onResult={(result) => setBackendResult(result)}
+              />
+              <DataInputModal
+                open={dataInputOpen}
+                onClose={() => setDataInputOpen(false)}
+                companySlug={setupData?.companySlug ?? null}
+              />
+              <ManagerChatPanel
+                slug={setupData?.companySlug ?? null}
+                solution={aiInputs.solution}
+                kpis={aiInputs.kpis}
+              />
             </div>
           </motion.div>
         </DashboardContext.Provider>
       )}
     </AnimatePresence>
+    </>
   );
 }

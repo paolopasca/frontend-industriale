@@ -1,0 +1,1032 @@
+{
+  "timestamp": "2026-05-22T23:23:35.842Z",
+  "seed": 20260523,
+  "total_cycles": 30,
+  "per_intent_cycles": 6,
+  "cycles": [
+    {
+      "index": 0,
+      "intent_id": "machine_unavailability",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2495,
+        "tardiness": 116
+      },
+      "delta_kpis": {
+        "makespan": 495,
+        "tardiness": 56
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "unavailable_machines"
+      ],
+      "expected_apply_rule_type": "unavailable_machines",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability"
+      ],
+      "pipeline_latency_ms": 4,
+      "assertion_failures": []
+    },
+    {
+      "index": 1,
+      "intent_id": "machine_unavailability",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2149,
+        "tardiness": 30
+      },
+      "delta_kpis": {
+        "makespan": 149,
+        "tardiness": -30
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "unavailable_machines"
+      ],
+      "expected_apply_rule_type": "unavailable_machines",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability"
+      ],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 2,
+      "intent_id": "machine_unavailability",
+      "confidence": "medium",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2370,
+        "tardiness": 101
+      },
+      "delta_kpis": {
+        "makespan": 370,
+        "tardiness": 41
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "unavailable_machines"
+      ],
+      "expected_apply_rule_type": "unavailable_machines",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability"
+      ],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 3,
+      "intent_id": "machine_unavailability",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2409,
+        "tardiness": 90
+      },
+      "delta_kpis": {
+        "makespan": 409,
+        "tardiness": 30
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "unavailable_machines"
+      ],
+      "expected_apply_rule_type": "unavailable_machines",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability"
+      ],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 4,
+      "intent_id": "machine_unavailability",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2267,
+        "tardiness": 39
+      },
+      "delta_kpis": {
+        "makespan": 267,
+        "tardiness": -21
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "unavailable_machines"
+      ],
+      "expected_apply_rule_type": "unavailable_machines",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability"
+      ],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 5,
+      "intent_id": "machine_unavailability",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2425,
+        "tardiness": 73
+      },
+      "delta_kpis": {
+        "makespan": 425,
+        "tardiness": 13
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "unavailable_machines"
+      ],
+      "expected_apply_rule_type": "unavailable_machines",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [
+        "data_modifier_no_implementation:machine_unavailability"
+      ],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 6,
+      "intent_id": "order_priority",
+      "confidence": "medium",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2612,
+        "tardiness": 106
+      },
+      "delta_kpis": {
+        "makespan": 612,
+        "tardiness": 46
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "priority_orders"
+      ],
+      "expected_apply_rule_type": "priority_orders",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 7,
+      "intent_id": "order_priority",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2298,
+        "tardiness": 51
+      },
+      "delta_kpis": {
+        "makespan": 298,
+        "tardiness": -9
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "priority_orders"
+      ],
+      "expected_apply_rule_type": "priority_orders",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 8,
+      "intent_id": "order_priority",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2096,
+        "tardiness": 64
+      },
+      "delta_kpis": {
+        "makespan": 96,
+        "tardiness": 4
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "priority_orders"
+      ],
+      "expected_apply_rule_type": "priority_orders",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 9,
+      "intent_id": "order_priority",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2380,
+        "tardiness": 84
+      },
+      "delta_kpis": {
+        "makespan": 380,
+        "tardiness": 24
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "priority_orders"
+      ],
+      "expected_apply_rule_type": "priority_orders",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 10,
+      "intent_id": "order_priority",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2065,
+        "tardiness": 112
+      },
+      "delta_kpis": {
+        "makespan": 65,
+        "tardiness": 52
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "priority_orders"
+      ],
+      "expected_apply_rule_type": "priority_orders",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 11,
+      "intent_id": "order_priority",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2556,
+        "tardiness": 7
+      },
+      "delta_kpis": {
+        "makespan": 556,
+        "tardiness": -53
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "priority_orders"
+      ],
+      "expected_apply_rule_type": "priority_orders",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 12,
+      "intent_id": "deadline_change",
+      "confidence": "high",
+      "strategy": "A",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2734,
+        "tardiness": 22
+      },
+      "delta_kpis": {
+        "makespan": 734,
+        "tardiness": -38
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "deadline_changes"
+      ],
+      "expected_apply_rule_type": "deadline_changes",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 13,
+      "intent_id": "deadline_change",
+      "confidence": "low",
+      "strategy": "A",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2600,
+        "tardiness": 69
+      },
+      "delta_kpis": {
+        "makespan": 600,
+        "tardiness": 9
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "deadline_changes"
+      ],
+      "expected_apply_rule_type": "deadline_changes",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 14,
+      "intent_id": "deadline_change",
+      "confidence": "high",
+      "strategy": "A",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2183,
+        "tardiness": 0
+      },
+      "delta_kpis": {
+        "makespan": 183,
+        "tardiness": -60
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "deadline_changes"
+      ],
+      "expected_apply_rule_type": "deadline_changes",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 15,
+      "intent_id": "deadline_change",
+      "confidence": "medium",
+      "strategy": "A",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2061,
+        "tardiness": 16
+      },
+      "delta_kpis": {
+        "makespan": 61,
+        "tardiness": -44
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "deadline_changes"
+      ],
+      "expected_apply_rule_type": "deadline_changes",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 16,
+      "intent_id": "deadline_change",
+      "confidence": "high",
+      "strategy": "A",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2299,
+        "tardiness": 84
+      },
+      "delta_kpis": {
+        "makespan": 299,
+        "tardiness": 24
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "deadline_changes"
+      ],
+      "expected_apply_rule_type": "deadline_changes",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 17,
+      "intent_id": "deadline_change",
+      "confidence": "high",
+      "strategy": "A",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2782,
+        "tardiness": 69
+      },
+      "delta_kpis": {
+        "makespan": 782,
+        "tardiness": 9
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "deadline_changes"
+      ],
+      "expected_apply_rule_type": "deadline_changes",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 18,
+      "intent_id": "capacity_addition",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2784,
+        "tardiness": 79
+      },
+      "delta_kpis": {
+        "makespan": 784,
+        "tardiness": 19
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "extra_capacity_added"
+      ],
+      "expected_apply_rule_type": "extra_capacity_added",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 19,
+      "intent_id": "capacity_addition",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2465,
+        "tardiness": 115
+      },
+      "delta_kpis": {
+        "makespan": 465,
+        "tardiness": 55
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "extra_capacity_added"
+      ],
+      "expected_apply_rule_type": "extra_capacity_added",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 1,
+      "assertion_failures": []
+    },
+    {
+      "index": 20,
+      "intent_id": "capacity_addition",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2020,
+        "tardiness": 42
+      },
+      "delta_kpis": {
+        "makespan": 20,
+        "tardiness": -18
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "extra_capacity_added"
+      ],
+      "expected_apply_rule_type": "extra_capacity_added",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 21,
+      "intent_id": "capacity_addition",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2706,
+        "tardiness": 23
+      },
+      "delta_kpis": {
+        "makespan": 706,
+        "tardiness": -37
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "extra_capacity_added"
+      ],
+      "expected_apply_rule_type": "extra_capacity_added",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 22,
+      "intent_id": "capacity_addition",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2624,
+        "tardiness": 71
+      },
+      "delta_kpis": {
+        "makespan": 624,
+        "tardiness": 11
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "extra_capacity_added"
+      ],
+      "expected_apply_rule_type": "extra_capacity_added",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 23,
+      "intent_id": "capacity_addition",
+      "confidence": "medium",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2362,
+        "tardiness": 109
+      },
+      "delta_kpis": {
+        "makespan": 362,
+        "tardiness": 49
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "extra_capacity_added"
+      ],
+      "expected_apply_rule_type": "extra_capacity_added",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 24,
+      "intent_id": "shift_window",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2068,
+        "tardiness": 23
+      },
+      "delta_kpis": {
+        "makespan": 68,
+        "tardiness": -37
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "shift_window_modified"
+      ],
+      "expected_apply_rule_type": "shift_window_modified",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 25,
+      "intent_id": "shift_window",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2061,
+        "tardiness": 2
+      },
+      "delta_kpis": {
+        "makespan": 61,
+        "tardiness": -58
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "shift_window_modified"
+      ],
+      "expected_apply_rule_type": "shift_window_modified",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 26,
+      "intent_id": "shift_window",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2737,
+        "tardiness": 26
+      },
+      "delta_kpis": {
+        "makespan": 737,
+        "tardiness": -34
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "shift_window_modified"
+      ],
+      "expected_apply_rule_type": "shift_window_modified",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 27,
+      "intent_id": "shift_window",
+      "confidence": "medium",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2613,
+        "tardiness": 49
+      },
+      "delta_kpis": {
+        "makespan": 613,
+        "tardiness": -11
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "shift_window_modified"
+      ],
+      "expected_apply_rule_type": "shift_window_modified",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 28,
+      "intent_id": "shift_window",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2791,
+        "tardiness": 64
+      },
+      "delta_kpis": {
+        "makespan": 791,
+        "tardiness": 4
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "shift_window_modified"
+      ],
+      "expected_apply_rule_type": "shift_window_modified",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    },
+    {
+      "index": 29,
+      "intent_id": "shift_window",
+      "confidence": "high",
+      "strategy": "B",
+      "primary_solve_status": "OK",
+      "baseline_kpis": {
+        "makespan": 2000,
+        "tardiness": 60
+      },
+      "new_kpis": {
+        "makespan": 2452,
+        "tardiness": 0
+      },
+      "delta_kpis": {
+        "makespan": 452,
+        "tardiness": -60
+      },
+      "delta_nonzero": true,
+      "apply_rule_types": [
+        "shift_window_modified"
+      ],
+      "expected_apply_rule_type": "shift_window_modified",
+      "expected_type_present": true,
+      "frozen_count": 2,
+      "locked_count": 2,
+      "modified_count": 1,
+      "warnings": [],
+      "pipeline_latency_ms": 0,
+      "assertion_failures": []
+    }
+  ],
+  "summary": {
+    "crashes": 0,
+    "assertion_fail_cycles": 0,
+    "assertion_fail_total": 0,
+    "by_intent": {
+      "machine_unavailability": {
+        "total": 6,
+        "ok": 6,
+        "delta_nonzero": 6,
+        "expected_type_present": 6,
+        "failures": 0
+      },
+      "order_priority": {
+        "total": 6,
+        "ok": 6,
+        "delta_nonzero": 6,
+        "expected_type_present": 6,
+        "failures": 0
+      },
+      "deadline_change": {
+        "total": 6,
+        "ok": 6,
+        "delta_nonzero": 6,
+        "expected_type_present": 6,
+        "failures": 0
+      },
+      "capacity_addition": {
+        "total": 6,
+        "ok": 6,
+        "delta_nonzero": 6,
+        "expected_type_present": 6,
+        "failures": 0
+      },
+      "shift_window": {
+        "total": 6,
+        "ok": 6,
+        "delta_nonzero": 6,
+        "expected_type_present": 6,
+        "failures": 0
+      }
+    },
+    "wave9_new_intents": {
+      "total": 12,
+      "delta_nonzero": 12,
+      "expected_type_present": 12
+    },
+    "latency_ms": {
+      "p50": 0,
+      "p95": 1,
+      "p99": 4,
+      "max": 4
+    },
+    "cost_usd": 0,
+    "verdict": "GO",
+    "target_results": [
+      {
+        "name": "0 crashes",
+        "pass": true,
+        "detail": "0 crashes"
+      },
+      {
+        "name": "All cycles complete (30/30)",
+        "pass": true,
+        "detail": "30/30"
+      },
+      {
+        "name": "0 assertion failures",
+        "pass": true,
+        "detail": "0 cycles with assertion failures (0 total)"
+      },
+      {
+        "name": "Wave 9 NEW intents: 12/12 delta KPI != 0",
+        "pass": true,
+        "detail": "12/12"
+      },
+      {
+        "name": "Wave 9 NEW intents: 12/12 apply_rule_type present",
+        "pass": true,
+        "detail": "12/12"
+      }
+    ]
+  }
+}

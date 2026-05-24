@@ -1,0 +1,26 @@
+[
+  {
+    "case_id": "CASE-COM001-OPTIMAL",
+    "fixture": "optimal",
+    "commessa": "COM-001",
+    "status": 0,
+    "text": "",
+    "done": null,
+    "error": null,
+    "full_ms": 13,
+    "external": false,
+    "network_error": "Failed to parse URL from //api/split"
+  },
+  {
+    "case_id": "CASE-COM-INFEASIBLE",
+    "fixture": "infeasible",
+    "commessa": "COM-001",
+    "status": 0,
+    "text": "",
+    "done": null,
+    "error": null,
+    "full_ms": 0,
+    "external": false,
+    "network_error": "Failed to parse URL from //api/split"
+  }
+]

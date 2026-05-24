@@ -1,0 +1,23 @@
+{
+  "slug": "demo-commesse",
+  "solution": {
+    "status": "FEASIBLE",
+    "warnings": ["COM-007 in ritardo di 120 min sulla deadline", "M-3 saturazione al 95%"],
+    "fasi": [
+      {"commessa": "COM-001", "operazione": "taglio", "macchina": "M-1", "operatore": "O-1", "start_min": 0, "end_min": 120, "setup_min": 15, "processing_min": 105},
+      {"commessa": "COM-007", "operazione": "fresatura", "macchina": "M-3", "operatore": "O-2", "start_min": 2880, "end_min": 3120, "setup_min": 30, "processing_min": 210, "ritardo_min": 120}
+    ]
+  },
+  "kpis": {
+    "makespan_min": 3120,
+    "on_time_rate": 0.85,
+    "cost_usd": 5240,
+    "max_machine_util": 0.95,
+    "n_commesse": 21,
+    "n_in_ritardo": 1,
+    "ritardo_totale_min": 120,
+    "setup_cost_usd": 510,
+    "operator_cost_usd": 4730,
+    "saturation_avg": 0.82
+  }
+}

@@ -15,6 +15,7 @@ const fallbackData: DashboardData = {
   narrative: '',
   method: 'mock',
   costUsd: 0,
+  timeConfig: undefined,
 };
 
 export const DashboardContext = createContext<DashboardData>(fallbackData);

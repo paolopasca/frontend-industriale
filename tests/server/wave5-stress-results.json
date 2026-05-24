@@ -1,0 +1,72 @@
+[
+  {
+    "index": 0,
+    "commessa": "COM-001",
+    "ok": true,
+    "external_529": false,
+    "status": 200,
+    "ttft_ms": 1207,
+    "full_ms": 15344,
+    "text_chars": 2177,
+    "has_all_4_sections": true,
+    "cost_usd": 0.093405,
+    "tokens_in": 1517,
+    "tokens_out": 942
+  },
+  {
+    "index": 1,
+    "commessa": "COM-002",
+    "ok": true,
+    "external_529": false,
+    "status": 200,
+    "ttft_ms": 1092,
+    "full_ms": 14333,
+    "text_chars": 1956,
+    "has_all_4_sections": true,
+    "cost_usd": 0.08673,
+    "tokens_in": 1517,
+    "tokens_out": 853
+  },
+  {
+    "index": 2,
+    "commessa": "COM-001",
+    "ok": true,
+    "external_529": false,
+    "status": 200,
+    "ttft_ms": 1911,
+    "full_ms": 13729,
+    "text_chars": 1930,
+    "has_all_4_sections": true,
+    "cost_usd": 0.083655,
+    "tokens_in": 1517,
+    "tokens_out": 812
+  },
+  {
+    "index": 3,
+    "commessa": "COM-002",
+    "ok": true,
+    "external_529": false,
+    "status": 200,
+    "ttft_ms": 1252,
+    "full_ms": 15936,
+    "text_chars": 2200,
+    "has_all_4_sections": true,
+    "cost_usd": 0.09288,
+    "tokens_in": 1517,
+    "tokens_out": 935
+  },
+  {
+    "index": 4,
+    "commessa": "COM-001",
+    "ok": true,
+    "external_529": false,
+    "status": 200,
+    "ttft_ms": 1838,
+    "full_ms": 19237,
+    "text_chars": 2280,
+    "has_all_4_sections": true,
+    "cost_usd": 0.098805,
+    "tokens_in": 1517,
+    "tokens_out": 1014
+  }
+]

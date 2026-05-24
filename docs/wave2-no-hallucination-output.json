@@ -1,0 +1,103 @@
+{
+  "base_url": "/",
+  "fixtures": [
+    "optimal",
+    "feasible-warning",
+    "infeasible",
+    "empty",
+    "malformed"
+  ],
+  "repetitions": 2,
+  "total_calls": 20,
+  "pass_threshold": 0.95,
+  "fail_threshold": 0.9,
+  "global": {
+    "cited": 0,
+    "verified": 0,
+    "ratio": 1,
+    "verdict": "PASS"
+  },
+  "per_fixture_endpoint": [
+    {
+      "fixture": "optimal",
+      "endpoint": "explain",
+      "calls": 2,
+      "cited": 0,
+      "verified": 0,
+      "ratio": null
+    },
+    {
+      "fixture": "optimal",
+      "endpoint": "advise",
+      "calls": 2,
+      "cited": 0,
+      "verified": 0,
+      "ratio": null
+    },
+    {
+      "fixture": "feasible-warning",
+      "endpoint": "explain",
+      "calls": 2,
+      "cited": 0,
+      "verified": 0,
+      "ratio": null
+    },
+    {
+      "fixture": "feasible-warning",
+      "endpoint": "advise",
+      "calls": 2,
+      "cited": 0,
+      "verified": 0,
+      "ratio": null
+    },
+    {
+      "fixture": "infeasible",
+      "endpoint": "explain",
+      "calls": 2,
+      "cited": 0,
+      "verified": 0,
+      "ratio": null
+    },
+    {
+      "fixture": "infeasible",
+      "endpoint": "advise",
+      "calls": 2,
+      "cited": 0,
+      "verified": 0,
+      "ratio": null
+    },
+    {
+      "fixture": "empty",
+      "endpoint": "explain",
+      "calls": 2,
+      "cited": 0,
+      "verified": 0,
+      "ratio": null
+    },
+    {
+      "fixture": "empty",
+      "endpoint": "advise",
+      "calls": 2,
+      "cited": 0,
+      "verified": 0,
+      "ratio": null
+    },
+    {
+      "fixture": "malformed",
+      "endpoint": "explain",
+      "calls": 2,
+      "cited": 0,
+      "verified": 0,
+      "ratio": null
+    },
+    {
+      "fixture": "malformed",
+      "endpoint": "advise",
+      "calls": 2,
+      "cited": 0,
+      "verified": 0,
+      "ratio": null
+    }
+  ],
+  "unverified_samples": []
+}

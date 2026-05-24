@@ -4,6 +4,10 @@ import { CheckCircle2, Loader2, AlertTriangle } from 'lucide-react';
 import { type SolverMethod } from './SolverMethodSelect';
 import { type SetupData } from './SetupPage';
 import { solveLLMOnly, solveTemplate, autoLogin, pipelineStart, pipelineAdvance, pipelineRespond, pipelineResults } from '@/lib/api';
+import { setSlugScoped, removeSlugScoped } from '@/lib/storage';
+
+const SESSION_KEY = 'daino_last_session_id';
+const RUN_KEY = 'daino_last_run_id';
 
 // Phases shown for each method
 const METHOD_PHASES: Record<SolverMethod, { label: string; duration: number }[]> = {
@@ -149,6 +153,14 @@ export function OptimizationLoader({
     const addLog = (msg: string) => setBackendLog(prev => [...prev, msg]);
 
     async function runSolve() {
+      // Reschedule is only supported for codegen-pipeline runs (the
+      // backend gates it on a saved solver.py). Clear stale IDs so the
+      // ReplanModal won't try to reschedule a previous codegen run after
+      // the user picks llm-only or deterministic-json this time.
+      if (method !== 'codegen-pipeline' && companySlug) {
+        removeSlugScoped(SESSION_KEY, companySlug);
+        removeSlugScoped(RUN_KEY, companySlug);
+      }
       try {
         if (method === 'llm-only') {
           addLog('Chiamata Solo LLM...');
@@ -219,6 +231,12 @@ export function OptimizationLoader({
           if (state.state === 'done') {
             const results = await pipelineResults(state.session_id);
             addLog(`Completato — costo: $${results.cost_usd?.toFixed(3) ?? '?'}`);
+            // Persist session/run IDs so ReplanModal can call the
+            // authenticated /api/analysis/{sid}/reschedule endpoint.
+            if (companySlug && results.session_id && Number.isFinite(results.run_id) && results.run_id > 0) {
+              setSlugScoped(SESSION_KEY, companySlug, results.session_id);
+              setSlugScoped(RUN_KEY, companySlug, String(results.run_id));
+            }
             setProgress(100);
             setDone(true);
             setTimeout(() => onComplete(results), 1500);

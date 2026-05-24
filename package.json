@@ -5,12 +5,25 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
+    "dev:bff": "set -a && [ -f .dev.vars ] && . ./.dev.vars; set +a; vite dev",
     "build": "vite build",
+    "postbuild": "rm -f dist/server/.dev.vars",
     "build:dev": "vite build --mode development",
+    "postbuild:dev": "rm -f dist/server/.dev.vars",
     "preview": "vite preview",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test:e2e": "playwright test",
+    "stress:wave1": "tsx scripts/stress-wave1.ts",
+    "stress:wave1:fast": "tsx scripts/stress-wave1.ts fast",
+    "stress:wave1:slow": "tsx scripts/stress-wave1.ts slow",
+    "stress:wave2": "tsx scripts/stress-wave2.ts",
+    "test:wave2:edge": "tsx tests/server/wave2-edge-cases.test.ts",
+    "test:wave2:nohallu": "tsx tests/server/wave2-no-hallucination.test.ts",
+    "test:wave2:e2e": "playwright test tests/e2e/wave2-panels.spec.ts",
+    "test:wave2": "npm run test:wave2:edge && npm run test:wave2:nohallu"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.97.1",
     "@cloudflare/vite-plugin": "^1.25.5",
     "@hookform/resolvers": "^5.2.2",
     "@radix-ui/react-accordion": "^1.2.12",
@@ -51,6 +64,7 @@
     "embla-carousel-react": "^8.6.0",
     "framer-motion": "^12.38.0",
     "input-otp": "^1.4.2",
+    "js-yaml": "^4.1.0",
     "lucide-react": "^0.575.0",
     "react": "^19.2.0",
     "react-day-picker": "^9.14.0",
@@ -68,6 +82,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.32.0",
+    "@lovable.dev/vite-tanstack-config": "^1.2.0",
+    "@playwright/test": "^1.60.0",
     "@types/node": "^22.16.5",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
@@ -76,9 +92,10 @@
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.20",
     "globals": "^15.15.0",
-    "@lovable.dev/vite-tanstack-config": "^1.2.0",
+    "tsx": "^4.22.3",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.56.1",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^4.1.7"
   }
 }
