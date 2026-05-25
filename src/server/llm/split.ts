@@ -63,14 +63,19 @@ export interface RunSplitOptions {
   onUsage?: OnUsage;
 }
 
-const MODEL = 'claude-opus-4-7';
+// Wave 14 cost optimization: Opus 4.7 → Sonnet 4.6.
+// La proposta split è strutturata (Diagnosi/Proposta/Rischi) con
+// raccomandazioni concrete sulla decomposizione. Sonnet 4.6 mantiene
+// qualità sufficiente; $0.04/call vs $0.10 (2.5× più economico).
+const MODEL = 'claude-sonnet-4-6';
 const MAX_OUTPUT_TOKENS = 1500;
 const MAX_SOLUTION_JSON_CHARS = 100_000;
 
-const PRICE_INPUT_PER_M = 15.0;
-const PRICE_OUTPUT_PER_M = 75.0;
-const PRICE_CACHE_READ_PER_M = 1.5;
-const PRICE_CACHE_WRITE_PER_M = 18.75;
+// Wave 14: Sonnet 4.6 pricing (era Opus 15/75/18.75/1.5).
+const PRICE_INPUT_PER_M = 3.0;
+const PRICE_OUTPUT_PER_M = 15.0;
+const PRICE_CACHE_READ_PER_M = 0.3;
+const PRICE_CACHE_WRITE_PER_M = 3.75;
 
 const SYSTEM_PROMPT = `Sei DAINO, consulente operativo per la decomposizione di commesse di produzione di una PMI manifatturiera italiana.
 
