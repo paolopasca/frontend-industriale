@@ -15,6 +15,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { humanizeWarning } from './unsupported-reason-labels';
 
 const KPI_LOWER_IS_BETTER = new Set<string>([
   'makespan_min',
@@ -189,6 +190,37 @@ const HINT_PRESERVED_WARNING = 'lock_relaxed_to_soft__consolidated_preserved_as_
 // since the constraint will still be applied (we did NOT short-circuit).
 const LOW_CONFIDENCE_WARNING = 'low_confidence_classification';
 
+// F-W11-LIVE-05 — internal BFF strategy-router markers that describe routing
+// detail (A → B cascade), not anything actionable for a manager. They stay
+// in the SSE payload so logs / e2e tests can still assert on them, but the
+// SolutionDiff drops them from the user-facing "Avvertenze" list. Examples:
+//   - `data_modifier_no_implementation:<intent>` — fires whenever an intent
+//     declared as Strategy A in the catalog has `canApply=false` in the
+//     data-modifier (deliberate per team-lead 2026-05-22 for
+//     `machine_unavailability`). The cascade to `rule_addition` is the
+//     designed path, not a problem.
+//   - `data_modifier_rejected:<intent>` — modifier supported the intent
+//     but rejected the specific entities. Same cascade applies.
+//   - `data_modifier_rejected_post_route` / `strategy_a_via_rule_fallback`
+//     — emitted by apply-whatif when it tries A and the modifier flips to
+//     a rules fallback. Again, routing detail.
+const BFF_ROUTING_DETAIL_PREFIXES = [
+  'data_modifier_no_implementation:',
+  'data_modifier_rejected:',
+] as const;
+const BFF_ROUTING_DETAIL_EXACT = new Set<string>([
+  'data_modifier_rejected_post_route',
+  'strategy_a_via_rule_fallback',
+]);
+
+function isBffRoutingDetail(w: string): boolean {
+  if (BFF_ROUTING_DETAIL_EXACT.has(w)) return true;
+  for (const p of BFF_ROUTING_DETAIL_PREFIXES) {
+    if (w.startsWith(p)) return true;
+  }
+  return false;
+}
+
 // DA-04: warnings payload from BFF is not type-checked at runtime; coerce defensively.
 // Split per cl-bff contract update: `missing_kpi:<name>` items are neutral info
 // ("metrica non disponibile in questo solve"), not warnings — render them apart.
@@ -197,6 +229,8 @@ const LOW_CONFIDENCE_WARNING = 'low_confidence_classification';
 // Wave 8 F-W8-06 OPT 2: the upgraded marker `lock_relaxed_to_soft__plan_recomputed_from_scratch`
 // is the strict subset that ALSO triggers the red recomputed-from-scratch banner.
 // Wave 9 F-W8-07: `low_confidence_classification` is split out to its own banner.
+// F-W11-LIVE-05: BFF routing-detail markers (see BFF_ROUTING_DETAIL_* above)
+// are dropped here so they stay in logs but never reach the manager's UI.
 interface SplitWarnings {
   missingKpis: string[];
   warnings: string[];
@@ -206,7 +240,7 @@ interface SplitWarnings {
   lowConfidenceFromWarning: boolean;
 }
 
-function sanitizeWarnings(input: unknown): SplitWarnings {
+export function sanitizeWarnings(input: unknown): SplitWarnings {
   if (!Array.isArray(input)) {
     return {
       missingKpis: [],
@@ -248,6 +282,11 @@ function sanitizeWarnings(input: unknown): SplitWarnings {
       // F-W8-07 — Haiku reported confidence='low'; intent applied but the
       // classification is uncertain. Yellow banner, NOT red.
       lowConfidenceFromWarning = true;
+    } else if (isBffRoutingDetail(trimmed)) {
+      // F-W11-LIVE-05 — strategy-router cascade markers stay in the SSE
+      // payload (for logs / e2e assertions) but never surface to the
+      // manager. The cascade is the designed path, not a real warning.
+      continue;
     } else if (warnings.length < 5) {
       warnings.push(trimmed);
     }
@@ -1013,8 +1052,13 @@ export function SolutionDiff({
             </div>
             <ul className="space-y-1 text-xs text-amber-900 dark:text-amber-200">
               {warnings.map((w, i) => (
-                <li key={i} className="leading-snug">
-                  • {w}
+                <li
+                  key={i}
+                  className="leading-snug"
+                  data-testid={`solution-diff-warning-row-${i}`}
+                  data-raw-warning={w}
+                >
+                  • {humanizeWarning(w)}
                 </li>
               ))}
             </ul>

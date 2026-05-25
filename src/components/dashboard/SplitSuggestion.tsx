@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
-import { sseStream } from '@/lib/streamingFetch';
+import { sseStream, friendlyErrorMessage } from '@/lib/streamingFetch';
 
 interface SplitSuggestionProps {
   slug: string | null;
@@ -125,7 +125,9 @@ export function SplitSuggestion({
           if (d.cost_usd != null) setCostUsd(d.cost_usd);
         } else if (event === 'error') {
           const e = data as ErrorPayload;
-          throw new Error(e.message ?? 'Errore sconosciuto dal server.');
+          const errorObj = new Error(e.message ?? 'Errore sconosciuto dal server.') as Error & { code?: string };
+          errorObj.code = e.code;
+          throw errorObj;
         }
       }
     } catch (err) {
@@ -134,8 +136,10 @@ export function SplitSuggestion({
         return;
       }
       const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
-      toast.error(`Split: ${msg}`);
+      const code = (err as { code?: string })?.code;
+      const friendly = friendlyErrorMessage({ code, message: msg }) ?? msg;
+      setError(friendly);
+      toast.error(`Split: ${friendly}`);
     }
     setStreaming(false);
     abortRef.current = null;

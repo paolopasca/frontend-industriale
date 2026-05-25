@@ -1,18 +1,50 @@
 import { motion } from 'framer-motion';
-import { RefreshCw, FileDown, Plus, ArrowLeft } from 'lucide-react';
+import { RefreshCw, FileDown, Plus, ArrowLeft, CheckCircle2, AlertTriangle, HelpCircle, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { clearSlugScoped } from '@/lib/storage';
+
+const STATUS_BADGE: Record<string, { label: string; className: string; Icon: typeof CheckCircle2 }> = {
+  OPTIMAL: {
+    label: 'OTTIMALE',
+    className: 'bg-primary/15 text-primary border-primary/30',
+    Icon: CheckCircle2,
+  },
+  FEASIBLE: {
+    label: 'FATTIBILE',
+    className: 'bg-primary/10 text-primary border-primary/20',
+    Icon: CheckCircle2,
+  },
+  INFEASIBLE: {
+    label: 'NON FATTIBILE',
+    className: 'bg-destructive/15 text-destructive border-destructive/30',
+    Icon: XCircle,
+  },
+  UNKNOWN: {
+    label: 'PARZIALE',
+    className: 'bg-amber-500/15 text-amber-500 border-amber-500/30',
+    Icon: HelpCircle,
+  },
+  EMPTY: {
+    label: 'NESSUN PIANO',
+    className: 'bg-muted text-muted-foreground border-border',
+    Icon: AlertTriangle,
+  },
+};
 
 export function DashboardHeader({
   onReplan,
   onAddData,
   onReset,
   companySlug,
+  companyName,
+  solverStatus,
 }: {
   onReplan: () => void;
   onAddData: () => void;
   onReset?: () => void;
   companySlug?: string | null;
+  companyName?: string | null;
+  solverStatus?: string | null;
 }) {
   const handleExportPdf = () => {
     toast.info('Apertura finestra di stampa — scegli "Salva come PDF" per esportare.');
@@ -32,12 +64,25 @@ export function DashboardHeader({
       <div className="flex items-center gap-3">
         <img src="/logo.png" alt="DAINO" className="w-10 h-10 object-contain drop-shadow-[0_0_10px_var(--teal-glow)]" />
         <div>
-          <h1 className="text-xl font-bold text-foreground tracking-tight flex items-center gap-2">
+          <h1 className="text-xl font-bold text-foreground tracking-tight flex items-center gap-2 flex-wrap">
             Piano di Produzione
             <span className="text-xs font-normal text-muted-foreground bg-accent px-2 py-0.5 rounded-full">v2.1</span>
+            {solverStatus && STATUS_BADGE[solverStatus] && (() => {
+              const cfg = STATUS_BADGE[solverStatus];
+              const Icon = cfg.Icon;
+              return (
+                <span
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-semibold tracking-wider ${cfg.className}`}
+                  title={`Stato solver: ${solverStatus}`}
+                >
+                  <Icon className="w-3 h-3" />
+                  {cfg.label}
+                </span>
+              );
+            })()}
           </h1>
           <p className="text-xs text-muted-foreground">
-            Caseificio Fratelli Sorrentino — Ottimizzato
+            {companyName && companyName.trim().length > 0 ? companyName : 'Pianificazione'} — Ottimizzato
           </p>
         </div>
       </div>

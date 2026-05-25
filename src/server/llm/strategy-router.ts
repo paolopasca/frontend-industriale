@@ -272,6 +272,18 @@ function validateField(
     case 'positive_int':
       if (!isPositiveInt(value)) return { ok: false, reason: 'not_a_positive_int' };
       return { ok: true };
+    case 'non_negative_int':
+      // Wave 11 F-W10-04: accetta 0 (es. start_min=0 valido).
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+        return { ok: false, reason: 'not_a_non_negative_int' };
+      }
+      return { ok: true };
+    case 'strict_positive_int':
+      // Wave 11 F-W10-04: rifiuta 0 esplicitamente (usato per ``operators``).
+      if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+        return { ok: false, reason: 'not_a_strict_positive_int' };
+      }
+      return { ok: true };
     case 'gt_start':
       if (!isPositiveInt(value)) return { ok: false, reason: 'not_a_positive_int' };
       if (startMinForGt !== undefined && (value as number) <= startMinForGt) {

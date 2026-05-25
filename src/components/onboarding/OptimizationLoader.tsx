@@ -334,7 +334,7 @@ export function OptimizationLoader({
             {error
               ? error
               : done
-                ? 'Il piano di produzione e pronto'
+                ? 'Il piano di produzione è pronto'
                 : `Metodo: ${method === 'llm-only' ? 'Solo LLM' : method === 'codegen-pipeline' ? 'Pipeline CP Solver' : 'JSON Deterministico'}`}
           </p>
         </div>
