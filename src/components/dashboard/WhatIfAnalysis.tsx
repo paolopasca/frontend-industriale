@@ -48,6 +48,9 @@ interface ConstraintChange {
   confidence: 'high' | 'medium' | 'low';
   warnings: string[];
   unsupportedReason?: string;
+  // Wave 16.2 — GRAY_ZONE fields added by bff-orchestrator.
+  requiresConfirmation?: boolean;
+  confirmationMessage?: string;
 }
 
 interface ApplySolvedPayload {
@@ -84,15 +87,13 @@ interface ApplyAbortedUnsupportedPayload {
   warnings: string[];
 }
 
-// Wave 16.2 — GRAY_ZONE confirmation contract from BFF.
-// confirmedPayload mirrors what the backend extractor returned as gray_zone;
-// we echo it back on confirm so the BFF can skip re-extraction and avoid
-// an infinite requires_confirmation loop.
+// Wave 16.2 — GRAY_ZONE confirmation state.
+// The BFF still runs the solver while the modal is shown; on confirm the
+// result is accepted, on riformula the stream is aborted and Opus is retried,
+// on cancel the stream is aborted and results are discarded.
 interface GrayZoneConfirmationState {
   confirmationMessage: string;
-  patternId?: string;
   confidence?: number;
-  confirmedPayload: Record<string, unknown>;
 }
 
 type ApplyingState = 'idle' | 'translating' | 'solving' | 'done' | 'unsupported' | 'error';
@@ -332,17 +333,12 @@ export function WhatIfAnalysis({
   }, [baselineStartMs, cushionPreset, customDatetime]);
 
   const runApplyWhatIfWithFlags = useCallback(async (
-    flags: { userConfirmedGrayZone?: boolean; forceOpusFallback?: boolean; confirmedPayload?: Record<string, unknown> } = {},
+    flags: { forceOpusFallback?: boolean } = {},
   ) => {
     if (!canApply || !slug || !planReady) return;
-    // DRIFT-A guard: if the GRAY_ZONE modal is open and this is NOT a
-    // modal-triggered retry, silently drop the call. The user must resolve
-    // the modal first (confirm / riformula / annulla).
-    if (
-      grayZoneRef.current !== null &&
-      !flags.userConfirmedGrayZone &&
-      !flags.forceOpusFallback
-    ) return;
+    // DRIFT-A guard: block new apply calls while the GRAY_ZONE modal is open
+    // (unless this is a forceOpusFallback re-fire from the modal itself).
+    if (grayZoneRef.current !== null && !flags.forceOpusFallback) return;
 
     applyAbortRef.current?.abort();
     const controller = new AbortController();
@@ -385,39 +381,15 @@ export function WhatIfAnalysis({
           // Wave 7 — cutoff window for hard-lock of pre-cutoff phases.
           currentTimeMin,
           cushionMin,
-          // Wave 16.2 — GRAY_ZONE: send confirmedPayload so BFF skips
-          // re-extraction and avoids an infinite requires_confirmation loop.
-          ...(flags.userConfirmedGrayZone ? { userConfirmedGrayZone: true } : {}),
-          ...(flags.confirmedPayload && Object.keys(flags.confirmedPayload).length > 0
-            ? { confirmedPayload: flags.confirmedPayload }
-            : {}),
+          // Wave 16.2 — GRAY_ZONE: forceOpusFallback skips backend extractor,
+          // goes straight to Opus to re-interpret the scenario.
           ...(flags.forceOpusFallback ? { forceOpusFallback: true } : {}),
         },
         controller.signal,
       );
 
       for await (const { event, data } of stream) {
-        if (event === 'requires_confirmation') {
-          // Wave 16.2 — BFF detected GRAY_ZONE confidence; pause and ask manager.
-          // We store the full raw payload so we can echo it back on confirm,
-          // letting the BFF skip re-extraction on the retry.
-          const payload = data as {
-            confirmationMessage?: string;
-            patternId?: string;
-            confidence?: number;
-            confirmedPayload?: Record<string, unknown>;
-          } | null;
-          const message =
-            payload?.confirmationMessage ?? "Confermi l'interpretazione?";
-          setGrayZoneConfirmation({
-            confirmationMessage: message,
-            patternId: payload?.patternId,
-            confidence: payload?.confidence,
-            confirmedPayload: payload?.confirmedPayload ?? {},
-          });
-          setApplying('idle');
-          return;
-        } else if (event === 'parsing_intent') {
+        if (event === 'parsing_intent') {
           // Wave 7 path activated — Haiku is classifying the intent.
           setApplying('translating');
         } else if (event === 'intent_parsed') {
@@ -442,7 +414,24 @@ export function WhatIfAnalysis({
           setApplying('translating');
         } else if (event === 'translated') {
           const payload = data as { change?: ConstraintChange };
-          if (payload?.change) setTranslatorChange(payload.change);
+          if (payload?.change) {
+            setTranslatorChange(payload.change);
+            // Wave 16.2 — GRAY_ZONE: BFF detected uncertain interpretation.
+            // The solver still runs server-side; show the modal as a UI gate.
+            // On confirm the arriving `solved` result is accepted normally.
+            // On riformula the stream is aborted and Opus is retried.
+            // On cancel the stream is aborted and results are discarded.
+            if (payload.change.requiresConfirmation) {
+              setGrayZoneConfirmation({
+                confirmationMessage:
+                  payload.change.confirmationMessage ?? "Confermi l'interpretazione?",
+                confidence:
+                  payload.change.confidence === 'high' ? 0.85
+                  : payload.change.confidence === 'medium' ? 0.55
+                  : 0.25,
+              });
+            }
+          }
         } else if (event === 'aborted_unsupported') {
           const payload = data as ApplyAbortedUnsupportedPayload;
           setApplying('unsupported');
@@ -549,27 +538,30 @@ export function WhatIfAnalysis({
     return runApplyWhatIfWithFlags();
   }, [runApplyWhatIfWithFlags]);
 
-  // Wave 16.2 — GRAY_ZONE modal handlers (declared after runApplyWhatIfWithFlags
-  // so they can be listed in deps without forward-reference issues).
+  // Wave 16.2 — GRAY_ZONE modal handlers.
+  // The BFF solver is already running when the modal appears (no server-side
+  // pause). Each action handles the in-flight stream accordingly.
   const handleGrayZoneConfirm = useCallback(() => {
-    const gz = grayZoneRef.current;
-    if (!gz) return;
+    // Accept the solver result that's already computing — just dismiss the modal.
     setGrayZoneConfirmation(null);
-    void runApplyWhatIfWithFlags({
-      userConfirmedGrayZone: true,
-      confirmedPayload: gz.confirmedPayload,
-    });
-  }, [runApplyWhatIfWithFlags, setGrayZoneConfirmation]);
+  }, [setGrayZoneConfirmation]);
 
   const handleGrayZoneOpus = useCallback(() => {
-    if (!grayZoneRef.current) return;
+    // Abort the in-flight stream and re-fire with Opus fallback.
     setGrayZoneConfirmation(null);
+    applyAbortRef.current?.abort();
     void runApplyWhatIfWithFlags({ forceOpusFallback: true });
   }, [runApplyWhatIfWithFlags, setGrayZoneConfirmation]);
 
   const handleGrayZoneCancel = useCallback(() => {
+    // Abort the in-flight stream and discard any arriving result.
+    applyAbortRef.current?.abort();
+    applyAbortRef.current = null;
     setGrayZoneConfirmation(null);
     setApplying('idle');
+    setTranslatorChange(null);
+    setCandidateSolution(null);
+    setCandidateKpis(null);
   }, [setGrayZoneConfirmation]);
 
   const cancelApply = useCallback(() => {
@@ -928,7 +920,6 @@ export function WhatIfAnalysis({
         <WhatIfConfirmationModal
           open={!!grayZoneConfirmation}
           confirmationMessage={grayZoneConfirmation.confirmationMessage}
-          patternId={grayZoneConfirmation.patternId}
           confidence={grayZoneConfirmation.confidence}
           onConfirm={handleGrayZoneConfirm}
           onUseOpus={handleGrayZoneOpus}
