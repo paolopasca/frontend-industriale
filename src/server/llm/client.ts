@@ -48,12 +48,18 @@ export interface RateLimitResult {
 
 function shouldBypassRateLimit(ipOrCompositeKey: string): boolean {
   if (process.env.DAINO_BFF_RATE_LIMIT_BYPASS_LOCAL === '0') return false;
-  // Composite keys are of the form "<ip>:<surface>" (e.g. "local:whatif",
-  // "127.0.0.1:split"). Strip the surface suffix before matching.
-  const ip = ipOrCompositeKey.split(':')[0];
-  if (ip !== 'local' && ip !== '127.0.0.1' && ip !== '::1') return false;
-  const env = process.env.NODE_ENV;
-  return env !== 'production';
+  // Production NEVER bypasses regardless of IP or env flag — the safety
+  // ceiling stays at LIMIT/hour to cap Anthropic spend on a runaway client.
+  if (process.env.NODE_ENV === 'production') return false;
+  // In dev/test we bypass the limiter so e2e tests, stress runners, and a
+  // manager dogfooding the dashboard on a LAN IP don't trip the 10/h cap
+  // while iterating. Previously this only fired for `local`/`127.0.0.1`/
+  // `::1` — which meant any dev request that arrived via `vite --host` or
+  // a proxy populating x-forwarded-for got rate-limited after 10 calls.
+  // The explicit opt-out (`DAINO_BFF_RATE_LIMIT_BYPASS_LOCAL=0`) above
+  // still lets a dev exercise the real limiter when they want to.
+  void ipOrCompositeKey;
+  return true;
 }
 
 // `limitOverride` lets a caller enforce a stricter per-surface cap (e.g.
