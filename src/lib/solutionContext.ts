@@ -26,11 +26,19 @@ function extractMachines(fasi: Array<Record<string, unknown>>): string[] {
 function buildMachineAliases(machines: string[]): Record<string, string> {
   const aliases: Record<string, string> = {};
   for (const m of machines) {
+    // Case-folding alias so backend extractor can match lowercase queries.
     const lower = m.toLowerCase();
-    // Only add alias when lowercase differs from the original (e.g. "Linea 1" → key "linea 1", value "Linea 1").
-    // The alias value is always the EXACT canonical string from machines[] — never a fabricated ID.
-    if (lower !== m) {
-      aliases[lower] = m;
+    if (lower !== m) aliases[lower] = m;
+
+    // NL aliases: "linea N" / "macchina N" / "machine N" → exact canonical string.
+    // Extract first integer from canonical name and build common Italian/English phrasings.
+    // Value is always one of the strings in machines[] — never fabricated.
+    const numMatch = m.match(/(\d+)/);
+    if (numMatch) {
+      const n = parseInt(numMatch[1], 10);
+      aliases[`linea ${n}`] = m;
+      aliases[`macchina ${n}`] = m;
+      aliases[`machine ${n}`] = m;
     }
   }
   return aliases;
@@ -91,6 +99,20 @@ function extractShiftTypes(
   return found ? result : null;
 }
 
+// Extract the commessa-keyed map from both raw backend responses and
+// normalised AiSolutionEnvelope objects.
+//
+// Raw shape (from apply-whatif route): { status, solution: { COM-001: { fasi, scadenza_min }, ... }, kpis }
+// Normalised shape (AiSolutionEnvelope): { commesse: { COM-001: { fasi, ... } }, fasi: [...], ... }
+function extractCommesse(solution: unknown): Record<string, unknown> {
+  if (!isObject(solution)) return {};
+  // Normalised AiSolutionEnvelope — commesse field is set by buildAiSolutionEnvelope
+  if (isObject(solution.commesse)) return solution.commesse as Record<string, unknown>;
+  // Raw backend response — commessa map lives under solution.solution
+  if (isObject(solution.solution)) return solution.solution as Record<string, unknown>;
+  return {};
+}
+
 export function buildSolutionContext(
   solution: AiSolutionEnvelope | unknown,
   _kpis: Record<string, number>,
@@ -100,8 +122,7 @@ export function buildSolutionContext(
 
   const fasi: Array<Record<string, unknown>> =
     Array.isArray(envelope?.fasi) ? envelope!.fasi : [];
-  const commesse: Record<string, unknown> =
-    isObject(envelope?.commesse) ? envelope!.commesse : {};
+  const commesse = extractCommesse(solution);
 
   const machines = extractMachines(fasi);
   const machine_aliases = buildMachineAliases(machines);
