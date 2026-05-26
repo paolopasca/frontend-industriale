@@ -14,6 +14,47 @@ export interface SseEvent<T = unknown> {
 }
 
 /**
+ * Wave 16.3 #37 — classify whether a panel-level error is transient enough
+ * to warrant an automatic client-side retry. Without this, when the BFF
+ * surfaces an upstream 503 (Anthropic overloaded) or its own SSE
+ * `explainer_failed`/`advisor_failed` event, the manager has to manually
+ * hit "Riprova" — even though the next attempt usually works. We hard-list
+ * the codes/statuses observed during Wave 16.x stress runs.
+ *
+ * Conservative on purpose: never retry permanent failures (invalid body,
+ * payload too large, auth) — those won't get better and would burn the
+ * BFF rate-limit budget.
+ */
+export function isTransientPanelError(
+  err: { code?: string; status?: number; message?: string },
+): boolean {
+  const code = err.code ?? '';
+  const status = err.status ?? 0;
+  const message = err.message ?? '';
+  // BFF SSE error codes that come from upstream / transient runtime failures.
+  if (
+    code === 'explainer_failed'
+    || code === 'advisor_failed'
+    || code === 'whatif_failed'
+    || code === 'split_failed'
+    || code === 'chat_failed'
+  ) {
+    return true;
+  }
+  // HTTP status surfaced by sseStream when the response is !res.ok.
+  if (status === 502 || status === 503 || status === 504 || status === 529) {
+    return true;
+  }
+  // Network-layer leaks that survived the friendly translator (defence in depth).
+  if (/HTTP\s+5\d\d\b|ECONNREFUSED|ETIMEDOUT|fetch failed/i.test(message)) {
+    return true;
+  }
+  // Explicit non-transient cases: rate-limit (won't clear within retry window),
+  // invalid input, payload size — caller surfaces immediately.
+  return false;
+}
+
+/**
  * F-W11-LIVE-02 — translate raw BFF error codes/messages into manager-friendly
  * text for the explainer/advisor/whatif/split/chat banners. Without this, the
  * SSE error event (code: 'explainer_failed' / 'advisor_failed' / 'whatif_failed'
