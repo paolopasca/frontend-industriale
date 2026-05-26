@@ -15,7 +15,7 @@
  */
 import { createFileRoute } from '@tanstack/react-router';
 import { useEffect, useMemo, useState } from 'react';
-import { getSlugScoped } from '@/lib/storage';
+import { getSlugScoped, removeSlugScoped } from '@/lib/storage';
 import {
   buildPrintSchedule,
   PRINT_SNAPSHOT_KEY,
@@ -54,6 +54,9 @@ function PrintPage() {
   useEffect(() => {
     const s = readSnapshot(slug);
     setSnapshot(s);
+    if (s) {
+      removeSlugScoped(PRINT_SNAPSHOT_KEY, slug);
+    }
     setLoaded(true);
   }, [slug]);
 

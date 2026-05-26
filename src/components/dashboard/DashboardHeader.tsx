@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
 import { RefreshCw, FileDown, Plus, ArrowLeft, CheckCircle2, AlertTriangle, HelpCircle, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
-import { clearSlugScoped, setSlugScoped } from '@/lib/storage';
+import { clearSlugScoped, removeSlugScoped, setSlugScoped } from '@/lib/storage';
 import { useDashboard } from '@/data/DashboardContext';
 import { PRINT_SNAPSHOT_KEY } from '@/lib/printSchedule';
 
@@ -69,7 +69,7 @@ export function DashboardHeader({
     const url = `/print/${encodeURIComponent(slug)}`;
     const win = window.open(url, '_blank', 'noopener,noreferrer');
     if (!win) {
-      // popup blocked: keep the manager unblocked with a manual fallback.
+      removeSlugScoped(PRINT_SNAPSHOT_KEY, slug);
       toast.error('Il browser ha bloccato la nuova finestra. Consenti i popup per esportare il PDF.');
     }
   };
