@@ -18,6 +18,12 @@ export interface WhatIfConfirmationModalProps {
   onCancel: () => void;
 }
 
+function confidenceBand(c: number): string {
+  if (c >= 0.75) return 'alta';
+  if (c >= 0.45) return 'media';
+  return 'bassa';
+}
+
 export function WhatIfConfirmationModal({
   open,
   confirmationMessage,
@@ -28,16 +34,16 @@ export function WhatIfConfirmationModal({
 }: WhatIfConfirmationModalProps) {
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onCancel(); }}>
-      <DialogContent>
+      <DialogContent data-testid="whatif-grayzone-modal">
         <DialogHeader>
           <DialogTitle>Conferma interpretazione</DialogTitle>
-          <DialogDescription asChild>
-            <p>{confirmationMessage}</p>
+          <DialogDescription>
+            {confirmationMessage}
           </DialogDescription>
         </DialogHeader>
         {confidence !== undefined && (
           <p className="text-xs text-muted-foreground">
-            Confidence: {confidence.toFixed(2)}
+            Confidenza: {confidenceBand(confidence)}
           </p>
         )}
         <DialogFooter className="flex-col gap-2 sm:flex-row">

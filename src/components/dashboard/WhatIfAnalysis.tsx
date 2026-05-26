@@ -85,11 +85,14 @@ interface ApplyAbortedUnsupportedPayload {
 }
 
 // Wave 16.2 — GRAY_ZONE confirmation contract from BFF.
+// confirmedPayload mirrors what the backend extractor returned as gray_zone;
+// we echo it back on confirm so the BFF can skip re-extraction and avoid
+// an infinite requires_confirmation loop.
 interface GrayZoneConfirmationState {
   confirmationMessage: string;
   patternId?: string;
   confidence?: number;
-  pendingPayload: Record<string, unknown>;
+  confirmedPayload: Record<string, unknown>;
 }
 
 type ApplyingState = 'idle' | 'translating' | 'solving' | 'done' | 'unsupported' | 'error';
@@ -161,7 +164,14 @@ export function WhatIfAnalysis({
   const [lockedPhases, setLockedPhases] = useState<FrozenPhase[]>([]);
 
   // Wave 16.2 — GRAY_ZONE: BFF requests manager confirmation before applying.
-  const [grayZoneConfirmation, setGrayZoneConfirmation] = useState<GrayZoneConfirmationState | null>(null);
+  const [grayZoneConfirmation, _setGrayZoneConfirmation] = useState<GrayZoneConfirmationState | null>(null);
+  // Ref mirrors state so useCallback closures can read the current value without
+  // re-declaring deps (avoids the stale-closure race documented in DRIFT-A/B).
+  const grayZoneRef = useRef<GrayZoneConfirmationState | null>(null);
+  const setGrayZoneConfirmation = useCallback((v: GrayZoneConfirmationState | null) => {
+    grayZoneRef.current = v;
+    _setGrayZoneConfirmation(v);
+  }, []);
 
   // Wave 7 — cutoff selector: from when should the solver recompute?
   // Default +30 min cushion to avoid disturbing phases about to start.
@@ -321,30 +331,18 @@ export function WhatIfAnalysis({
     return { currentTimeMin: toRelMin(Date.now()), cushionMin: cushionPreset };
   }, [baselineStartMs, cushionPreset, customDatetime]);
 
-  // Wave 16.2 — GRAY_ZONE modal handlers.
-  const handleGrayZoneConfirm = useCallback(() => {
-    if (!grayZoneConfirmation) return;
-    setGrayZoneConfirmation(null);
-    void runApplyWhatIfWithFlags({ userConfirmedGrayZone: true });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [grayZoneConfirmation]);
-
-  const handleGrayZoneOpus = useCallback(() => {
-    if (!grayZoneConfirmation) return;
-    setGrayZoneConfirmation(null);
-    void runApplyWhatIfWithFlags({ forceOpusFallback: true });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [grayZoneConfirmation]);
-
-  const handleGrayZoneCancel = useCallback(() => {
-    setGrayZoneConfirmation(null);
-    setApplying('idle');
-  }, []);
-
-  const runApplyWhatIfWithFlags = async (
-    flags: { userConfirmedGrayZone?: boolean; forceOpusFallback?: boolean } = {},
+  const runApplyWhatIfWithFlags = useCallback(async (
+    flags: { userConfirmedGrayZone?: boolean; forceOpusFallback?: boolean; confirmedPayload?: Record<string, unknown> } = {},
   ) => {
     if (!canApply || !slug || !planReady) return;
+    // DRIFT-A guard: if the GRAY_ZONE modal is open and this is NOT a
+    // modal-triggered retry, silently drop the call. The user must resolve
+    // the modal first (confirm / riformula / annulla).
+    if (
+      grayZoneRef.current !== null &&
+      !flags.userConfirmedGrayZone &&
+      !flags.forceOpusFallback
+    ) return;
 
     applyAbortRef.current?.abort();
     const controller = new AbortController();
@@ -387,8 +385,12 @@ export function WhatIfAnalysis({
           // Wave 7 — cutoff window for hard-lock of pre-cutoff phases.
           currentTimeMin,
           cushionMin,
-          // Wave 16.2 — GRAY_ZONE confirmation flags.
+          // Wave 16.2 — GRAY_ZONE: send confirmedPayload so BFF skips
+          // re-extraction and avoids an infinite requires_confirmation loop.
           ...(flags.userConfirmedGrayZone ? { userConfirmedGrayZone: true } : {}),
+          ...(flags.confirmedPayload && Object.keys(flags.confirmedPayload).length > 0
+            ? { confirmedPayload: flags.confirmedPayload }
+            : {}),
           ...(flags.forceOpusFallback ? { forceOpusFallback: true } : {}),
         },
         controller.signal,
@@ -397,18 +399,21 @@ export function WhatIfAnalysis({
       for await (const { event, data } of stream) {
         if (event === 'requires_confirmation') {
           // Wave 16.2 — BFF detected GRAY_ZONE confidence; pause and ask manager.
+          // We store the full raw payload so we can echo it back on confirm,
+          // letting the BFF skip re-extraction on the retry.
           const payload = data as {
             confirmationMessage?: string;
             patternId?: string;
             confidence?: number;
+            confirmedPayload?: Record<string, unknown>;
           } | null;
           const message =
-            payload?.confirmationMessage ?? 'Confermi l\'interpretazione?';
+            payload?.confirmationMessage ?? "Confermi l'interpretazione?";
           setGrayZoneConfirmation({
             confirmationMessage: message,
             patternId: payload?.patternId,
             confidence: payload?.confidence,
-            pendingPayload: {},
+            confirmedPayload: payload?.confirmedPayload ?? {},
           });
           setApplying('idle');
           return;
@@ -538,12 +543,34 @@ export function WhatIfAnalysis({
       }
     }
     applyAbortRef.current = null;
-  };
+  }, [canApply, slug, planReady, solution, kpis, response, scenario, consultationMd, dataSchemaMd, computeCutoffParams, intentId, setGrayZoneConfirmation]);
 
   const runApplyWhatIf = useCallback(() => {
     return runApplyWhatIfWithFlags();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canApply, slug, planReady, solution, kpis, response, scenario, consultationMd, dataSchemaMd, computeCutoffParams, intentId]);
+  }, [runApplyWhatIfWithFlags]);
+
+  // Wave 16.2 — GRAY_ZONE modal handlers (declared after runApplyWhatIfWithFlags
+  // so they can be listed in deps without forward-reference issues).
+  const handleGrayZoneConfirm = useCallback(() => {
+    const gz = grayZoneRef.current;
+    if (!gz) return;
+    setGrayZoneConfirmation(null);
+    void runApplyWhatIfWithFlags({
+      userConfirmedGrayZone: true,
+      confirmedPayload: gz.confirmedPayload,
+    });
+  }, [runApplyWhatIfWithFlags, setGrayZoneConfirmation]);
+
+  const handleGrayZoneOpus = useCallback(() => {
+    if (!grayZoneRef.current) return;
+    setGrayZoneConfirmation(null);
+    void runApplyWhatIfWithFlags({ forceOpusFallback: true });
+  }, [runApplyWhatIfWithFlags, setGrayZoneConfirmation]);
+
+  const handleGrayZoneCancel = useCallback(() => {
+    setGrayZoneConfirmation(null);
+    setApplying('idle');
+  }, [setGrayZoneConfirmation]);
 
   const cancelApply = useCallback(() => {
     applyAbortRef.current?.abort();
