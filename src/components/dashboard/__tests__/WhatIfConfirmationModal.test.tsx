@@ -36,7 +36,7 @@ describe('WhatIfConfirmationModal', () => {
     expect(onUseOpus).toHaveBeenCalledTimes(1);
   });
 
-  it('"Riformula" button is hidden by default (Wave 16.2)', () => {
+  it('"Riformula" button is hidden by default (showRiformula prop guards it)', () => {
     render(<WhatIfConfirmationModal {...BASE_PROPS} />);
     expect(screen.queryByRole('button', { name: /riformula con ai/i })).not.toBeInTheDocument();
   });
