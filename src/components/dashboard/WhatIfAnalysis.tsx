@@ -545,7 +545,7 @@ export function WhatIfAnalysis({
           Analisi What-If
         </CardTitle>
         <p className="text-xs text-muted-foreground">
-          Scrivi uno scenario in italiano. Opus 4.7 analizza impatti, trade-off e dà una raccomandazione.
+          Scrivi uno scenario in italiano. Il sistema AI analizza impatti, trade-off e dà una raccomandazione.
         </p>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -700,7 +700,7 @@ export function WhatIfAnalysis({
           >
             <div className="flex items-center justify-between px-3 py-2 border-b">
               <span className="text-xs font-medium">
-                {streaming ? '🧠 Opus sta analizzando…' : 'Analisi'}
+                {streaming ? '🧠 Il sistema AI sta analizzando…' : 'Analisi'}
               </span>
               <div className="flex items-center gap-1">
                 {!streaming && response && (
