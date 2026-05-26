@@ -20,7 +20,8 @@
     "test:wave2:edge": "tsx tests/server/wave2-edge-cases.test.ts",
     "test:wave2:nohallu": "tsx tests/server/wave2-no-hallucination.test.ts",
     "test:wave2:e2e": "playwright test tests/e2e/wave2-panels.spec.ts",
-    "test:wave2": "npm run test:wave2:edge && npm run test:wave2:nohallu"
+    "test:wave2": "npm run test:wave2:edge && npm run test:wave2:nohallu",
+    "test:server": "vitest run --config vitest.server.config.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.97.1",
@@ -86,6 +87,7 @@
     "@playwright/test": "^1.60.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/node": "^22.16.5",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",

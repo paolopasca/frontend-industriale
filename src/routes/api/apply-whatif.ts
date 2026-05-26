@@ -70,6 +70,14 @@ const BodySchema = z.object({
   // matches Plan §2 D1 (30-min cushion). Capped to 24h so a misconfigured
   // UI cannot push the cutoff past the planning horizon.
   cushionMin: z.number().int().min(0).max(1_440).default(30),
+  // Wave 16.2 — GRAY_ZONE confirmation retry. When the UI confirms a gray-zone
+  // result, it re-calls with userConfirmedGrayZone=true and the echoed
+  // confirmedPayload so the extractor step is skipped and the pre-validated
+  // rules go directly to the solver. forceOpusFallback skips the extractor
+  // and calls Opus instead (manager chose "Usa Opus" on the confirmation modal).
+  userConfirmedGrayZone: z.boolean().optional(),
+  confirmedPayload: z.record(z.string(), z.unknown()).optional(),
+  forceOpusFallback: z.boolean().optional(),
 });
 
 type Body = z.infer<typeof BodySchema>;
@@ -583,46 +591,73 @@ export const Route = createFileRoute('/api/apply-whatif')({
               // (Wave 4.1 backward-compat) or when the router asked for
               // the Opus translator.
               if (!input.managerText || strategyKind === 'C') {
-                write('translating', { phase: 'translating' });
-                const tr = await translateWhatIfToConstraint(
-                  {
-                    whatifText: input.whatifText,
-                    originalSolution: input.originalSolution,
-                    kpis: input.kpis,
-                    consultationMd: input.consultationMd,
-                  },
-                  {
-                    signal: abort.signal,
-                    onUsage: (u) => { accumulateUsage(u); },
-                  },
-                );
-                write('translated', { change: tr.change });
+                // Wave 16.2 — fast path: manager already confirmed a GRAY_ZONE
+                // payload. Skip the extractor+translator entirely; use the
+                // echoed confirmedPayload as the rules for the solver directly.
+                if (input.userConfirmedGrayZone && input.confirmedPayload) {
+                  rulesForSolve = input.confirmedPayload;
+                  wave7Warnings.push('gray_zone_confirmed_by_manager');
+                } else {
+                  write('translating', { phase: 'translating' });
+                  const tr = await translateWhatIfToConstraint(
+                    {
+                      whatifText: input.whatifText,
+                      originalSolution: input.originalSolution,
+                      kpis: input.kpis,
+                      consultationMd: input.consultationMd,
+                      forceOpusFallback: input.forceOpusFallback,
+                    },
+                    {
+                      signal: abort.signal,
+                      onUsage: (u) => { accumulateUsage(u); },
+                    },
+                  );
+                  write('translated', { change: tr.change });
 
-                if (abort.signal.aborted || tr.aborted) {
-                  flushCost();
-                  write('aborted', { reason: 'client_disconnect' });
-                  write('done', {
-                    cost_usd: lastUsage?.cost_usd ?? 0,
-                    tokens_in: lastUsage?.tokens_in ?? 0,
-                    tokens_out: lastUsage?.tokens_out ?? 0,
-                  });
-                  return;
+                  if (abort.signal.aborted || tr.aborted) {
+                    flushCost();
+                    write('aborted', { reason: 'client_disconnect' });
+                    write('done', {
+                      cost_usd: lastUsage?.cost_usd ?? 0,
+                      tokens_in: lastUsage?.tokens_in ?? 0,
+                      tokens_out: lastUsage?.tokens_out ?? 0,
+                    });
+                    return;
+                  }
+                  if (tr.change.type === 'unsupported') {
+                    flushCost();
+                    write('aborted_unsupported', {
+                      reason: tr.change.unsupportedReason ?? 'unsupported',
+                      warnings: [...wave7Warnings, ...tr.change.warnings],
+                    });
+                    write('done', {
+                      cost_usd: lastUsage?.cost_usd ?? 0,
+                      tokens_in: lastUsage?.tokens_in ?? 0,
+                      tokens_out: lastUsage?.tokens_out ?? 0,
+                    });
+                    return;
+                  }
+                  // Wave 16.2 — GRAY_ZONE pause: emit requires_confirmation and
+                  // close the stream. The UI shows the modal and re-calls with
+                  // userConfirmedGrayZone=true+confirmedPayload OR forceOpusFallback=true.
+                  // This makes the safety gate real — no solve happens until confirmed.
+                  if (tr.change.requiresConfirmation) {
+                    flushCost();
+                    write('requires_confirmation', {
+                      confirmationMessage: tr.change.confirmationMessage,
+                      confidence: tr.change.confidence,
+                      confirmedPayload: tr.change.rules,
+                    });
+                    write('done', {
+                      cost_usd: lastUsage?.cost_usd ?? 0,
+                      tokens_in: lastUsage?.tokens_in ?? 0,
+                      tokens_out: lastUsage?.tokens_out ?? 0,
+                    });
+                    return;
+                  }
+                  rulesForSolve = tr.change.rules;
+                  wave7Warnings.push(...(tr.change.warnings ?? []));
                 }
-                if (tr.change.type === 'unsupported') {
-                  flushCost();
-                  write('aborted_unsupported', {
-                    reason: tr.change.unsupportedReason ?? 'unsupported',
-                    warnings: [...wave7Warnings, ...tr.change.warnings],
-                  });
-                  write('done', {
-                    cost_usd: lastUsage?.cost_usd ?? 0,
-                    tokens_in: lastUsage?.tokens_in ?? 0,
-                    tokens_out: lastUsage?.tokens_out ?? 0,
-                  });
-                  return;
-                }
-                rulesForSolve = tr.change.rules;
-                wave7Warnings.push(...(tr.change.warnings ?? []));
               }
 
               // Phase 2: solve. No additional LLM cost here.

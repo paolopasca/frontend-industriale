@@ -19,6 +19,7 @@ import { Progress } from '@/components/ui/progress';
 import { sseStream, friendlyErrorMessage } from '@/lib/streamingFetch';
 import { SolutionDiff, type FrozenPhase } from './SolutionDiff';
 import { humanizeUnsupportedReason } from './unsupported-reason-labels';
+import { WhatIfConfirmationModal } from './WhatIfConfirmationModal';
 
 interface WhatIfAnalysisProps {
   slug: string | null;
@@ -47,6 +48,9 @@ interface ConstraintChange {
   confidence: 'high' | 'medium' | 'low';
   warnings: string[];
   unsupportedReason?: string;
+  // Wave 16.2 — GRAY_ZONE fields added by bff-orchestrator.
+  requiresConfirmation?: boolean;
+  confirmationMessage?: string;
 }
 
 interface ApplySolvedPayload {
@@ -81,6 +85,15 @@ interface ApplySolvedPayload {
 interface ApplyAbortedUnsupportedPayload {
   reason: string;
   warnings: string[];
+}
+
+// Wave 16.3 — GRAY_ZONE confirmation state.
+// BFF pauses before solving and emits requires_confirmation. On confirm we
+// echo confirmedPayload back so the BFF can solve without re-extracting.
+interface GrayZoneConfirmationState {
+  confirmationMessage: string;
+  confidence?: number;
+  confirmedPayload: Record<string, unknown>;
 }
 
 type ApplyingState = 'idle' | 'translating' | 'solving' | 'done' | 'unsupported' | 'error';
@@ -150,6 +163,16 @@ export function WhatIfAnalysis({
   // start_min, end_min); BFF also includes redundant audit fields (job_id,
   // seq, machine_id, worker_id) but the UI ignores them.
   const [lockedPhases, setLockedPhases] = useState<FrozenPhase[]>([]);
+
+  // Wave 16.2 — GRAY_ZONE: BFF requests manager confirmation before applying.
+  const [grayZoneConfirmation, _setGrayZoneConfirmation] = useState<GrayZoneConfirmationState | null>(null);
+  // Ref mirrors state so useCallback closures can read the current value without
+  // re-declaring deps (avoids the stale-closure race documented in DRIFT-A/B).
+  const grayZoneRef = useRef<GrayZoneConfirmationState | null>(null);
+  const setGrayZoneConfirmation = useCallback((v: GrayZoneConfirmationState | null) => {
+    grayZoneRef.current = v;
+    _setGrayZoneConfirmation(v);
+  }, []);
 
   // Wave 7 — cutoff selector: from when should the solver recompute?
   // Default +30 min cushion to avoid disturbing phases about to start.
@@ -309,8 +332,21 @@ export function WhatIfAnalysis({
     return { currentTimeMin: toRelMin(Date.now()), cushionMin: cushionPreset };
   }, [baselineStartMs, cushionPreset, customDatetime]);
 
-  const runApplyWhatIf = useCallback(async () => {
+  const runApplyWhatIfWithFlags = useCallback(async (
+    flags: {
+      userConfirmedGrayZone?: boolean;
+      confirmedPayload?: Record<string, unknown>;
+      forceOpusFallback?: boolean;
+    } = {},
+  ) => {
     if (!canApply || !slug || !planReady) return;
+    // DRIFT-A guard: block new apply calls while the GRAY_ZONE modal is open
+    // (unless this is a modal-triggered retry).
+    if (
+      grayZoneRef.current !== null &&
+      !flags.userConfirmedGrayZone &&
+      !flags.forceOpusFallback
+    ) return;
 
     applyAbortRef.current?.abort();
     const controller = new AbortController();
@@ -353,12 +389,36 @@ export function WhatIfAnalysis({
           // Wave 7 — cutoff window for hard-lock of pre-cutoff phases.
           currentTimeMin,
           cushionMin,
+          // Wave 16.3 — GRAY_ZONE retry flags (accepted by BFF BodySchema).
+          ...(flags.userConfirmedGrayZone ? { userConfirmedGrayZone: true } : {}),
+          ...(flags.confirmedPayload ? { confirmedPayload: flags.confirmedPayload } : {}),
+          ...(flags.forceOpusFallback ? { forceOpusFallback: true } : {}),
         },
         controller.signal,
       );
 
       for await (const { event, data } of stream) {
-        if (event === 'parsing_intent') {
+        if (event === 'requires_confirmation') {
+          // Wave 16.3 — BFF paused before solving; manager must confirm.
+          // Stream ends after this event (done follows, no solved).
+          const payload = data as {
+            confirmationMessage?: string;
+            confidence?: 'high' | 'medium' | 'low';
+            confirmedPayload?: Record<string, unknown>;
+          } | null;
+          setGrayZoneConfirmation({
+            confirmationMessage:
+              payload?.confirmationMessage ?? "Confermi l'interpretazione?",
+            confidence:
+              payload?.confidence === 'high' ? 0.85
+              : payload?.confidence === 'medium' ? 0.55
+              : payload?.confidence === 'low' ? 0.25
+              : undefined,
+            confirmedPayload: payload?.confirmedPayload ?? {},
+          });
+          setApplying('idle');
+          return;
+        } else if (event === 'parsing_intent') {
           // Wave 7 path activated — Haiku is classifying the intent.
           setApplying('translating');
         } else if (event === 'intent_parsed') {
@@ -484,7 +544,34 @@ export function WhatIfAnalysis({
       }
     }
     applyAbortRef.current = null;
-  }, [canApply, slug, planReady, solution, kpis, response, scenario, consultationMd, dataSchemaMd, computeCutoffParams, intentId]);
+  }, [canApply, slug, planReady, solution, kpis, response, scenario, consultationMd, dataSchemaMd, computeCutoffParams, intentId, setGrayZoneConfirmation]);
+
+  const runApplyWhatIf = useCallback(() => {
+    return runApplyWhatIfWithFlags();
+  }, [runApplyWhatIfWithFlags]);
+
+  // Wave 16.3 — GRAY_ZONE modal handlers.
+  // BFF has paused before solving; stream has ended. Each action re-calls.
+  const handleGrayZoneConfirm = useCallback(() => {
+    const gz = grayZoneRef.current;
+    if (!gz) return;
+    setGrayZoneConfirmation(null);
+    void runApplyWhatIfWithFlags({
+      userConfirmedGrayZone: true,
+      confirmedPayload: gz.confirmedPayload,
+    });
+  }, [runApplyWhatIfWithFlags, setGrayZoneConfirmation]);
+
+  const handleGrayZoneOpus = useCallback(() => {
+    if (!grayZoneRef.current) return;
+    setGrayZoneConfirmation(null);
+    void runApplyWhatIfWithFlags({ forceOpusFallback: true });
+  }, [runApplyWhatIfWithFlags, setGrayZoneConfirmation]);
+
+  const handleGrayZoneCancel = useCallback(() => {
+    setGrayZoneConfirmation(null);
+    setApplying('idle');
+  }, [setGrayZoneConfirmation]);
 
   const cancelApply = useCallback(() => {
     applyAbortRef.current?.abort();
@@ -836,6 +923,19 @@ export function WhatIfAnalysis({
           />
         )}
       </CardContent>
+
+      {/* Wave 16.2 — GRAY_ZONE confirmation modal */}
+      {grayZoneConfirmation && (
+        <WhatIfConfirmationModal
+          open={!!grayZoneConfirmation}
+          confirmationMessage={grayZoneConfirmation.confirmationMessage}
+          confidence={grayZoneConfirmation.confidence}
+          onConfirm={handleGrayZoneConfirm}
+          onUseOpus={handleGrayZoneOpus}
+          onCancel={handleGrayZoneCancel}
+          showRiformula={true}
+        />
+      )}
     </Card>
   );
 }

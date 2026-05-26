@@ -1,5 +1,8 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { getAnthropicClient } from './client';
+import { extractConstraintFromBackend } from './extract-constraint-client';
+import type { ExtractConstraintResponse } from './extract-constraint-client';
+import { buildSolutionContext } from '@/lib/solutionContext';
 
 /**
  * Wave 4.1 — Constraint Translator (Opus 4.7).
@@ -48,6 +51,8 @@ export interface ConstraintChange {
   confidence: 'high' | 'medium' | 'low';
   warnings: string[];
   unsupportedReason?: string;
+  requiresConfirmation?: boolean;
+  confirmationMessage?: string;
 }
 
 export interface TranslatorInput {
@@ -55,6 +60,7 @@ export interface TranslatorInput {
   originalSolution: unknown;
   kpis: Record<string, number>;
   consultationMd?: string;
+  forceOpusFallback?: boolean;
 }
 
 export interface TranslatorResult {
@@ -774,6 +780,38 @@ function normaliseChange(parsed: unknown, known: KnownIds): ConstraintChange {
   return change;
 }
 
+// ── Wave 16.2: deterministic-first orchestration ──────────────────────────────
+
+function mapPayloadToType(payload: Record<string, unknown>): ConstraintType {
+  if ('unavailable_machines' in payload) return 'block_machine';
+  if ('priority_orders' in payload) return 'force_priority';
+  if ('extra_capacity' in payload) return 'add_capacity';
+  if ('deadline_changes' in payload) return 'modify_deadline';
+  if ('shift_changes' in payload) return 'shift_window';
+  return 'unsupported';
+}
+
+function mapBackendPayloadToConstraintChange(
+  beResult: ExtractConstraintResponse,
+): ConstraintChange {
+  const payload = beResult.payload ?? {};
+  const type = mapPayloadToType(payload);
+  const confidence: 'high' | 'medium' | 'low' =
+    beResult.confidence >= 0.85 ? 'high' : beResult.confidence >= 0.5 ? 'medium' : 'low';
+
+  const change: ConstraintChange = {
+    type,
+    rules: type !== 'unsupported' ? payload : {},
+    rationale: beResult.rationale,
+    confidence,
+    warnings: [],
+  };
+  if (type === 'unsupported') {
+    change.unsupportedReason = 'Estrattore deterministico: tipo di vincolo non riconosciuto.';
+  }
+  return change;
+}
+
 export async function translateWhatIfToConstraint(
   input: TranslatorInput,
   options?: TranslatorOptions,
@@ -799,6 +837,37 @@ export async function translateWhatIfToConstraint(
   // original solution. This is the source of truth the deterministic
   // post-validator uses to reject hallucinated IDs (DA-07).
   const knownIds = extractKnownIds(input.originalSolution, input.kpis);
+
+  // ── Wave 16.2: deterministic-first via backend extractor ─────────────────
+  // Try the backend extractor before invoking Opus. On HIT/GRAY_ZONE we skip
+  // Opus entirely. On MISS or any network failure we fall through to Opus.
+  // forceOpusFallback=true (set by the route on manager "Usa Opus" retry) skips
+  // the extractor and goes directly to Opus.
+  const solCtx = buildSolutionContext(input.originalSolution, input.kpis, input.consultationMd);
+  const beResult = input.forceOpusFallback
+    ? null
+    : await extractConstraintFromBackend(input.whatifText, solCtx);
+
+  if (beResult?.result === 'hit') {
+    const change = mapBackendPayloadToConstraintChange(beResult);
+    // If the payload shape is unrecognised, fall through to Opus rather than
+    // emitting an unsupported toast for a pattern the backend called HIT.
+    if (change.type !== 'unsupported') {
+      options?.onUsage?.({ cost_usd: 0, tokens_in: 0, tokens_out: 0 });
+      return { change, cost_usd: 0, tokens_in: 0, tokens_out: 0 };
+    }
+  }
+
+  if (beResult?.result === 'gray_zone') {
+    const change = mapBackendPayloadToConstraintChange(beResult);
+    if (change.type !== 'unsupported') {
+      change.requiresConfirmation = true;
+      change.confirmationMessage = beResult.confirmation_message ?? undefined;
+      options?.onUsage?.({ cost_usd: 0, tokens_in: 0, tokens_out: 0 });
+      return { change, cost_usd: 0, tokens_in: 0, tokens_out: 0 };
+    }
+  }
+  // miss, null (backend down/auth failed), or unrecognised HIT/GRAY_ZONE payload → Opus
 
   const client = getAnthropicClient();
   const systemBlocks = buildSystemBlocks();
