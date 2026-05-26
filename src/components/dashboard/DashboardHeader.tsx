@@ -1,7 +1,9 @@
 import { motion } from 'framer-motion';
 import { RefreshCw, FileDown, Plus, ArrowLeft, CheckCircle2, AlertTriangle, HelpCircle, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
-import { clearSlugScoped } from '@/lib/storage';
+import { clearSlugScoped, removeSlugScoped, setSlugScoped } from '@/lib/storage';
+import { useDashboard } from '@/data/DashboardContext';
+import { PRINT_SNAPSHOT_KEY } from '@/lib/printSchedule';
 
 const STATUS_BADGE: Record<string, { label: string; className: string; Icon: typeof CheckCircle2 }> = {
   OPTIMAL: {
@@ -46,9 +48,30 @@ export function DashboardHeader({
   companyName?: string | null;
   solverStatus?: string | null;
 }) {
+  const dashboard = useDashboard();
+  // Wave 15 — W15-03: "Esporta PDF" no longer prints the whole dashboard.
+  // Persist a snapshot of the current schedule to slug-scoped storage and
+  // open the dedicated print route in a new tab; that route auto-fires
+  // `window.print()` on load. Falls back to a generic "current" key when
+  // no slug is wired through (legacy DataInputModal path).
   const handleExportPdf = () => {
-    toast.info('Apertura finestra di stampa — scegli "Salva come PDF" per esportare.');
-    setTimeout(() => window.print(), 250);
+    const slug = (companySlug && companySlug.trim().length > 0) ? companySlug : 'current';
+    try {
+      const snapshot = JSON.stringify({
+        data: dashboard,
+        companyName: companyName ?? '',
+      });
+      setSlugScoped(PRINT_SNAPSHOT_KEY, slug, snapshot);
+    } catch {
+      toast.error('Impossibile preparare il piano per la stampa.');
+      return;
+    }
+    const url = `/print/${encodeURIComponent(slug)}`;
+    const win = window.open(url, '_blank', 'noopener,noreferrer');
+    if (!win) {
+      removeSlugScoped(PRINT_SNAPSHOT_KEY, slug);
+      toast.error('Il browser ha bloccato la nuova finestra. Consenti i popup per esportare il PDF.');
+    }
   };
   const handleReset = () => {
     if (companySlug) clearSlugScoped(companySlug);

@@ -174,7 +174,7 @@ export function OptimizationLoader({
             return;
           }
           const result = await solveLLMOnly(companySlug);
-          addLog(`Risultato: ${result.status} — costo: $${result.cost_usd?.toFixed(3) ?? '?'}`);
+          addLog(`Risultato: ${result.status} — costo backend: $${result.cost_usd?.toFixed(3) ?? '?'}`);
           if (result.status === 'error') {
             setError(result.result?.narrative || 'Errore LLM');
             return;
@@ -230,7 +230,7 @@ export function OptimizationLoader({
 
           if (state.state === 'done') {
             const results = await pipelineResults(state.session_id);
-            addLog(`Completato — costo: $${results.cost_usd?.toFixed(3) ?? '?'}`);
+            addLog(`Completato — costo backend: $${results.cost_usd?.toFixed(3) ?? '?'}`);
             // Persist session/run IDs so ReplanModal can call the
             // authenticated /api/analysis/{sid}/reschedule endpoint.
             if (companySlug && results.session_id && Number.isFinite(results.run_id) && results.run_id > 0) {
@@ -257,7 +257,7 @@ export function OptimizationLoader({
           if (result.warnings?.length) {
             addLog(`Warnings: ${result.warnings.join(', ')}`);
           }
-          addLog(`Costo: $${result.cost_usd}`);
+          addLog(`Costo backend: $${result.cost_usd}`);
           if (result.status === 'OPTIMAL' || result.status === 'FEASIBLE') {
             setProgress(100);
             setDone(true);
@@ -359,13 +359,16 @@ export function OptimizationLoader({
           </div>
         </div>
 
-        {/* Phase list */}
+        {/* Phase list. W15-04: when `done` is true (backend solve completed)
+            every step must read as completed — opacity 1, text-foreground,
+            CheckCircle2. The visual timer can lag behind the backend so
+            `currentPhase` may still be < last index when `done` flips. */}
         <div className="space-y-2 text-left">
           {PHASES.map((phase, i) => (
             <motion.div
               key={i}
               initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: i <= currentPhase ? 1 : 0.3, x: 0 }}
+              animate={{ opacity: (i <= currentPhase || done) ? 1 : 0.3, x: 0 }}
               transition={{ delay: i * 0.1 }}
               className="flex items-center gap-3 text-sm"
             >
@@ -378,21 +381,24 @@ export function OptimizationLoader({
                   <div className="w-5 h-5 rounded-full border border-border" />
                 )}
               </div>
-              <span className={i <= currentPhase ? 'text-foreground' : 'text-muted-foreground'}>
+              <span className={(i <= currentPhase || done) ? 'text-foreground' : 'text-muted-foreground'}>
                 {phase.label}
               </span>
             </motion.div>
           ))}
         </div>
 
-        {/* Backend log */}
+        {/* Backend log — solver steps + backend LLM cost */}
         {backendLog.length > 0 && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             className="text-left bg-accent/30 rounded-lg p-3 max-h-32 overflow-y-auto"
+            data-testid="backend-log-block"
           >
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Backend log</p>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              Costo backend
+            </p>
             {backendLog.map((log, i) => (
               <p key={i} className="text-xs font-mono text-muted-foreground leading-relaxed">
                 {log}

@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as PrintSlugRouteImport } from './routes/print/$slug'
 import { Route as ApiWhatifRouteImport } from './routes/api/whatif'
 import { Route as ApiSplitRouteImport } from './routes/api/split'
 import { Route as ApiManagerChatRouteImport } from './routes/api/manager-chat'
@@ -20,6 +21,11 @@ import { Route as ApiAdviseRouteImport } from './routes/api/advise'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PrintSlugRoute = PrintSlugRouteImport.update({
+  id: '/print/$slug',
+  path: '/print/$slug',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiWhatifRoute = ApiWhatifRouteImport.update({
@@ -61,6 +67,7 @@ export interface FileRoutesByFullPath {
   '/api/manager-chat': typeof ApiManagerChatRoute
   '/api/split': typeof ApiSplitRoute
   '/api/whatif': typeof ApiWhatifRoute
+  '/print/$slug': typeof PrintSlugRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -70,6 +77,7 @@ export interface FileRoutesByTo {
   '/api/manager-chat': typeof ApiManagerChatRoute
   '/api/split': typeof ApiSplitRoute
   '/api/whatif': typeof ApiWhatifRoute
+  '/print/$slug': typeof PrintSlugRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -80,6 +88,7 @@ export interface FileRoutesById {
   '/api/manager-chat': typeof ApiManagerChatRoute
   '/api/split': typeof ApiSplitRoute
   '/api/whatif': typeof ApiWhatifRoute
+  '/print/$slug': typeof PrintSlugRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -91,6 +100,7 @@ export interface FileRouteTypes {
     | '/api/manager-chat'
     | '/api/split'
     | '/api/whatif'
+    | '/print/$slug'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -100,6 +110,7 @@ export interface FileRouteTypes {
     | '/api/manager-chat'
     | '/api/split'
     | '/api/whatif'
+    | '/print/$slug'
   id:
     | '__root__'
     | '/'
@@ -109,6 +120,7 @@ export interface FileRouteTypes {
     | '/api/manager-chat'
     | '/api/split'
     | '/api/whatif'
+    | '/print/$slug'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -119,6 +131,7 @@ export interface RootRouteChildren {
   ApiManagerChatRoute: typeof ApiManagerChatRoute
   ApiSplitRoute: typeof ApiSplitRoute
   ApiWhatifRoute: typeof ApiWhatifRoute
+  PrintSlugRoute: typeof PrintSlugRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -128,6 +141,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/print/$slug': {
+      id: '/print/$slug'
+      path: '/print/$slug'
+      fullPath: '/print/$slug'
+      preLoaderRoute: typeof PrintSlugRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/whatif': {
@@ -183,6 +203,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiManagerChatRoute: ApiManagerChatRoute,
   ApiSplitRoute: ApiSplitRoute,
   ApiWhatifRoute: ApiWhatifRoute,
+  PrintSlugRoute: PrintSlugRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

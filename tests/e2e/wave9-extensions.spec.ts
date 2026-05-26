@@ -711,7 +711,7 @@ test.describe('Wave 9 — Extensions', () => {
       // tautological. The BFF -> backend payload contract (first call
       // hard-lock, retry with `frozen_lock_mode: 'hint'` + same
       // `frozen_phases` list) is covered by the integration test
-      // `src/routes/api/__tests__/apply-whatif-retry-hint.test.ts`.
+      // `src/server/api/__tests__/apply-whatif-retry-hint.test.ts`.
 
       // ── ASSERT 1 — verify the UI actually RENDERED the amber
       // lock-relaxed banner with the Wave 9 `data-hint-preserved="true"`
