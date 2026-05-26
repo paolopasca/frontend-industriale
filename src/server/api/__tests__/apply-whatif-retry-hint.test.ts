@@ -136,7 +136,7 @@ function makeRequest(body: unknown, ip: string): Request {
 }
 
 async function invokeRoute(request: Request): Promise<Response> {
-  const mod = await import('../apply-whatif');
+  const mod = await import('../../../routes/api/apply-whatif');
   const handler =
     (mod.Route as unknown as {
       options: { server: { handlers: { POST: (ctx: { request: Request }) => Promise<Response> } } };
