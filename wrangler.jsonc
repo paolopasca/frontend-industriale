@@ -3,5 +3,13 @@
   "name": "tanstack-start-app",
   "compatibility_date": "2025-09-24",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "@tanstack/react-start/server-entry"
+  "main": "@tanstack/react-start/server-entry",
+  // Wave 16.3 HIGH-1 — explicit NODE_ENV='production' so the rate-limit
+  // bypass in src/server/llm/client.ts (shouldBypassRateLimit allow-list:
+  // 'development' | 'test') NEVER fires on a deployed Worker. Cloudflare
+  // Workers does not set NODE_ENV by default, and undefined would have
+  // triggered the bypass under the pre-16.3 logic.
+  "vars": {
+    "NODE_ENV": "production"
+  }
 }

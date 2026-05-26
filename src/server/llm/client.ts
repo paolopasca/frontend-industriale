@@ -47,17 +47,22 @@ export interface RateLimitResult {
 }
 
 function shouldBypassRateLimit(ipOrCompositeKey: string): boolean {
+  // Explicit opt-out always wins — a dev exercising the real limiter can
+  // set BYPASS_LOCAL=0 to force the limiter on regardless of env.
   if (process.env.DAINO_BFF_RATE_LIMIT_BYPASS_LOCAL === '0') return false;
-  // Production NEVER bypasses regardless of IP or env flag — the safety
-  // ceiling stays at LIMIT/hour to cap Anthropic spend on a runaway client.
-  if (process.env.NODE_ENV === 'production') return false;
+  // Wave 16.3 HIGH-1 — allow-list of dev/test envs. The previous version
+  // bypassed for any NODE_ENV !== 'production', which meant Cloudflare
+  // Workers deployments (where NODE_ENV is undefined unless explicitly
+  // set in wrangler.jsonc) silently disabled the limiter and exposed the
+  // Anthropic billing to runaway clients. Now: bypass ONLY when the env
+  // is *explicitly* 'development' or 'test'. Undefined, 'production',
+  // 'staging', or any other value → fall through to the limiter (safe
+  // default). Pair with wrangler.jsonc setting NODE_ENV="production".
+  const env = process.env.NODE_ENV;
+  if (env !== 'development' && env !== 'test') return false;
   // In dev/test we bypass the limiter so e2e tests, stress runners, and a
   // manager dogfooding the dashboard on a LAN IP don't trip the 10/h cap
-  // while iterating. Previously this only fired for `local`/`127.0.0.1`/
-  // `::1` — which meant any dev request that arrived via `vite --host` or
-  // a proxy populating x-forwarded-for got rate-limited after 10 calls.
-  // The explicit opt-out (`DAINO_BFF_RATE_LIMIT_BYPASS_LOCAL=0`) above
-  // still lets a dev exercise the real limiter when they want to.
+  // while iterating.
   void ipOrCompositeKey;
   return true;
 }
