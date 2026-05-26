@@ -60,6 +60,7 @@ export interface TranslatorInput {
   originalSolution: unknown;
   kpis: Record<string, number>;
   consultationMd?: string;
+  forceOpusFallback?: boolean;
 }
 
 export interface TranslatorResult {
@@ -840,8 +841,12 @@ export async function translateWhatIfToConstraint(
   // ── Wave 16.2: deterministic-first via backend extractor ─────────────────
   // Try the backend extractor before invoking Opus. On HIT/GRAY_ZONE we skip
   // Opus entirely. On MISS or any network failure we fall through to Opus.
+  // forceOpusFallback=true (set by the route on manager "Usa Opus" retry) skips
+  // the extractor and goes directly to Opus.
   const solCtx = buildSolutionContext(input.originalSolution, input.kpis, input.consultationMd);
-  const beResult = await extractConstraintFromBackend(input.whatifText, solCtx);
+  const beResult = input.forceOpusFallback
+    ? null
+    : await extractConstraintFromBackend(input.whatifText, solCtx);
 
   if (beResult?.result === 'hit') {
     const change = mapBackendPayloadToConstraintChange(beResult);
