@@ -845,26 +845,24 @@ export async function translateWhatIfToConstraint(
 
   if (beResult?.result === 'hit') {
     const change = mapBackendPayloadToConstraintChange(beResult);
-    return {
-      change,
-      cost_usd: 0,
-      tokens_in: 0,
-      tokens_out: 0,
-    };
+    // If the payload shape is unrecognised, fall through to Opus rather than
+    // emitting an unsupported toast for a pattern the backend called HIT.
+    if (change.type !== 'unsupported') {
+      options?.onUsage?.({ cost_usd: 0, tokens_in: 0, tokens_out: 0 });
+      return { change, cost_usd: 0, tokens_in: 0, tokens_out: 0 };
+    }
   }
 
   if (beResult?.result === 'gray_zone') {
     const change = mapBackendPayloadToConstraintChange(beResult);
-    change.requiresConfirmation = true;
-    change.confirmationMessage = beResult.confirmation_message ?? undefined;
-    return {
-      change,
-      cost_usd: 0,
-      tokens_in: 0,
-      tokens_out: 0,
-    };
+    if (change.type !== 'unsupported') {
+      change.requiresConfirmation = true;
+      change.confirmationMessage = beResult.confirmation_message ?? undefined;
+      options?.onUsage?.({ cost_usd: 0, tokens_in: 0, tokens_out: 0 });
+      return { change, cost_usd: 0, tokens_in: 0, tokens_out: 0 };
+    }
   }
-  // miss OR null (backend down / auth failed) → fall through to Opus
+  // miss, null (backend down/auth failed), or unrecognised HIT/GRAY_ZONE payload → Opus
 
   const client = getAnthropicClient();
   const systemBlocks = buildSystemBlocks();

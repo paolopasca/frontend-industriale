@@ -26,12 +26,11 @@ function extractMachines(fasi: Array<Record<string, unknown>>): string[] {
 function buildMachineAliases(machines: string[]): Record<string, string> {
   const aliases: Record<string, string> = {};
   for (const m of machines) {
-    // "linea 1" -> "M01", "linea 2" -> "M02", "M-1" -> "M-1" (already canonical)
     const lower = m.toLowerCase();
-    const numMatch = lower.match(/(?:linea|macchina|machine|m)\s*[-_]?\s*(\d+)/i);
-    if (numMatch) {
-      const num = numMatch[1].padStart(2, '0');
-      aliases[lower] = `M${num}`;
+    // Only add alias when lowercase differs from the original (e.g. "Linea 1" → key "linea 1", value "Linea 1").
+    // The alias value is always the EXACT canonical string from machines[] — never a fabricated ID.
+    if (lower !== m) {
+      aliases[lower] = m;
     }
   }
   return aliases;
@@ -113,9 +112,9 @@ export function buildSolutionContext(
   const time_config = extractTimeConfig(raw);
   const shift_types = extractShiftTypes(raw);
 
-  const shifts: string[] = shift_types
-    ? Object.keys(shift_types)
-    : ['mattino', 'sera', 'notte'];
+  // Return empty when shift_types is unknown — the backend extractor degrades
+  // gracefully to MISS on shift-related patterns rather than matching invented names.
+  const shifts: string[] = shift_types ? Object.keys(shift_types) : [];
 
   return {
     machines,

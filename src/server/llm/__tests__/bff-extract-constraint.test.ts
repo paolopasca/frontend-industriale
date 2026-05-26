@@ -154,8 +154,7 @@ describe('Wave 16.2 BFF orchestration', () => {
     expect(result.change.type).toBe('force_priority');
   });
 
-  it('Backend timeout/500: falls back to Opus, does not throw', async () => {
-    // Simulate network error (timeout)
+  it('Backend network error/timeout: falls back to Opus, does not throw', async () => {
     fetchMock.mockRejectedValueOnce(new DOMException('signal timed out', 'TimeoutError'));
     createMock.mockResolvedValueOnce(makeOpusReply('force_priority'));
 
@@ -164,8 +163,9 @@ describe('Wave 16.2 BFF orchestration', () => {
 
     expect(createMock).toHaveBeenCalledOnce();
     expect(result.change.type).toBe('force_priority');
+  });
 
-    // Also test 500 response
+  it('Backend 500: falls back to Opus, does not throw', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: false,
       status: 500,
@@ -173,14 +173,10 @@ describe('Wave 16.2 BFF orchestration', () => {
     } as unknown as Response);
     createMock.mockResolvedValueOnce(makeOpusReply('force_priority'));
 
-    vi.resetModules();
-    process.env.ANTHROPIC_API_KEY = 'test-key';
-    createMock.mockReset();
-    createMock.mockResolvedValueOnce(makeOpusReply('force_priority'));
+    const { translateWhatIfToConstraint } = await import('../constraint-translator');
+    const result = await translateWhatIfToConstraint(baseInput);
 
-    const { translateWhatIfToConstraint: translateAgain } = await import('../constraint-translator');
-    const result2 = await translateAgain(baseInput);
-
-    expect(result2.change.type).toBe('force_priority');
+    expect(createMock).toHaveBeenCalledOnce();
+    expect(result.change.type).toBe('force_priority');
   });
 });
