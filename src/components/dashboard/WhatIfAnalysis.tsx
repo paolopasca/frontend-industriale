@@ -381,9 +381,8 @@ export function WhatIfAnalysis({
           // Wave 7 — cutoff window for hard-lock of pre-cutoff phases.
           currentTimeMin,
           cushionMin,
-          // Wave 16.2 — GRAY_ZONE: forceOpusFallback skips backend extractor,
-          // goes straight to Opus to re-interpret the scenario.
-          ...(flags.forceOpusFallback ? { forceOpusFallback: true } : {}),
+          // Wave 16.3 placeholder: forceOpusFallback will go here once
+          // BodySchema in apply-whatif.ts exposes the field.
         },
         controller.signal,
       );
@@ -546,12 +545,12 @@ export function WhatIfAnalysis({
     setGrayZoneConfirmation(null);
   }, [setGrayZoneConfirmation]);
 
+  // Wave 16.2: onUseOpus behaves identically to onConfirm — the solve is
+  // already running server-side and forceOpusFallback is stripped by BFF Zod.
+  // True re-call with Opus fallback is Wave 16.3 (requires BodySchema change).
   const handleGrayZoneOpus = useCallback(() => {
-    // Abort the in-flight stream and re-fire with Opus fallback.
     setGrayZoneConfirmation(null);
-    applyAbortRef.current?.abort();
-    void runApplyWhatIfWithFlags({ forceOpusFallback: true });
-  }, [runApplyWhatIfWithFlags, setGrayZoneConfirmation]);
+  }, [setGrayZoneConfirmation]);
 
   const handleGrayZoneCancel = useCallback(() => {
     // Abort the in-flight stream and discard any arriving result.

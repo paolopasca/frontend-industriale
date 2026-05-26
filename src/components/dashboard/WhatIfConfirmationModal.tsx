@@ -16,6 +16,9 @@ export interface WhatIfConfirmationModalProps {
   onConfirm: () => void;
   onUseOpus: () => void;
   onCancel: () => void;
+  // Wave 16.3: set to true once forceOpusFallback is wired in the BFF.
+  // Hidden by default to avoid a misleading button in Wave 16.2.
+  showRiformula?: boolean;
 }
 
 function confidenceBand(c: number): string {
@@ -31,6 +34,7 @@ export function WhatIfConfirmationModal({
   onConfirm,
   onUseOpus,
   onCancel,
+  showRiformula = false,
 }: WhatIfConfirmationModalProps) {
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onCancel(); }}>
@@ -54,13 +58,15 @@ export function WhatIfConfirmationModal({
           >
             Annulla
           </Button>
-          <Button
-            variant="secondary"
-            onClick={onUseOpus}
-            title="Forza fallback a Opus per ri-interpretare"
-          >
-            Riformula con AI
-          </Button>
+          {showRiformula && (
+            <Button
+              variant="secondary"
+              onClick={onUseOpus}
+              title="Forza fallback a Opus per ri-interpretare"
+            >
+              Riformula con AI
+            </Button>
+          )}
           <Button
             className="bg-green-600 hover:bg-green-700 text-white"
             onClick={onConfirm}

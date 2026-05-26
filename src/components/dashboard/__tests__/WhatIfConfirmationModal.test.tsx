@@ -28,12 +28,17 @@ describe('WhatIfConfirmationModal', () => {
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
-  it('"Riformula" click invokes onUseOpus', async () => {
+  it('"Riformula" click invokes onUseOpus when showRiformula=true', async () => {
     const user = userEvent.setup();
     const onUseOpus = vi.fn();
-    render(<WhatIfConfirmationModal {...BASE_PROPS} onUseOpus={onUseOpus} />);
+    render(<WhatIfConfirmationModal {...BASE_PROPS} onUseOpus={onUseOpus} showRiformula={true} />);
     await user.click(screen.getByRole('button', { name: /riformula con ai/i }));
     expect(onUseOpus).toHaveBeenCalledTimes(1);
+  });
+
+  it('"Riformula" button is hidden by default (Wave 16.2)', () => {
+    render(<WhatIfConfirmationModal {...BASE_PROPS} />);
+    expect(screen.queryByRole('button', { name: /riformula con ai/i })).not.toBeInTheDocument();
   });
 
   it('"Annulla" click invokes onCancel', async () => {
