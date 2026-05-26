@@ -326,8 +326,10 @@ describe('Wave 16.3 BFF orchestration — gray-zone confirmation retry', () => {
     expect(fetchCalls.every((u) => !/extract-constraint/.test(u))).toBe(true);
 
     // The confirmed payload must round-trip into the solve request body.
-    const solveCall = fetchSpy.mock.calls[0];
-    const initBody = (solveCall[1] as RequestInit | undefined)?.body;
+    // Cast to unknown[] because the global fetch type only declares one
+    // argument in its tuple even though fetch(url, init) accepts two.
+    const solveCall = fetchSpy.mock.calls[0] as unknown as [unknown, RequestInit?];
+    const initBody = solveCall[1]?.body;
     expect(typeof initBody).toBe('string');
     const solveReq = JSON.parse(initBody as string) as Record<string, unknown>;
     // resolveTemplate forwards the rules object somewhere in its body —
