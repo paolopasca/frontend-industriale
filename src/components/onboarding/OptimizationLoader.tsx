@@ -120,7 +120,14 @@ export function OptimizationLoader({
   const [boostCount, setBoostCount] = useState(0);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [backendLog, setBackendLog] = useState<string[]>([]);
+  // W15-04: backend log is split into two streams so the UI can render
+  // them as distinct labelled blocks. `solverLog` holds the deterministic
+  // solver/template messages (template_solve call, status, objective).
+  // `bffCostLog` holds the LLM cost lines (BFF accumulator: explainer +
+  // advisor + apply-whatif when they auto-fire post-solve). Mixing both
+  // under a single "Backend log" header confused users — see Wave 15 plan.
+  const [solverLog, setSolverLog] = useState<string[]>([]);
+  const [bffCostLog, setBffCostLog] = useState<string[]>([]);
   const calledRef = useRef(false);
 
   const PHASES = METHOD_PHASES[method];
@@ -150,7 +157,15 @@ export function OptimizationLoader({
     if (calledRef.current) return;
     calledRef.current = true;
 
-    const addLog = (msg: string) => setBackendLog(prev => [...prev, msg]);
+    // W15-04: classify each log line so the UI can group them under the
+    // correct visual block. Default for legacy callers is 'solver'.
+    const addLog = (msg: string, kind: 'solver' | 'bff' = 'solver') => {
+      if (kind === 'bff') {
+        setBffCostLog(prev => [...prev, msg]);
+      } else {
+        setSolverLog(prev => [...prev, msg]);
+      }
+    };
 
     async function runSolve() {
       // Reschedule is only supported for codegen-pipeline runs (the
@@ -174,7 +189,8 @@ export function OptimizationLoader({
             return;
           }
           const result = await solveLLMOnly(companySlug);
-          addLog(`Risultato: ${result.status} — costo: $${result.cost_usd?.toFixed(3) ?? '?'}`);
+          addLog(`Risultato: ${result.status}`);
+          addLog(`Costo: $${result.cost_usd?.toFixed(3) ?? '?'}`, 'bff');
           if (result.status === 'error') {
             setError(result.result?.narrative || 'Errore LLM');
             return;
@@ -230,7 +246,8 @@ export function OptimizationLoader({
 
           if (state.state === 'done') {
             const results = await pipelineResults(state.session_id);
-            addLog(`Completato — costo: $${results.cost_usd?.toFixed(3) ?? '?'}`);
+            addLog('Completato');
+            addLog(`Costo: $${results.cost_usd?.toFixed(3) ?? '?'}`, 'bff');
             // Persist session/run IDs so ReplanModal can call the
             // authenticated /api/analysis/{sid}/reschedule endpoint.
             if (companySlug && results.session_id && Number.isFinite(results.run_id) && results.run_id > 0) {
@@ -257,7 +274,7 @@ export function OptimizationLoader({
           if (result.warnings?.length) {
             addLog(`Warnings: ${result.warnings.join(', ')}`);
           }
-          addLog(`Costo: $${result.cost_usd}`);
+          addLog(`Costo: $${result.cost_usd}`, 'bff');
           if (result.status === 'OPTIMAL' || result.status === 'FEASIBLE') {
             setProgress(100);
             setDone(true);
@@ -359,13 +376,16 @@ export function OptimizationLoader({
           </div>
         </div>
 
-        {/* Phase list */}
+        {/* Phase list. W15-04: when `done` is true (backend solve completed)
+            every step must read as completed — opacity 1, text-foreground,
+            CheckCircle2. The visual timer can lag behind the backend so
+            `currentPhase` may still be < last index when `done` flips. */}
         <div className="space-y-2 text-left">
           {PHASES.map((phase, i) => (
             <motion.div
               key={i}
               initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: i <= currentPhase ? 1 : 0.3, x: 0 }}
+              animate={{ opacity: (i <= currentPhase || done) ? 1 : 0.3, x: 0 }}
               transition={{ delay: i * 0.1 }}
               className="flex items-center gap-3 text-sm"
             >
@@ -378,26 +398,53 @@ export function OptimizationLoader({
                   <div className="w-5 h-5 rounded-full border border-border" />
                 )}
               </div>
-              <span className={i <= currentPhase ? 'text-foreground' : 'text-muted-foreground'}>
+              <span className={(i <= currentPhase || done) ? 'text-foreground' : 'text-muted-foreground'}>
                 {phase.label}
               </span>
             </motion.div>
           ))}
         </div>
 
-        {/* Backend log */}
-        {backendLog.length > 0 && (
+        {/* W15-04: backend log split in two — solver vs BFF LLM cost.
+            Previously a single "Backend log" header mixed deterministic
+            solver messages with BFF cost accumulator lines (which actually
+            come from explainer/advisor auto-fire), confusing users. */}
+        {(solverLog.length > 0 || bffCostLog.length > 0) && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className="text-left bg-accent/30 rounded-lg p-3 max-h-32 overflow-y-auto"
+            className="text-left space-y-2"
           >
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Backend log</p>
-            {backendLog.map((log, i) => (
-              <p key={i} className="text-xs font-mono text-muted-foreground leading-relaxed">
-                {log}
-              </p>
-            ))}
+            {solverLog.length > 0 && (
+              <div
+                className="bg-accent/30 rounded-lg p-3 max-h-32 overflow-y-auto"
+                data-testid="solver-log-block"
+              >
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                  Solver log
+                </p>
+                {solverLog.map((log, i) => (
+                  <p key={i} className="text-xs font-mono text-muted-foreground leading-relaxed">
+                    {log}
+                  </p>
+                ))}
+              </div>
+            )}
+            {bffCostLog.length > 0 && (
+              <div
+                className="bg-accent/30 rounded-lg p-3 max-h-32 overflow-y-auto"
+                data-testid="bff-cost-log-block"
+              >
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                  BFF · Costi LLM
+                </p>
+                {bffCostLog.map((log, i) => (
+                  <p key={i} className="text-xs font-mono text-muted-foreground leading-relaxed">
+                    {log}
+                  </p>
+                ))}
+              </div>
+            )}
           </motion.div>
         )}
 

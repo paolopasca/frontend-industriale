@@ -164,7 +164,7 @@ export function SplitSuggestion({
           Sotto-commesse
         </CardTitle>
         <p className="text-xs text-muted-foreground">
-          Seleziona una commessa "grossa" e Opus 4.7 propone una decomposizione su macchine diverse.
+          Seleziona una commessa "grossa" e il sistema AI propone una decomposizione su macchine diverse.
         </p>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -197,7 +197,7 @@ export function SplitSuggestion({
           >
             <div className="flex items-center justify-between px-3 py-2 border-b">
               <span className="text-xs font-medium">
-                {streaming ? '🧠 Opus sta analizzando…' : 'Proposta'}
+                {streaming ? '🧠 Il sistema AI sta analizzando…' : 'Proposta'}
               </span>
               {!streaming && response && (
                 <div className="flex items-center gap-1">
