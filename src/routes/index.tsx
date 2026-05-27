@@ -176,6 +176,7 @@ function Index() {
                   slug={setupData?.companySlug ?? null}
                   solution={aiInputs.solution}
                   kpis={aiInputs.kpis}
+                  onAcceptResult={(result) => setBackendResult(result)}
                 />
                 <SplitSuggestion
                   slug={setupData?.companySlug ?? null}

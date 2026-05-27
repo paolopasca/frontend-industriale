@@ -13,10 +13,12 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as PrintSlugRouteImport } from './routes/print/$slug'
 import { Route as ApiWhatifRouteImport } from './routes/api/whatif'
 import { Route as ApiSplitRouteImport } from './routes/api/split'
+import { Route as ApiRescheduleFreshRouteImport } from './routes/api/reschedule-fresh'
 import { Route as ApiManagerChatRouteImport } from './routes/api/manager-chat'
 import { Route as ApiExplainRouteImport } from './routes/api/explain'
 import { Route as ApiApplyWhatifRouteImport } from './routes/api/apply-whatif'
 import { Route as ApiAdviseRouteImport } from './routes/api/advise'
+import { Route as ApiAcceptCandidateRouteImport } from './routes/api/accept-candidate'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -36,6 +38,11 @@ const ApiWhatifRoute = ApiWhatifRouteImport.update({
 const ApiSplitRoute = ApiSplitRouteImport.update({
   id: '/api/split',
   path: '/api/split',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiRescheduleFreshRoute = ApiRescheduleFreshRouteImport.update({
+  id: '/api/reschedule-fresh',
+  path: '/api/reschedule-fresh',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiManagerChatRoute = ApiManagerChatRouteImport.update({
@@ -58,23 +65,32 @@ const ApiAdviseRoute = ApiAdviseRouteImport.update({
   path: '/api/advise',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAcceptCandidateRoute = ApiAcceptCandidateRouteImport.update({
+  id: '/api/accept-candidate',
+  path: '/api/accept-candidate',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/accept-candidate': typeof ApiAcceptCandidateRoute
   '/api/advise': typeof ApiAdviseRoute
   '/api/apply-whatif': typeof ApiApplyWhatifRoute
   '/api/explain': typeof ApiExplainRoute
   '/api/manager-chat': typeof ApiManagerChatRoute
+  '/api/reschedule-fresh': typeof ApiRescheduleFreshRoute
   '/api/split': typeof ApiSplitRoute
   '/api/whatif': typeof ApiWhatifRoute
   '/print/$slug': typeof PrintSlugRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/accept-candidate': typeof ApiAcceptCandidateRoute
   '/api/advise': typeof ApiAdviseRoute
   '/api/apply-whatif': typeof ApiApplyWhatifRoute
   '/api/explain': typeof ApiExplainRoute
   '/api/manager-chat': typeof ApiManagerChatRoute
+  '/api/reschedule-fresh': typeof ApiRescheduleFreshRoute
   '/api/split': typeof ApiSplitRoute
   '/api/whatif': typeof ApiWhatifRoute
   '/print/$slug': typeof PrintSlugRoute
@@ -82,10 +98,12 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/accept-candidate': typeof ApiAcceptCandidateRoute
   '/api/advise': typeof ApiAdviseRoute
   '/api/apply-whatif': typeof ApiApplyWhatifRoute
   '/api/explain': typeof ApiExplainRoute
   '/api/manager-chat': typeof ApiManagerChatRoute
+  '/api/reschedule-fresh': typeof ApiRescheduleFreshRoute
   '/api/split': typeof ApiSplitRoute
   '/api/whatif': typeof ApiWhatifRoute
   '/print/$slug': typeof PrintSlugRoute
@@ -94,30 +112,36 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/api/accept-candidate'
     | '/api/advise'
     | '/api/apply-whatif'
     | '/api/explain'
     | '/api/manager-chat'
+    | '/api/reschedule-fresh'
     | '/api/split'
     | '/api/whatif'
     | '/print/$slug'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/api/accept-candidate'
     | '/api/advise'
     | '/api/apply-whatif'
     | '/api/explain'
     | '/api/manager-chat'
+    | '/api/reschedule-fresh'
     | '/api/split'
     | '/api/whatif'
     | '/print/$slug'
   id:
     | '__root__'
     | '/'
+    | '/api/accept-candidate'
     | '/api/advise'
     | '/api/apply-whatif'
     | '/api/explain'
     | '/api/manager-chat'
+    | '/api/reschedule-fresh'
     | '/api/split'
     | '/api/whatif'
     | '/print/$slug'
@@ -125,10 +149,12 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiAcceptCandidateRoute: typeof ApiAcceptCandidateRoute
   ApiAdviseRoute: typeof ApiAdviseRoute
   ApiApplyWhatifRoute: typeof ApiApplyWhatifRoute
   ApiExplainRoute: typeof ApiExplainRoute
   ApiManagerChatRoute: typeof ApiManagerChatRoute
+  ApiRescheduleFreshRoute: typeof ApiRescheduleFreshRoute
   ApiSplitRoute: typeof ApiSplitRoute
   ApiWhatifRoute: typeof ApiWhatifRoute
   PrintSlugRoute: typeof PrintSlugRoute
@@ -164,6 +190,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiSplitRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/reschedule-fresh': {
+      id: '/api/reschedule-fresh'
+      path: '/api/reschedule-fresh'
+      fullPath: '/api/reschedule-fresh'
+      preLoaderRoute: typeof ApiRescheduleFreshRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/manager-chat': {
       id: '/api/manager-chat'
       path: '/api/manager-chat'
@@ -192,15 +225,24 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAdviseRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/accept-candidate': {
+      id: '/api/accept-candidate'
+      path: '/api/accept-candidate'
+      fullPath: '/api/accept-candidate'
+      preLoaderRoute: typeof ApiAcceptCandidateRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiAcceptCandidateRoute: ApiAcceptCandidateRoute,
   ApiAdviseRoute: ApiAdviseRoute,
   ApiApplyWhatifRoute: ApiApplyWhatifRoute,
   ApiExplainRoute: ApiExplainRoute,
   ApiManagerChatRoute: ApiManagerChatRoute,
+  ApiRescheduleFreshRoute: ApiRescheduleFreshRoute,
   ApiSplitRoute: ApiSplitRoute,
   ApiWhatifRoute: ApiWhatifRoute,
   PrintSlugRoute: PrintSlugRoute,

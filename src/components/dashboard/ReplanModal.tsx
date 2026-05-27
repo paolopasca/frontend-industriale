@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { X, Send, Loader2, Trash2 } from 'lucide-react';
+import { X, Send, Loader2, Trash2, RotateCcw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { chatReschedule, autoLogin, type ChatRescheduleResponse } from '@/lib/api';
 import { getSlugScoped, setSlugScoped, migrateLegacyKeys } from '@/lib/storage';
@@ -10,6 +10,10 @@ interface Message {
   content: string;
   timestamp: number;
   action?: ChatRescheduleResponse['action'];
+  // Wave 16.4 C4 — when chatReschedule fails with session_not_found we
+  // offer an inline fallback button that re-solves from scratch using
+  // the manager utterance the message was paired with.
+  freshFallbackText?: string;
 }
 
 const STORAGE_KEY_BASE = 'replan_chat_messages';
@@ -135,12 +139,23 @@ export function ReplanModal({
         sessionId,
         runId: Number.isFinite(runId) && (runId ?? 0) > 0 ? runId : null,
       });
+      // Wave 16.4 C4 — when the primary reschedule path cannot find the
+      // session/run, attach a fresh-fallback hint so the user can opt
+      // into the ~25 s cold solve.
+      const isSessionNotFound =
+        res.action === 'error'
+        && (
+          res.reply.includes('Sessione non trovata')
+          || res.reply.toLowerCase().includes('session_not_found')
+          || res.reply.includes('Reschedule non disponibile')
+        );
       const assistantMsg: Message = {
         id: `${Date.now()}-a`,
         role: 'assistant',
         content: res.reply,
         timestamp: Date.now(),
         action: res.action,
+        freshFallbackText: isSessionNotFound ? text : undefined,
       };
       setMessages(prev => [...prev, assistantMsg]);
 
@@ -168,6 +183,108 @@ export function ReplanModal({
       setMessages(prev => [
         ...prev,
         { id: `${Date.now()}-e`, role: 'assistant', content: msg, timestamp: Date.now(), action: 'error' },
+      ]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Wave 16.4 C4 — fallback: re-solve from scratch using the manager's
+  // free-text disruption. Slower (~25 s) but does not depend on the
+  // session/run handles that the primary chat-reschedule path needs.
+  const handleFreshReschedule = async (originalText: string) => {
+    if (busy) return;
+    if (!companySlug) {
+      setMessages(prev => [
+        ...prev,
+        {
+          id: `${Date.now()}-fa`,
+          role: 'assistant',
+          content: 'Nessuna azienda selezionata — impossibile ricalcolare da zero.',
+          timestamp: Date.now(),
+          action: 'error',
+        },
+      ]);
+      return;
+    }
+    setBusy(true);
+    setMessages(prev => [
+      ...prev,
+      {
+        id: `${Date.now()}-fu`,
+        role: 'user',
+        content: `Ricalcolo da zero con: "${originalText}"`,
+        timestamp: Date.now(),
+      },
+    ]);
+    try {
+      const res = await fetch('/api/reschedule-fresh', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          slug: companySlug,
+          message: originalText,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`reschedule-fresh HTTP ${res.status}: ${text}`);
+      }
+      const payload = await res.json() as {
+        ok: boolean;
+        code?: string;
+        rationale?: string;
+        result?: {
+          status: string;
+          method: string;
+          solution: Record<string, unknown>;
+          kpis: Record<string, number>;
+          objective_value: number | null;
+          warnings: string[];
+          cost_usd: number;
+        };
+      };
+      if (!payload.ok || !payload.result) {
+        const detail = payload.rationale ?? payload.code ?? 'estrazione vincolo fallita';
+        setMessages(prev => [
+          ...prev,
+          {
+            id: `${Date.now()}-fa`,
+            role: 'assistant',
+            content: `Impossibile ricalcolare da zero: ${detail}. Riformula la richiesta in modo piu specifico.`,
+            timestamp: Date.now(),
+            action: 'error',
+          },
+        ]);
+        return;
+      }
+      const r = payload.result;
+      setMessages(prev => [
+        ...prev,
+        {
+          id: `${Date.now()}-fa`,
+          role: 'assistant',
+          content: `Piano ricalcolato da zero. Stato: ${r.status}.`,
+          timestamp: Date.now(),
+          action: 'reschedule',
+        },
+      ]);
+      if (onResult) {
+        onResult({
+          status: r.status,
+          method: r.method,
+          solution: r.solution,
+          kpis: r.kpis,
+          objective_value: r.objective_value,
+          warnings: r.warnings,
+          cost_usd: r.cost_usd,
+        });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Errore di rete';
+      setMessages(prev => [
+        ...prev,
+        { id: `${Date.now()}-fe`, role: 'assistant', content: `Errore ricalcolo da zero: ${msg}`, timestamp: Date.now(), action: 'error' },
       ]);
     } finally {
       setBusy(false);
@@ -230,6 +347,18 @@ export function ReplanModal({
                       <span className={`mt-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${badge.color}`}>
                         {badge.label}
                       </span>
+                    )}
+                    {m.freshFallbackText && (
+                      <button
+                        type="button"
+                        onClick={() => handleFreshReschedule(m.freshFallbackText!)}
+                        disabled={busy}
+                        data-testid="replan-fresh-fallback"
+                        className="mt-1.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-primary/10 hover:bg-primary/20 text-primary text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        Ricalcola da zero (~25 s)
+                      </button>
                     )}
                   </div>
                 );

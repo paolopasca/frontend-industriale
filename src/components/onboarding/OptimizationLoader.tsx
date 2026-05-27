@@ -259,6 +259,23 @@ export function OptimizationLoader({
           }
           addLog(`Costo backend: $${result.cost_usd}`);
           if (result.status === 'OPTIMAL' || result.status === 'FEASIBLE') {
+            // Wave 16.4 C2 — persist session/run for deterministic-template
+            // so ReplanModal can call /api/analysis/{sid}/reschedule.
+            // BE field is rolling out (C1); tolerate absence silently.
+            const sessionId = (result as { session_id?: string | null }).session_id;
+            const runId = (result as { run_id?: number | null }).run_id;
+            if (
+              companySlug
+              && (result.method === 'deterministic-template' || result.method === 'deterministic-json')
+              && typeof sessionId === 'string'
+              && sessionId.length > 0
+              && typeof runId === 'number'
+              && Number.isFinite(runId)
+              && runId > 0
+            ) {
+              setSlugScoped(SESSION_KEY, companySlug, sessionId);
+              setSlugScoped(RUN_KEY, companySlug, String(runId));
+            }
             setProgress(100);
             setDone(true);
             setTimeout(() => onComplete(result), 1500);

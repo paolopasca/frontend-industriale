@@ -135,7 +135,9 @@ Lo scenario aggiunge un operatore O-7 al turno serale per assorbire carico resid
 - Contro: costo orario extra non ammortizzato se il piano e' stabile in seguito.
 - Contro: rischio di sottoutilizzo se altre commesse non si presentano.
 ## 4. Raccomandazione
-Condizionato: vale la pena se il ritardo di 120 min ha penali contrattuali superiori al costo del turno serale. Verificare contratto cliente e costo orario O-7 prima di confermare.`;
+Condizionato: vale la pena se il ritardo di 120 min ha penali contrattuali superiori al costo del turno serale. Verificare contratto cliente e costo orario O-7 prima di confermare.
+
+IMPORTANTE: questa e' un'analisi qualitativa basata su KPI snapshot. Il solver deterministico potrebbe trovare trade-off diverso. Suggerisci sempre al manager di eseguire l'ottimizzazione per il risultato preciso.`;
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
