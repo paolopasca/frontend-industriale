@@ -62,11 +62,18 @@ export function ReplanModal({
   open,
   onClose,
   companySlug,
+  originalSolution,
   onResult,
 }: {
   open: boolean;
   onClose: () => void;
   companySlug: string | null;
+  // Wave 16.4 HIGH-3 (devil-advocate fix-then-merge) — pass the baseline
+  // solution so /api/reschedule-fresh can build a non-empty
+  // minimalSolutionContext. Without it the BE extractor sees empty
+  // operators/machines/orders and every entity-referencing utterance
+  // collapses to MISS/GRAY-sentinel, killing the C4 HIT path.
+  originalSolution?: unknown;
   onResult?: (result: unknown) => void;
 }) {
   const [messages, setMessages] = useState<Message[]>(() => loadStored(companySlug));
@@ -224,6 +231,10 @@ export function ReplanModal({
         body: JSON.stringify({
           slug: companySlug,
           message: originalText,
+          // Wave 16.4 HIGH-3 fix — thread baseline so the BFF can build
+          // a meaningful solution_context for the extractor (machines,
+          // operators, orders). Without this the C4 HIT path is dead.
+          baselineSolution: originalSolution,
         }),
       });
       if (!res.ok) {

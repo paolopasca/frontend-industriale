@@ -198,6 +198,7 @@ function Index() {
                 open={replanOpen}
                 onClose={() => setReplanOpen(false)}
                 companySlug={setupData?.companySlug ?? null}
+                originalSolution={backendResult ?? dashboardData}
                 onResult={(result) => setBackendResult(result)}
               />
               <DataInputModal
