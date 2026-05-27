@@ -10,7 +10,7 @@ import { parseIntent } from '@/server/llm/intent-parser';
 import { routeIntent, type BaselineFasi } from '@/server/llm/strategy-router';
 import { loadCatalog } from '@/server/llm/catalog/loader';
 import { apply as applyDataModification, canApply as dataModifierCanApply } from '@/server/llm/data-modifier';
-import { buildFrozenPhases, detectScenarioStartMin, type FrozenPhase } from '@/server/llm/frozen-window-builder';
+import { buildFrozenPhases, detectScenarioStartMin, detectScenarioPhraseMatches, type FrozenPhase } from '@/server/llm/frozen-window-builder';
 import { resolveTemplate } from '@/lib/api';
 
 /**
@@ -129,6 +129,34 @@ function diffKpis(
     }
   }
   return { delta, warnings };
+}
+
+// Wave 16.4 A4 — estimate the max end_min across the baseline solution so
+// the cutoff auto-detect path can warn when the detected scenario start
+// falls past the planning horizon. Devil-advocate LOW-5 (2026-05-27).
+// Scans both nested `{commessa:{fasi:[]}}` and flat `{fasi:[]}` shapes
+// since both are accepted upstream by buildBaselineForRouter.
+function estimateHorizonMaxEndMin(originalSolution: unknown): number {
+  if (!originalSolution || typeof originalSolution !== 'object') return 0;
+  let maxEnd = 0;
+  const visit = (fase: unknown): void => {
+    if (!fase || typeof fase !== 'object') return;
+    const f = fase as { end_min?: unknown };
+    if (typeof f.end_min === 'number' && Number.isFinite(f.end_min) && f.end_min > maxEnd) {
+      maxEnd = f.end_min;
+    }
+  };
+  const root = originalSolution as Record<string, unknown>;
+  if (Array.isArray(root.fasi)) {
+    for (const fase of root.fasi) visit(fase);
+  } else {
+    for (const [, jobRaw] of Object.entries(root)) {
+      if (!jobRaw || typeof jobRaw !== 'object') continue;
+      const fasi = (jobRaw as { fasi?: unknown }).fasi;
+      if (Array.isArray(fasi)) for (const fase of fasi) visit(fase);
+    }
+  }
+  return maxEnd;
 }
 
 // Wave 16.4 A3 — empty-dict guard. A rules payload like
@@ -521,6 +549,11 @@ export const Route = createFileRoute('/api/apply-whatif')({
             try {
               const problemType = detectProblemTypeFromMd(input.consultationMd);
 
+              // wave7Warnings is declared BEFORE the cutoff so the A4 path
+              // can append warnings (ambiguous temporal phrase, horizon
+              // overshoot) without forward-referencing a later const.
+              const wave7Warnings: string[] = [];
+
               // Wave 7 — frozen-window cutoff. Only computed when the
               // caller passes currentTimeMin (Wave 4.1 callers omit this
               // and get the legacy soft-hint behaviour).
@@ -532,14 +565,58 @@ export const Route = createFileRoute('/api/apply-whatif')({
               // scenario start, replan around the constraint from there".
               // The 30-min cushion is correct for "ferma adesso", not for a
               // tomorrow-shaped constraint.
+              //
+              // Clamp pattern (devil-advocate MEDIUM-1 2026-05-27): the
+              // detected scenario start MUST never push the cutoff below
+              // `currentTimeMin + cushionMin` — manager-elapsed time is
+              // sacred. A "domani" utterance from someone already on day 3
+              // cannot retroactively unfreeze phases that have run today.
+              // So we take the max of (detected, legacy) when both exist.
               const textForCutoff = input.managerText ?? input.whatifText;
               const detectedScenarioStart = detectScenarioStartMin(textForCutoff);
+              const phraseMatches = detectScenarioPhraseMatches(textForCutoff);
+              const legacyCutoff = input.currentTimeMin !== undefined
+                ? input.currentTimeMin + input.cushionMin
+                : undefined;
               const cutoffMin =
                 detectedScenarioStart !== null && detectedScenarioStart > 0
-                  ? detectedScenarioStart
-                  : input.currentTimeMin !== undefined
-                    ? input.currentTimeMin + input.cushionMin
-                    : undefined;
+                  ? (legacyCutoff !== undefined
+                      ? Math.max(detectedScenarioStart, legacyCutoff)
+                      : detectedScenarioStart)
+                  : legacyCutoff;
+
+              // Devil-advocate MEDIUM-2: ambiguous temporal phrases (manager
+              // said both "dopodomani" and "giorno 5") are silently resolved
+              // by priority. Surface a marker so the UI can render "you said
+              // both X and Y — used X" instead of letting the manager assume
+              // their second phrase won.
+              if (phraseMatches.length > 1 && detectedScenarioStart !== null && detectedScenarioStart > 0) {
+                wave7Warnings.push(`a4_ambiguous_temporal_picked_${phraseMatches[0]}`);
+              }
+              // Devil-advocate MEDIUM-1: clamp event surfaced for audit. The
+              // manager-elapsed clock won over the detected phrase — they
+              // should know the cutoff isn't where their utterance pointed.
+              if (
+                detectedScenarioStart !== null
+                && detectedScenarioStart > 0
+                && legacyCutoff !== undefined
+                && legacyCutoff > detectedScenarioStart
+              ) {
+                wave7Warnings.push('a4_cutoff_clamped_to_currentTime');
+              }
+              // Devil-advocate LOW-5: scenario start beyond the planning
+              // horizon would freeze every phase in the baseline (silent
+              // no-op illusion at the solver). Warn the manager so they
+              // can re-issue a sensible window.
+              const horizonMaxEnd = estimateHorizonMaxEndMin(input.originalSolution);
+              if (
+                cutoffMin !== undefined
+                && horizonMaxEnd > 0
+                && cutoffMin > horizonMaxEnd
+              ) {
+                wave7Warnings.push(`a4_cutoff_beyond_horizon:${cutoffMin}_max_${horizonMaxEnd}`);
+              }
+
               const frozenPhases: FrozenPhase[] = cutoffMin !== undefined
                 ? buildFrozenPhases(input.originalSolution, cutoffMin)
                 : [];
@@ -551,7 +628,6 @@ export const Route = createFileRoute('/api/apply-whatif')({
               let rulesForSolve: Record<string, unknown> = {};
               let datasetOverrides: Record<string, unknown> | null = null;
               let strategyKind: 'A' | 'B' | 'C' | 'unsupported' = 'C';
-              const wave7Warnings: string[] = [];
               let unsupportedReason: string | null = null;
               // F-W7-08 — audit trail for Strategy A. Manager must see in
               // the UI what was changed at the dataset level (e.g.

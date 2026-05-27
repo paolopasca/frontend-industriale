@@ -646,4 +646,186 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     );
     expect(sentBody.cutoff_min).toBe(1440);
   });
+
+  // Devil-advocate MEDIUM-1 (2026-05-27): clamp pattern. When manager-elapsed
+  // clock (currentTimeMin + cushionMin) is beyond the detected scenario start,
+  // the legacy value wins so already-elapsed phases stay frozen.
+
+  it('clamps cutoff to max(detected, legacy) when currentTime is past detected (MEDIUM-1)', async () => {
+    anthropicCreate.mockResolvedValueOnce(fakeHaikuOrderPriority());
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          objective_value: 0, warnings: [], cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    // Manager utterance "domani" → detected = 1440.
+    // Manager is already on day 3: currentTimeMin = 4000, cushionMin = 30 → legacy = 4030.
+    // Clamp: max(1440, 4030) = 4030 (legacy wins).
+    const res = await invokeRoute(makeRequest({
+      ...baseBody,
+      managerText: 'ferma M-1 domani dalle 14',
+      currentTimeMin: 4000,
+      cushionMin: 30,
+    }, '10.0.16.46'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+
+    const sentBody = JSON.parse(
+      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(sentBody.cutoff_min).toBe(4030);
+
+    // Solved warning must surface the clamp event for audit.
+    const solved = chunks.find((c) => c.event === 'solved')!.data as {
+      warnings: string[];
+    };
+    expect(solved.warnings).toContain('a4_cutoff_clamped_to_currentTime');
+  });
+
+  it('does NOT clamp when currentTime is before detected (MEDIUM-1 inverse)', async () => {
+    anthropicCreate.mockResolvedValueOnce(fakeHaikuOrderPriority());
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          objective_value: 0, warnings: [], cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    // Manager utterance "domani" → detected = 1440.
+    // Manager is on hour 1.5: currentTimeMin = 90, cushionMin = 30 → legacy = 120.
+    // Clamp: max(1440, 120) = 1440 (detected wins, no clamp marker).
+    const res = await invokeRoute(makeRequest({
+      ...baseBody,
+      managerText: 'ferma M-1 domani dalle 14',
+      currentTimeMin: 90,
+      cushionMin: 30,
+    }, '10.0.16.47'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+
+    const sentBody = JSON.parse(
+      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(sentBody.cutoff_min).toBe(1440);
+    const solved = chunks.find((c) => c.event === 'solved')!.data as {
+      warnings: string[];
+    };
+    expect(solved.warnings).not.toContain('a4_cutoff_clamped_to_currentTime');
+  });
+
+  // Devil-advocate MEDIUM-2: ambiguous temporal phrases must surface a warning.
+
+  it('emits ambiguity warning when manager utters multiple temporal phrases', async () => {
+    anthropicCreate.mockResolvedValueOnce(fakeHaikuOrderPriority());
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          objective_value: 0, warnings: [], cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await invokeRoute(makeRequest({
+      ...baseBody,
+      managerText: 'attenzione: dopodomani arriva il giorno 5, ferma M-1',
+      currentTimeMin: 90,
+      cushionMin: 30,
+    }, '10.0.16.48'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+
+    const solved = chunks.find((c) => c.event === 'solved')!.data as {
+      warnings: string[];
+    };
+    expect(solved.warnings.some((w) => w.startsWith('a4_ambiguous_temporal_picked_'))).toBe(true);
+    // Priority order picks dopodomani first.
+    expect(solved.warnings).toContain('a4_ambiguous_temporal_picked_dopodomani');
+
+    const sentBody = JSON.parse(
+      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(sentBody.cutoff_min).toBe(2880); // dopodomani winner
+  });
+
+  // Devil-advocate LOW-5: cutoff beyond horizon must surface a warning.
+
+  it('emits horizon-overshoot warning when detected cutoff > max end_min in baseline', async () => {
+    anthropicCreate.mockResolvedValueOnce(fakeHaikuOrderPriority());
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          objective_value: 0, warnings: [], cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    // baseSolution.fasi has max end_min = 120. "fra 100 giorni" → 144000.
+    const res = await invokeRoute(makeRequest({
+      ...baseBody,
+      managerText: 'fra 100 giorni anticipa COM-001',
+      currentTimeMin: 90,
+      cushionMin: 30,
+    }, '10.0.16.49'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+
+    const solved = chunks.find((c) => c.event === 'solved')!.data as {
+      warnings: string[];
+    };
+    expect(solved.warnings.some((w) => w.startsWith('a4_cutoff_beyond_horizon:'))).toBe(true);
+  });
+
+  it('does NOT emit horizon warning when detected cutoff fits inside baseline horizon', async () => {
+    const longSolution = {
+      status: 'OPTIMAL',
+      fasi: [
+        { commessa: 'COM-001', macchina: 'M-1', start_min: 0, end_min: 60 },
+        { commessa: 'COM-007', macchina: 'M-3', start_min: 60, end_min: 5000 },
+      ],
+      machines: ['M-1', 'M-3'],
+      orders: ['COM-001', 'COM-007'],
+    };
+    anthropicCreate.mockResolvedValueOnce(fakeHaikuOrderPriority());
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          objective_value: 0, warnings: [], cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await invokeRoute(makeRequest({
+      ...baseBody,
+      originalSolution: longSolution,
+      managerText: 'ferma M-1 domani', // detected = 1440 < 5000
+      currentTimeMin: 90,
+      cushionMin: 30,
+    }, '10.0.16.50'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+
+    const solved = chunks.find((c) => c.event === 'solved')!.data as {
+      warnings: string[];
+    };
+    expect(solved.warnings.some((w) => w.startsWith('a4_cutoff_beyond_horizon:'))).toBe(false);
+  });
 });

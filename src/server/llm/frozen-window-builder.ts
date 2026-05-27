@@ -159,38 +159,88 @@ export function buildFrozenPhases(
  * This helper picks up four temporal forms:
  *   - "domani"        → 1 * 1440
  *   - "dopodomani"    → 2 * 1440
- *   - "giorno N"      → (N - 1) * 1440
- *   - "fra N giorni"  → N * 1440
+ *   - "giorno N"      → (N - 1) * 1440   (N ∈ [2, 365]; N=1 returns null)
+ *   - "fra N giorni"  → N * 1440         (N ∈ [1, 365])
  *
- * Returns `null` when no temporal phrase is detected — the caller should
- * fall back to the legacy `currentTimeMin + cushionMin` behaviour.
+ * Returns `null` when no temporal phrase is detected, or when the matched
+ * phrase resolves to 0 (e.g. "giorno 1" == horizon start; manager is
+ * already past it and the legacy cushion path is the correct fallback).
  *
  * The returned value is in minutes from horizon start (the same coordinate
  * system as currentTimeMin / cutoffMin).
  */
 const DAY_MIN = 1440;
 
+// Regex patterns are module-level so detectScenarioStartMin and
+// detectScenarioPhraseMatches stay in lockstep — they both match the same
+// surface. Devil-advocate LOW-4 (2026-05-27): standardize N range to
+// [1, 365] with consistent \d{1,3} caps across "fra/tra/in N giorni" and
+// "giorno N".
+const RE_DOPODOMANI = /\bdopodomani\b/;
+const RE_DOMANI = /\bdomani\b/;
+const RE_FRA_N_GIORNI = /\b(?:fra|tra|in)\s+(\d{1,3})\s+giorn[io]\b/;
+const RE_GIORNO_N = /\bgiorno\s+(\d{1,3})\b/;
+
 export function detectScenarioStartMin(whatifText: string): number | null {
   if (typeof whatifText !== 'string' || whatifText.trim().length === 0) return null;
   const t = whatifText.toLowerCase();
 
   // "dopodomani" must be checked BEFORE "domani" because it contains it.
-  if (/\bdopodomani\b/.test(t)) return 2 * DAY_MIN;
-  if (/\bdomani\b/.test(t)) return 1 * DAY_MIN;
+  if (RE_DOPODOMANI.test(t)) return 2 * DAY_MIN;
+  if (RE_DOMANI.test(t)) return 1 * DAY_MIN;
 
-  // "fra N giorni" / "tra N giorni" / "in N giorni"
-  const fraMatch = t.match(/\b(?:fra|tra|in)\s+(\d{1,2})\s+giorn[io]\b/);
+  // "fra N giorni" / "tra N giorni" / "in N giorni". N==0 ("fra 0 giorni"
+  // is semantically "now") returns null so the legacy cushion path runs.
+  const fraMatch = t.match(RE_FRA_N_GIORNI);
   if (fraMatch) {
     const n = Number(fraMatch[1]);
-    if (Number.isFinite(n) && n >= 0 && n <= 365) return n * DAY_MIN;
+    if (Number.isFinite(n) && n >= 1 && n <= 365) return n * DAY_MIN;
   }
 
-  // "giorno N" (1-based day index). Day 1 == horizon start == minute 0.
-  const dayMatch = t.match(/\bgiorno\s+(\d{1,3})\b/);
+  // "giorno N" (1-based day index). Day 1 == horizon start == minute 0,
+  // which the manager has already crossed; return null so the legacy
+  // cushion path runs (devil-advocate LOW-3 2026-05-27).
+  const dayMatch = t.match(RE_GIORNO_N);
   if (dayMatch) {
     const n = Number(dayMatch[1]);
-    if (Number.isFinite(n) && n >= 1 && n <= 365) return (n - 1) * DAY_MIN;
+    if (Number.isFinite(n) && n >= 2 && n <= 365) return (n - 1) * DAY_MIN;
   }
 
   return null;
+}
+
+/**
+ * Wave 16.4 A4 — return the list of temporal phrase forms found in the
+ * utterance. Used by the BFF route to detect ambiguity ("dopodomani arriva
+ * il giorno 5"): when len(matches) > 1, the chosen form (whatever
+ * detectScenarioStartMin priority picks) may not be what the manager
+ * intended. The route emits a warning so the UI can surface a "you said
+ * both X and Y" banner. Devil-advocate MEDIUM-2 (2026-05-27).
+ *
+ * Each entry is one of: 'dopodomani' | 'domani' | 'fra_n_giorni' | 'giorno_n'.
+ * Order in the returned array matches the priority order used by
+ * detectScenarioStartMin so callers can read matches[0] for the "winner".
+ */
+export function detectScenarioPhraseMatches(whatifText: string): string[] {
+  if (typeof whatifText !== 'string' || whatifText.trim().length === 0) return [];
+  const t = whatifText.toLowerCase();
+  const matches: string[] = [];
+
+  if (RE_DOPODOMANI.test(t)) matches.push('dopodomani');
+  // "domani" must NOT be double-counted when "dopodomani" is also present.
+  // Strip dopodomani occurrences before testing for domani.
+  const tWithoutDopo = t.replace(/\bdopodomani\b/g, '');
+  if (RE_DOMANI.test(tWithoutDopo)) matches.push('domani');
+
+  const fra = t.match(RE_FRA_N_GIORNI);
+  if (fra) {
+    const n = Number(fra[1]);
+    if (Number.isFinite(n) && n >= 1 && n <= 365) matches.push('fra_n_giorni');
+  }
+  const giorno = t.match(RE_GIORNO_N);
+  if (giorno) {
+    const n = Number(giorno[1]);
+    if (Number.isFinite(n) && n >= 2 && n <= 365) matches.push('giorno_n');
+  }
+  return matches;
 }
