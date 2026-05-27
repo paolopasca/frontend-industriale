@@ -131,6 +131,116 @@ function diffKpis(
   return { delta, warnings };
 }
 
+// Wave 16.4 A3 — empty-dict guard. A rules payload like
+// `{deadline_changes: {COM-001: {}}}` or `{unavailable_machines: {M01: []}}`
+// looks structurally valid to the solver client but degenerates to a
+// silent no-op once the backend applies it: the order/machine entry has
+// no actionable field, so the schedule comes back unchanged and the
+// manager sees a "solved" state with zero delta — same failure class as
+// F-W10-01. Reject before hitting the wire so the UI surfaces a clear
+// "incomplete rule" toast and the manager can re-issue with a proper
+// quantity / window.
+function hasMeaningfulRules(rules: Record<string, unknown>): boolean {
+  if (!rules || typeof rules !== 'object') return false;
+  const keys = Object.keys(rules);
+  if (keys.length === 0) return false;
+
+  const um = (rules as { unavailable_machines?: unknown }).unavailable_machines;
+  if (um && typeof um === 'object' && !Array.isArray(um)) {
+    const entries = Object.entries(um as Record<string, unknown>);
+    if (entries.length === 0) return false;
+    for (const [, windows] of entries) {
+      if (Array.isArray(windows) && windows.length > 0) return true;
+    }
+    return false;
+  }
+
+  const ou = (rules as { operator_unavailability?: unknown }).operator_unavailability;
+  if (ou && typeof ou === 'object' && !Array.isArray(ou)) {
+    const entries = Object.entries(ou as Record<string, unknown>);
+    if (entries.length === 0) return false;
+    for (const [, windows] of entries) {
+      if (Array.isArray(windows) && windows.length > 0) return true;
+    }
+    return false;
+  }
+
+  const dc = (rules as { deadline_changes?: unknown }).deadline_changes;
+  if (dc && typeof dc === 'object' && !Array.isArray(dc)) {
+    const entries = Object.entries(dc as Record<string, unknown>);
+    if (entries.length === 0) return false;
+    for (const [, body] of entries) {
+      if (!body || typeof body !== 'object') continue;
+      const b = body as Record<string, unknown>;
+      if (
+        b.new_deadline_min !== undefined
+        || b.delta_min !== undefined
+        || b.advance_days !== undefined
+        || b.delay_days !== undefined
+        || b.iso_datetime !== undefined
+      ) return true;
+    }
+    return false;
+  }
+
+  const po = (rules as { priority_orders?: unknown }).priority_orders;
+  if (Array.isArray(po)) {
+    return po.some((id) => typeof id === 'string' && id.trim().length > 0);
+  }
+
+  const ec = (rules as { extra_capacity?: unknown }).extra_capacity;
+  if (ec && typeof ec === 'object') {
+    if (Array.isArray(ec)) {
+      return ec.some(
+        (v) => v && typeof v === 'object' && 'operator_count' in (v as Record<string, unknown>),
+      );
+    }
+    const ecObj = ec as Record<string, unknown>;
+    return (
+      ecObj.operators !== undefined
+      || ecObj.operator_count !== undefined
+      || ecObj.shift !== undefined
+      || ecObj.duration_min !== undefined
+    );
+  }
+
+  const sc = (rules as { shift_changes?: unknown }).shift_changes;
+  if (sc) {
+    if (Array.isArray(sc)) {
+      return sc.some((v) => {
+        if (!v || typeof v !== 'object') return false;
+        const o = v as Record<string, unknown>;
+        return (
+          'shift_id' in o
+          && (o.new_start_min !== undefined
+            || o.new_end_min !== undefined
+            || o.delta_min !== undefined
+            || o.start_min !== undefined
+            || o.end_min !== undefined)
+        );
+      });
+    }
+    if (typeof sc === 'object') {
+      const entries = Object.entries(sc as Record<string, unknown>);
+      if (entries.length === 0) return false;
+      for (const [, body] of entries) {
+        if (!body || typeof body !== 'object') continue;
+        const b = body as Record<string, unknown>;
+        if (
+          b.start_min !== undefined
+          || b.end_min !== undefined
+          || b.new_start_min !== undefined
+          || b.new_end_min !== undefined
+          || b.delta_min !== undefined
+        ) return true;
+      }
+      return false;
+    }
+  }
+
+  return false;
+}
+
 // F-W7-08 — describe the user-facing effect of a Wave 7 intent in short
 // Italian strings the SolutionDiff renders as an audit trail. The text
 // is about WHAT changed in the plan (the manager's mental model), not
@@ -688,6 +798,28 @@ export const Route = createFileRoute('/api/apply-whatif')({
                   rulesForSolve = tr.change.rules;
                   wave7Warnings.push(...(tr.change.warnings ?? []));
                 }
+              }
+
+              // Wave 16.4 A3 — empty-dict guard. Reject underspecified rules
+              // BEFORE the solver call so the manager gets a clear toast
+              // instead of a silent no-op "solved" with zero delta. Skip the
+              // guard when the change goes through dataset_overrides (Strategy A)
+              // since the rules object can legitimately be empty in that path.
+              if (
+                !datasetOverrides
+                && !hasMeaningfulRules(rulesForSolve)
+              ) {
+                flushCost();
+                write('aborted_unsupported', {
+                  reason: 'empty_or_underspecified_rules',
+                  warnings: [...wave7Warnings, 'empty_or_underspecified_rules'],
+                });
+                write('done', {
+                  cost_usd: lastUsage?.cost_usd ?? 0,
+                  tokens_in: lastUsage?.tokens_in ?? 0,
+                  tokens_out: lastUsage?.tokens_out ?? 0,
+                });
+                return;
               }
 
               // Phase 2: solve. No additional LLM cost here.
