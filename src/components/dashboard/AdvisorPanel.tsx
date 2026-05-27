@@ -6,7 +6,17 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
-import { sseStream, friendlyErrorMessage } from '@/lib/streamingFetch';
+import { sseStream, friendlyErrorMessage, isTransientPanelError } from '@/lib/streamingFetch';
+
+// Wave 16.3 #37 — keep retry config in sync with ExplanationPanel.
+const MAX_RETRIES = 2;
+const RETRY_BASE_MS = 800;
+const RETRY_MAX_MS = 4000;
+function retryDelayMs(attempt: number): number {
+  const exp = RETRY_BASE_MS * Math.pow(2, attempt);
+  const jittered = exp + Math.floor(Math.random() * 250);
+  return Math.min(jittered, RETRY_MAX_MS);
+}
 
 interface AdvisorPanelProps {
   slug: string | null;
@@ -57,6 +67,7 @@ export function AdvisorPanel({
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<{ message: string; code?: string } | null>(null);
+  const [retrying, setRetrying] = useState(false);
   const [costUsd, setCostUsd] = useState<number | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const reducedMotion = useReducedMotion();
@@ -69,6 +80,7 @@ export function AdvisorPanel({
       setLoading(false);
       setText('');
       setError(null);
+      setRetrying(false);
       return;
     }
 
@@ -77,10 +89,26 @@ export function AdvisorPanel({
 
     setText('');
     setError(null);
+    setRetrying(false);
     setCostUsd(null);
     setLoading(true);
 
-    (async () => {
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve, reject) => {
+        const t = setTimeout(resolve, ms);
+        controller.signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(t);
+            reject(new Error('aborted'));
+          },
+          { once: true },
+        );
+      });
+
+    const runAttempt = async (
+      attempt: number,
+    ): Promise<{ ok: true } | { ok: false; err: { message: string; code?: string; status?: number } }> => {
       try {
         const stream = sseStream<ChunkPayload | DonePayload | ErrorPayload>(
           '/api/advise',
@@ -88,33 +116,73 @@ export function AdvisorPanel({
           controller.signal,
         );
 
+        let receivedChunk = false;
+        let sseError: { message: string; code?: string } | null = null;
+
         for await (const { event, data } of stream) {
           if (aborted) break;
           if (event === 'chunk') {
             const t = (data as ChunkPayload).text;
             if (typeof t === 'string') {
+              if (!receivedChunk) {
+                setError(null);
+                setRetrying(false);
+              }
+              receivedChunk = true;
               setText((prev) => prev + t);
             }
           } else if (event === 'done') {
             const d = data as DonePayload;
             setCostUsd(typeof d.cost_usd === 'number' ? d.cost_usd : null);
+            if (sseError === null) {
+              setError(null);
+              setRetrying(false);
+            }
             setLoading(false);
           } else if (event === 'error') {
             const e = data as ErrorPayload;
-            setError({ message: e.message ?? 'Errore sconosciuto', code: e.code });
-            setLoading(false);
+            sseError = { message: e.message ?? 'Errore sconosciuto', code: e.code };
           } else if (event === 'aborted') {
             setLoading(false);
           }
         }
-        if (!aborted) setLoading(false);
+        if (aborted) return { ok: true };
+        if (sseError) {
+          return { ok: false, err: sseError };
+        }
+        setLoading(false);
+        return { ok: true };
       } catch (err) {
-        if (aborted) return;
+        if (aborted) return { ok: true };
         const msg = err instanceof Error ? err.message : String(err);
         const code = (err as { code?: string })?.code;
-        if (msg.toLowerCase().includes('abort')) return;
-        setError({ message: msg, code });
-        setLoading(false);
+        const status = (err as { status?: number })?.status;
+        if (msg.toLowerCase().includes('abort')) return { ok: true };
+        return { ok: false, err: { message: msg, code, status } };
+      }
+    };
+
+    (async () => {
+      let attempt = 0;
+      while (true) {
+        const result = await runAttempt(attempt);
+        if (result.ok) return;
+        if (aborted) return;
+        if (attempt >= MAX_RETRIES || !isTransientPanelError(result.err)) {
+          setError({ message: result.err.message, code: result.err.code });
+          setRetrying(false);
+          setLoading(false);
+          return;
+        }
+        attempt++;
+        setRetrying(true);
+        setText('');
+        try {
+          await sleep(retryDelayMs(attempt - 1));
+        } catch {
+          return;
+        }
+        if (aborted) return;
       }
     })();
 
@@ -225,7 +293,9 @@ export function AdvisorPanel({
                 {loading && paragraphs.length === 0 && (
                   <div className="space-y-3">
                     <p className="text-xs text-muted-foreground italic mb-3">
-                      DAINO AI sta cercando opportunita...
+                      {retrying
+                        ? 'Servizio AI temporaneamente sotto carico, riprovo...'
+                        : 'DAINO AI sta cercando opportunita...'}
                     </p>
                     <Skeleton className="h-3 w-full" />
                     <Skeleton className="h-3 w-10/12" />

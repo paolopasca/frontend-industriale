@@ -47,13 +47,24 @@ export interface RateLimitResult {
 }
 
 function shouldBypassRateLimit(ipOrCompositeKey: string): boolean {
+  // Explicit opt-out always wins — a dev exercising the real limiter can
+  // set BYPASS_LOCAL=0 to force the limiter on regardless of env.
   if (process.env.DAINO_BFF_RATE_LIMIT_BYPASS_LOCAL === '0') return false;
-  // Composite keys are of the form "<ip>:<surface>" (e.g. "local:whatif",
-  // "127.0.0.1:split"). Strip the surface suffix before matching.
-  const ip = ipOrCompositeKey.split(':')[0];
-  if (ip !== 'local' && ip !== '127.0.0.1' && ip !== '::1') return false;
+  // Wave 16.3 HIGH-1 — allow-list of dev/test envs. The previous version
+  // bypassed for any NODE_ENV !== 'production', which meant Cloudflare
+  // Workers deployments (where NODE_ENV is undefined unless explicitly
+  // set in wrangler.jsonc) silently disabled the limiter and exposed the
+  // Anthropic billing to runaway clients. Now: bypass ONLY when the env
+  // is *explicitly* 'development' or 'test'. Undefined, 'production',
+  // 'staging', or any other value → fall through to the limiter (safe
+  // default). Pair with wrangler.jsonc setting NODE_ENV="production".
   const env = process.env.NODE_ENV;
-  return env !== 'production';
+  if (env !== 'development' && env !== 'test') return false;
+  // In dev/test we bypass the limiter so e2e tests, stress runners, and a
+  // manager dogfooding the dashboard on a LAN IP don't trip the 10/h cap
+  // while iterating.
+  void ipOrCompositeKey;
+  return true;
 }
 
 // `limitOverride` lets a caller enforce a stricter per-surface cap (e.g.

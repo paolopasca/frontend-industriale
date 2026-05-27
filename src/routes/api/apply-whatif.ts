@@ -595,6 +595,36 @@ export const Route = createFileRoute('/api/apply-whatif')({
                 // payload. Skip the extractor+translator entirely; use the
                 // echoed confirmedPayload as the rules for the solver directly.
                 if (input.userConfirmedGrayZone && input.confirmedPayload) {
+                  // Wave 16.3 CRITICAL-1 — reject sentinel "?" in
+                  // unavailable_machines: backend extractor emits this key
+                  // when the manager's target ("linea 99", "macchina", a
+                  // typo) cannot be mapped to a canonical machine_id. If we
+                  // pass it through to the solver, _apply_unavailable_machines
+                  // logs and skips, the solver returns the baseline schedule
+                  // unchanged, and the UI shows a "solved" state with no
+                  // delta — manager thinks the constraint was applied when
+                  // it silently no-op'd. Same class as F-W10-01. Abort with
+                  // aborted_unsupported so the manager sees a clear message
+                  // and can re-issue via Opus translator.
+                  const unavail = (input.confirmedPayload as { unavailable_machines?: Record<string, unknown> })
+                    .unavailable_machines;
+                  if (unavail && typeof unavail === 'object' && '?' in unavail) {
+                    flushCost();
+                    write('aborted_unsupported', {
+                      reason: 'unresolved_machine_target',
+                      warnings: [
+                        ...wave7Warnings,
+                        'gray_zone_sentinel_target',
+                        'use_opus_fallback_to_disambiguate',
+                      ],
+                    });
+                    write('done', {
+                      cost_usd: lastUsage?.cost_usd ?? 0,
+                      tokens_in: lastUsage?.tokens_in ?? 0,
+                      tokens_out: lastUsage?.tokens_out ?? 0,
+                    });
+                    return;
+                  }
                   rulesForSolve = input.confirmedPayload;
                   wave7Warnings.push('gray_zone_confirmed_by_manager');
                 } else {
