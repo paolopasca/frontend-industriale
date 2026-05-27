@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildFrozenPhases } from '../frozen-window-builder';
+import { buildFrozenPhases, detectScenarioStartMin } from '../frozen-window-builder';
 
 describe('buildFrozenPhases', () => {
   it('returns empty list when baseline is empty', () => {
@@ -228,5 +228,44 @@ describe('buildFrozenPhases', () => {
     const result = buildFrozenPhases(baseline, 200);
     expect(result).toHaveLength(1);
     expect(result[0].seq).toBe(1);
+  });
+});
+
+describe('Wave 16.4 A4 — detectScenarioStartMin', () => {
+  it('returns null when no temporal phrase is present', () => {
+    expect(detectScenarioStartMin('ferma M-1 dalle 14 alle 18')).toBeNull();
+    expect(detectScenarioStartMin('anticipa COM-001')).toBeNull();
+    expect(detectScenarioStartMin('')).toBeNull();
+  });
+
+  it('detects "domani" → 1440', () => {
+    expect(detectScenarioStartMin('ferma M-1 domani dalle 14')).toBe(1440);
+    expect(detectScenarioStartMin('Domani la linea M-2 non lavora')).toBe(1440);
+  });
+
+  it('detects "dopodomani" → 2880 (and does not match plain "domani")', () => {
+    expect(detectScenarioStartMin('ferma M-1 dopodomani dalle 14')).toBe(2880);
+  });
+
+  it('detects "giorno N" → (N-1) * 1440', () => {
+    expect(detectScenarioStartMin('sposta COM-001 al giorno 2')).toBe(1440);
+    expect(detectScenarioStartMin('GIORNO 3 ferma M-2')).toBe(2880);
+    expect(detectScenarioStartMin('giorno 1 inizio orizzonte')).toBe(0);
+  });
+
+  it('detects "fra/tra/in N giorni" → N * 1440', () => {
+    expect(detectScenarioStartMin('fra 3 giorni anticipa COM-001')).toBe(3 * 1440);
+    expect(detectScenarioStartMin('tra 2 giorni ferma M-1')).toBe(2 * 1440);
+    expect(detectScenarioStartMin('in 5 giorni nuova capacita')).toBe(5 * 1440);
+  });
+
+  it('does not match nonsense like "domanichi" or "giorno cento"', () => {
+    expect(detectScenarioStartMin('domanichi non esiste')).toBeNull();
+    expect(detectScenarioStartMin('giorno cento di pioggia')).toBeNull();
+  });
+
+  it('clamps to safety: rejects ranges > 365 days', () => {
+    expect(detectScenarioStartMin('giorno 999 lontano nel tempo')).toBeNull();
+    expect(detectScenarioStartMin('fra 999 giorni qualcosa')).toBeNull();
   });
 });

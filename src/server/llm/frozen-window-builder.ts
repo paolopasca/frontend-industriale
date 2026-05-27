@@ -142,3 +142,55 @@ export function buildFrozenPhases(
   }
   return frozen;
 }
+
+/**
+ * Wave 16.4 A4 — detect a scenario start time from the manager's free-text
+ * utterance.
+ *
+ * Common what-if utterances ("ferma M-1 domani dalle 14 alle 18", "anticipa
+ * COM-001 al giorno 3") describe a constraint that will take effect at a
+ * future point in time. The legacy `cutoffMin = currentTimeMin + cushionMin`
+ * (30 min lookahead) is correct for an immediate "ferma adesso" intent but
+ * wrong for "domani": the manager doesn't want the schedule frozen up to
+ * 30 minutes from now, they want it frozen up to the start of day 2 (so
+ * the solver can re-plan around the future constraint without disturbing
+ * everything already scheduled).
+ *
+ * This helper picks up four temporal forms:
+ *   - "domani"        → 1 * 1440
+ *   - "dopodomani"    → 2 * 1440
+ *   - "giorno N"      → (N - 1) * 1440
+ *   - "fra N giorni"  → N * 1440
+ *
+ * Returns `null` when no temporal phrase is detected — the caller should
+ * fall back to the legacy `currentTimeMin + cushionMin` behaviour.
+ *
+ * The returned value is in minutes from horizon start (the same coordinate
+ * system as currentTimeMin / cutoffMin).
+ */
+const DAY_MIN = 1440;
+
+export function detectScenarioStartMin(whatifText: string): number | null {
+  if (typeof whatifText !== 'string' || whatifText.trim().length === 0) return null;
+  const t = whatifText.toLowerCase();
+
+  // "dopodomani" must be checked BEFORE "domani" because it contains it.
+  if (/\bdopodomani\b/.test(t)) return 2 * DAY_MIN;
+  if (/\bdomani\b/.test(t)) return 1 * DAY_MIN;
+
+  // "fra N giorni" / "tra N giorni" / "in N giorni"
+  const fraMatch = t.match(/\b(?:fra|tra|in)\s+(\d{1,2})\s+giorn[io]\b/);
+  if (fraMatch) {
+    const n = Number(fraMatch[1]);
+    if (Number.isFinite(n) && n >= 0 && n <= 365) return n * DAY_MIN;
+  }
+
+  // "giorno N" (1-based day index). Day 1 == horizon start == minute 0.
+  const dayMatch = t.match(/\bgiorno\s+(\d{1,3})\b/);
+  if (dayMatch) {
+    const n = Number(dayMatch[1]);
+    if (Number.isFinite(n) && n >= 1 && n <= 365) return (n - 1) * DAY_MIN;
+  }
+
+  return null;
+}

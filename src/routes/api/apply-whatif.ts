@@ -10,7 +10,7 @@ import { parseIntent } from '@/server/llm/intent-parser';
 import { routeIntent, type BaselineFasi } from '@/server/llm/strategy-router';
 import { loadCatalog } from '@/server/llm/catalog/loader';
 import { apply as applyDataModification, canApply as dataModifierCanApply } from '@/server/llm/data-modifier';
-import { buildFrozenPhases, type FrozenPhase } from '@/server/llm/frozen-window-builder';
+import { buildFrozenPhases, detectScenarioStartMin, type FrozenPhase } from '@/server/llm/frozen-window-builder';
 import { resolveTemplate } from '@/lib/api';
 
 /**
@@ -504,9 +504,22 @@ export const Route = createFileRoute('/api/apply-whatif')({
               // Wave 7 — frozen-window cutoff. Only computed when the
               // caller passes currentTimeMin (Wave 4.1 callers omit this
               // and get the legacy soft-hint behaviour).
-              const cutoffMin = input.currentTimeMin !== undefined
-                ? input.currentTimeMin + input.cushionMin
-                : undefined;
+              //
+              // Wave 16.4 A4 — when the manager utterance describes a future
+              // point in time ("domani", "giorno N", "dopodomani", "fra N
+              // giorni"), prefer that boundary over `currentTimeMin +
+              // cushionMin`. Manager intent: "freeze the schedule up to the
+              // scenario start, replan around the constraint from there".
+              // The 30-min cushion is correct for "ferma adesso", not for a
+              // tomorrow-shaped constraint.
+              const textForCutoff = input.managerText ?? input.whatifText;
+              const detectedScenarioStart = detectScenarioStartMin(textForCutoff);
+              const cutoffMin =
+                detectedScenarioStart !== null && detectedScenarioStart > 0
+                  ? detectedScenarioStart
+                  : input.currentTimeMin !== undefined
+                    ? input.currentTimeMin + input.cushionMin
+                    : undefined;
               const frozenPhases: FrozenPhase[] = cutoffMin !== undefined
                 ? buildFrozenPhases(input.originalSolution, cutoffMin)
                 : [];
