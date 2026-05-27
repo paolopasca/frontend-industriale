@@ -38,6 +38,7 @@ import { buildSolutionContext } from '@/lib/solutionContext';
 
 export type ConstraintType =
   | 'block_machine'
+  | 'block_operator'
   | 'force_priority'
   | 'add_capacity'
   | 'modify_deadline'
@@ -281,6 +282,7 @@ function computeCostUsd(usage: UsageTally): number {
 
 const SUPPORTED_TYPES: ReadonlySet<ConstraintType> = new Set<ConstraintType>([
   'block_machine',
+  'block_operator',
   'force_priority',
   'add_capacity',
   'modify_deadline',
@@ -685,6 +687,12 @@ function validateRulesByType(
   switch (type) {
     case 'block_machine':
       return validateBlockMachine(rules, known);
+    case 'block_operator':
+      // Wave 16.4 D1: operator_unavailability is only emitted by the
+      // backend deterministic extractor (HIT/GRAY), never by Opus. The
+      // backend already validated operator_id against operator_aliases
+      // and shaped the windows. Pass through without extra checks.
+      return { coerceUnsupported: false, warnings: [] };
     case 'force_priority':
       return validateForcePriority(rules, known);
     case 'add_capacity':
@@ -784,6 +792,7 @@ function normaliseChange(parsed: unknown, known: KnownIds): ConstraintChange {
 
 function mapPayloadToType(payload: Record<string, unknown>): ConstraintType {
   if ('unavailable_machines' in payload) return 'block_machine';
+  if ('operator_unavailability' in payload) return 'block_operator';
   if ('priority_orders' in payload) return 'force_priority';
   if ('extra_capacity' in payload) return 'add_capacity';
   if ('deadline_changes' in payload) return 'modify_deadline';
@@ -849,23 +858,37 @@ export async function translateWhatIfToConstraint(
     : await extractConstraintFromBackend(input.whatifText, solCtx);
 
   // Wave 16.4 A2 — sentinel "?" early-return. The backend extractor emits
-  // unavailable_machines["?"] (or operator_unavailability["?"]) when the
-  // utterance targets something that cannot be mapped to a canonical
-  // machine/operator (typo, off-list line number, generic noun). Calling
-  // Opus afterwards is a $0.20 round-trip that would only re-confirm the
-  // unmapped target and return unsupported. Short-circuit here so the
+  // a sentinel target when the utterance targets something that cannot be
+  // mapped to a canonical machine/operator (typo, off-list line number,
+  // generic noun). Two payload shapes exist per ACK with be-extractor-extender
+  // (2026-05-27):
+  //
+  //   - unavailable_machines: DICT `{"?": [{start_min,end_min,...}]}`
+  //   - operator_unavailability: ARRAY `[{operator_id: "?", start_min, ...}]`
+  //
+  // Calling Opus afterwards is a $0.20 round-trip that would only re-confirm
+  // the unmapped target and return unsupported. Short-circuit here so the
   // BFF emits aborted_unsupported with the backend's pre-built
   // confirmation_message immediately.
   if (beResult && (beResult.result === 'hit' || beResult.result === 'gray_zone')) {
     const payload = beResult.payload ?? {};
-    const unavailMachines = (payload as { unavailable_machines?: Record<string, unknown> })
+    const unavailMachines = (payload as { unavailable_machines?: unknown })
       .unavailable_machines;
-    const operatorUnavail = (payload as { operator_unavailability?: Record<string, unknown> })
+    const operatorUnavail = (payload as { operator_unavailability?: unknown })
       .operator_unavailability;
     const hasMachineSentinel =
-      unavailMachines && typeof unavailMachines === 'object' && '?' in unavailMachines;
+      unavailMachines
+      && typeof unavailMachines === 'object'
+      && !Array.isArray(unavailMachines)
+      && '?' in (unavailMachines as Record<string, unknown>);
     const hasOperatorSentinel =
-      operatorUnavail && typeof operatorUnavail === 'object' && '?' in operatorUnavail;
+      Array.isArray(operatorUnavail)
+      && operatorUnavail.some(
+        (entry) =>
+          entry
+          && typeof entry === 'object'
+          && (entry as { operator_id?: unknown }).operator_id === '?',
+      );
     if (hasMachineSentinel || hasOperatorSentinel) {
       const reason = beResult.confirmation_message
         ?? (hasMachineSentinel

@@ -235,13 +235,20 @@ describe('Wave 16.2 BFF orchestration', () => {
     expect(result.cost_usd).toBe(0);
   });
 
-  it('GRAY_ZONE with operator_unavailability["?"] sentinel: returns unsupported WITHOUT calling Opus', async () => {
+  it('GRAY_ZONE with operator_unavailability sentinel entry (array shape): returns unsupported WITHOUT calling Opus', async () => {
+    // Wave 16.4 D1 contract (be-extractor-extender 2026-05-27):
+    // operator_unavailability is an ARRAY `[{operator_id, start_min, end_min, date}]`,
+    // NOT a dict like unavailable_machines. Sentinel is operator_id === '?'.
     const sentinelResponse: ExtractConstraintResponse = {
       result: 'gray_zone',
       confidence: 0.55,
-      payload: { operator_unavailability: { '?': [{ start_min: 840, end_min: 1080 }] } },
+      payload: {
+        operator_unavailability: [
+          { operator_id: '?', start_min: 840, end_min: 1080, date: '2026-04-01' },
+        ],
+      },
       rationale: 'Target operatore ambiguo: "Mario" non e nel catalogo.',
-      pattern_id: null,
+      pattern_id: 'operator_unavail_v1',
       confirmation_message: 'Non riesco a identificare l\'operatore "Mario". Specifica un id valido.',
     };
 
@@ -255,6 +262,39 @@ describe('Wave 16.2 BFF orchestration', () => {
     expect(result.change.unsupportedReason).toContain('Mario');
     expect(result.change.warnings).toContain('sentinel_unresolved_operator');
     expect(result.change.requiresConfirmation).toBeFalsy();
+    expect(result.cost_usd).toBe(0);
+  });
+
+  it('HIT with operator_unavailability (array, real operator_id): maps to block_operator and skips Opus', async () => {
+    // Wave 16.4 D1 happy-path: backend HIT with canonical operator_id
+    // resolved via operator_aliases. The translator must map to the new
+    // ConstraintType 'block_operator' and pass the payload through.
+    const hitResponse: ExtractConstraintResponse = {
+      result: 'hit',
+      confidence: 0.95,
+      payload: {
+        operator_unavailability: [
+          { operator_id: 'OP-2', start_min: 840, end_min: 1080, date: '2026-04-01' },
+        ],
+      },
+      rationale: 'Operatore OP-2 non disponibile il 01/04 dalle 14 alle 18.',
+      pattern_id: 'operator_unavail_v1',
+      confirmation_message: null,
+    };
+
+    fetchMock.mockResolvedValueOnce(makeBackendResponse(hitResponse));
+
+    const { translateWhatIfToConstraint } = await import('../constraint-translator');
+    const result = await translateWhatIfToConstraint(baseInput);
+
+    expect(createMock).not.toHaveBeenCalled();
+    expect(result.change.type).toBe('block_operator');
+    expect(result.change.rules).toMatchObject({
+      operator_unavailability: [
+        expect.objectContaining({ operator_id: 'OP-2', start_min: 840, end_min: 1080 }),
+      ],
+    });
+    expect(result.change.confidence).toBe('high');
     expect(result.cost_usd).toBe(0);
   });
 

@@ -178,6 +178,84 @@ describe('Wave 16.4 A3 — empty-dict guard', () => {
     expect(chunks.find((c) => c.event === 'aborted_unsupported')).toBeTruthy();
   });
 
+  it('aborts when confirmedPayload has empty operator_unavailability array (D1 contract)', async () => {
+    // Wave 16.4 D1: operator_unavailability ships as ARRAY.
+    // An empty array is meaningless and would silent no-op on solver.
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const body = {
+      ...baseBody,
+      userConfirmedGrayZone: true,
+      confirmedPayload: {
+        operator_unavailability: [],
+      },
+    };
+
+    const res = await invokeRoute(makeRequest(body, '10.0.16.51'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(chunks.find((c) => c.event === 'aborted_unsupported')).toBeTruthy();
+  });
+
+  it('aborts when confirmedPayload operator_unavailability entry is missing windows (D1 contract)', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const body = {
+      ...baseBody,
+      userConfirmedGrayZone: true,
+      confirmedPayload: {
+        operator_unavailability: [
+          { operator_id: 'OP-2', date: '2026-04-01' }, // no start_min/end_min
+        ],
+      },
+    };
+
+    const res = await invokeRoute(makeRequest(body, '10.0.16.52'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(chunks.find((c) => c.event === 'aborted_unsupported')).toBeTruthy();
+  });
+
+  it('passes through when confirmedPayload has a complete operator_unavailability entry (D1 contract)', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL',
+          method: 'cp-sat',
+          solution: { status: 'OPTIMAL', fasi: [] },
+          kpis: { makespan_min: 2700 },
+          objective_value: 2700,
+          warnings: [],
+          cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const body = {
+      ...baseBody,
+      userConfirmedGrayZone: true,
+      confirmedPayload: {
+        operator_unavailability: [
+          { operator_id: 'OP-1', start_min: 840, end_min: 1080, date: '2026-04-01' },
+        ],
+      },
+    };
+
+    const res = await invokeRoute(makeRequest(body, '10.0.16.53'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+    const events = chunks.map((c) => c.event);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(events).toContain('solving');
+    expect(events).toContain('solved');
+  });
+
   it('aborts when confirmedPayload has empty priority_orders array', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);

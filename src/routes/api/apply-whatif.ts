@@ -155,14 +155,20 @@ function hasMeaningfulRules(rules: Record<string, unknown>): boolean {
     return false;
   }
 
+  // Wave 16.4 D1 contract (be-extractor-extender 2026-05-27): operator_unavailability
+  // ships as an ARRAY of entries `[{operator_id, start_min, end_min, date}, ...]`,
+  // NOT a dict like unavailable_machines. An entry is meaningful only when it
+  // carries operator_id + at least one of start_min/end_min (sentinel "?" is
+  // handled separately by the A2 early-return in constraint-translator.ts).
   const ou = (rules as { operator_unavailability?: unknown }).operator_unavailability;
-  if (ou && typeof ou === 'object' && !Array.isArray(ou)) {
-    const entries = Object.entries(ou as Record<string, unknown>);
-    if (entries.length === 0) return false;
-    for (const [, windows] of entries) {
-      if (Array.isArray(windows) && windows.length > 0) return true;
-    }
-    return false;
+  if (Array.isArray(ou)) {
+    return ou.some((entry) => {
+      if (!entry || typeof entry !== 'object') return false;
+      const e = entry as Record<string, unknown>;
+      const hasId = typeof e.operator_id === 'string' && e.operator_id.length > 0 && e.operator_id !== '?';
+      const hasWindow = e.start_min !== undefined || e.end_min !== undefined;
+      return hasId && hasWindow;
+    });
   }
 
   const dc = (rules as { deadline_changes?: unknown }).deadline_changes;
