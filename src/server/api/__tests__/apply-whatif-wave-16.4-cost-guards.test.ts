@@ -309,6 +309,156 @@ describe('Wave 16.4 A3 — empty-dict guard', () => {
     expect(events).toContain('solved');
     expect(events).not.toContain('aborted_unsupported');
   });
+
+  // Devil-advocate MEDIUM-1 (2026-05-27): combined rules where one key is
+  // empty but another is meaningful must pass the guard. Pre-fix the early-
+  // return pattern would reject this because the first empty key short-
+  // circuited the function. OR-of-predicates refactor makes the guard
+  // produce-the-disjunction semantics.
+
+  it('passes through when combined rules have one empty key + one meaningful key (MEDIUM-1)', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { status: 'OPTIMAL', fasi: [] },
+          kpis: { makespan_min: 2700 }, objective_value: 2700,
+          warnings: [], cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const body = {
+      ...baseBody,
+      userConfirmedGrayZone: true,
+      confirmedPayload: {
+        unavailable_machines: {}, // EMPTY
+        priority_orders: ['COM-001'], // MEANINGFUL
+      },
+    };
+
+    const res = await invokeRoute(makeRequest(body, '10.0.16.81'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+    const events = chunks.map((c) => c.event);
+    // Combined rules: meaningful priority_orders key salvages the payload.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(events).toContain('solving');
+    expect(events).toContain('solved');
+    expect(events).not.toContain('aborted_unsupported');
+  });
+
+  it('aborts when ALL keys are empty even if multiple are present (MEDIUM-1 inverse)', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const body = {
+      ...baseBody,
+      userConfirmedGrayZone: true,
+      confirmedPayload: {
+        unavailable_machines: {},
+        priority_orders: [],
+        deadline_changes: {},
+      },
+    };
+
+    const res = await invokeRoute(makeRequest(body, '10.0.16.82'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(chunks.find((c) => c.event === 'aborted_unsupported')).toBeTruthy();
+  });
+
+  it('rejects sentinel "?" operator entry as not meaningful (defense-in-depth post-A2)', async () => {
+    // Devil-advocate MEDIUM-2 note: if A2 sentinel early-return somehow
+    // didn't fire (forceOpusFallback skips extractor entirely, then user
+    // confirms a raw payload with sentinel), A3 must reject it as not
+    // meaningful so the solver no-op illusion is prevented.
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const body = {
+      ...baseBody,
+      userConfirmedGrayZone: true,
+      confirmedPayload: {
+        operator_unavailability: [
+          { operator_id: '?', start_min: 840, end_min: 1080, date: '2026-04-01' },
+        ],
+      },
+    };
+
+    const res = await invokeRoute(makeRequest(body, '10.0.16.83'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(chunks.find((c) => c.event === 'aborted_unsupported')).toBeTruthy();
+  });
+
+  it('aborts when extra_capacity is empty object (MEDIUM-3)', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const body = {
+      ...baseBody,
+      userConfirmedGrayZone: true,
+      confirmedPayload: { extra_capacity: {} },
+    };
+
+    const res = await invokeRoute(makeRequest(body, '10.0.16.84'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(chunks.find((c) => c.event === 'aborted_unsupported')).toBeTruthy();
+  });
+
+  it('aborts when shift_changes entry has empty body (MEDIUM-3)', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const body = {
+      ...baseBody,
+      userConfirmedGrayZone: true,
+      confirmedPayload: { shift_changes: { 'SHIFT-A': {} } },
+    };
+
+    const res = await invokeRoute(makeRequest(body, '10.0.16.85'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(chunks.find((c) => c.event === 'aborted_unsupported')).toBeTruthy();
+  });
+
+  it('passes through extra_capacity with shift+operators specified (MEDIUM-3 positive)', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { status: 'OPTIMAL', fasi: [] },
+          kpis: { makespan_min: 2700 }, objective_value: 2700,
+          warnings: [], cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const body = {
+      ...baseBody,
+      userConfirmedGrayZone: true,
+      confirmedPayload: {
+        extra_capacity: { operators: 1, shift: 'serale' },
+      },
+    };
+
+    const res = await invokeRoute(makeRequest(body, '10.0.16.86'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+    const events = chunks.map((c) => c.event);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(events).toContain('solved');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -447,5 +597,53 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
       (fetchMock.mock.calls[0][1] as RequestInit).body as string,
     );
     expect(sentBody.cutoff_min).toBe(2880);
+  });
+
+  // Devil-advocate LOW: cushionMin > 1440 is rejected by the Zod schema
+  // at apply-whatif.ts:72 (z.number().int().min(0).max(1_440)). This
+  // protects against a misconfigured UI pushing the cutoff past the
+  // planning horizon.
+  it('rejects cushionMin > 1440 as Zod validation error (LOW corner)', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await invokeRoute(makeRequest({
+      ...baseBody,
+      managerText: 'priorità COM-001',
+      currentTimeMin: 90,
+      cushionMin: 2000, // exceeds the 1440 cap
+    }, '10.0.16.44'));
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string; message: string };
+    expect(body.error).toBe('invalid_body');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts cushionMin = 1440 exactly at the cap boundary (LOW corner)', async () => {
+    anthropicCreate.mockResolvedValueOnce(fakeHaikuOrderPriority());
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          objective_value: 0, warnings: [], cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await invokeRoute(makeRequest({
+      ...baseBody,
+      managerText: 'priorità COM-001', // no temporal phrase, default path
+      currentTimeMin: 0,
+      cushionMin: 1440,
+    }, '10.0.16.45'));
+    expect(res.status).toBe(200);
+    await streamToString(res.body!);
+
+    const sentBody = JSON.parse(
+      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(sentBody.cutoff_min).toBe(1440);
   });
 });

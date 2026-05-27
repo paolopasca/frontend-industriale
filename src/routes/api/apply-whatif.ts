@@ -140,111 +140,125 @@ function diffKpis(
 // F-W10-01. Reject before hitting the wire so the UI surfaces a clear
 // "incomplete rule" toast and the manager can re-issue with a proper
 // quantity / window.
-function hasMeaningfulRules(rules: Record<string, unknown>): boolean {
-  if (!rules || typeof rules !== 'object') return false;
-  const keys = Object.keys(rules);
-  if (keys.length === 0) return false;
+//
+// Structured as OR-of-predicates so combined rules with one empty + one
+// meaningful key still pass the guard. The Opus translator (Strategy C)
+// can emit multi-key payloads where an early-return per-branch would
+// reject a payload like `{unavailable_machines: {}, priority_orders: ['COM-001']}`
+// even though the priority_orders entry is actionable. Devil-advocate
+// MEDIUM-1 (2026-05-27).
+function hasMeaningfulMachineUnavail(um: unknown): boolean {
+  if (!um || typeof um !== 'object' || Array.isArray(um)) return false;
+  const entries = Object.entries(um as Record<string, unknown>);
+  if (entries.length === 0) return false;
+  return entries.some(
+    ([, windows]) => Array.isArray(windows) && windows.length > 0,
+  );
+}
 
-  const um = (rules as { unavailable_machines?: unknown }).unavailable_machines;
-  if (um && typeof um === 'object' && !Array.isArray(um)) {
-    const entries = Object.entries(um as Record<string, unknown>);
-    if (entries.length === 0) return false;
-    for (const [, windows] of entries) {
-      if (Array.isArray(windows) && windows.length > 0) return true;
-    }
-    return false;
-  }
+// D1 contract (be-extractor-extender 2026-05-27): operator_unavailability
+// ships as an ARRAY of entries `[{operator_id, start_min, end_min, date}, ...]`.
+// Sentinel "?" must NOT count as meaningful — A2 early-return should have
+// converted it to unsupported, but if for any reason that path was skipped,
+// A3 acts as defense-in-depth and rejects it as not meaningful.
+function hasMeaningfulOperatorUnavail(ou: unknown): boolean {
+  if (!Array.isArray(ou)) return false;
+  return ou.some((entry) => {
+    if (!entry || typeof entry !== 'object') return false;
+    const e = entry as Record<string, unknown>;
+    const hasId =
+      typeof e.operator_id === 'string'
+      && e.operator_id.length > 0
+      && e.operator_id !== '?';
+    const hasWindow = e.start_min !== undefined || e.end_min !== undefined;
+    return hasId && hasWindow;
+  });
+}
 
-  // Wave 16.4 D1 contract (be-extractor-extender 2026-05-27): operator_unavailability
-  // ships as an ARRAY of entries `[{operator_id, start_min, end_min, date}, ...]`,
-  // NOT a dict like unavailable_machines. An entry is meaningful only when it
-  // carries operator_id + at least one of start_min/end_min (sentinel "?" is
-  // handled separately by the A2 early-return in constraint-translator.ts).
-  const ou = (rules as { operator_unavailability?: unknown }).operator_unavailability;
-  if (Array.isArray(ou)) {
-    return ou.some((entry) => {
-      if (!entry || typeof entry !== 'object') return false;
-      const e = entry as Record<string, unknown>;
-      const hasId = typeof e.operator_id === 'string' && e.operator_id.length > 0 && e.operator_id !== '?';
-      const hasWindow = e.start_min !== undefined || e.end_min !== undefined;
-      return hasId && hasWindow;
-    });
-  }
-
-  const dc = (rules as { deadline_changes?: unknown }).deadline_changes;
-  if (dc && typeof dc === 'object' && !Array.isArray(dc)) {
-    const entries = Object.entries(dc as Record<string, unknown>);
-    if (entries.length === 0) return false;
-    for (const [, body] of entries) {
-      if (!body || typeof body !== 'object') continue;
-      const b = body as Record<string, unknown>;
-      if (
-        b.new_deadline_min !== undefined
-        || b.delta_min !== undefined
-        || b.advance_days !== undefined
-        || b.delay_days !== undefined
-        || b.iso_datetime !== undefined
-      ) return true;
-    }
-    return false;
-  }
-
-  const po = (rules as { priority_orders?: unknown }).priority_orders;
-  if (Array.isArray(po)) {
-    return po.some((id) => typeof id === 'string' && id.trim().length > 0);
-  }
-
-  const ec = (rules as { extra_capacity?: unknown }).extra_capacity;
-  if (ec && typeof ec === 'object') {
-    if (Array.isArray(ec)) {
-      return ec.some(
-        (v) => v && typeof v === 'object' && 'operator_count' in (v as Record<string, unknown>),
-      );
-    }
-    const ecObj = ec as Record<string, unknown>;
+function hasMeaningfulDeadlineChanges(dc: unknown): boolean {
+  if (!dc || typeof dc !== 'object' || Array.isArray(dc)) return false;
+  const entries = Object.entries(dc as Record<string, unknown>);
+  if (entries.length === 0) return false;
+  return entries.some(([, body]) => {
+    if (!body || typeof body !== 'object') return false;
+    const b = body as Record<string, unknown>;
     return (
-      ecObj.operators !== undefined
-      || ecObj.operator_count !== undefined
-      || ecObj.shift !== undefined
-      || ecObj.duration_min !== undefined
+      b.new_deadline_min !== undefined
+      || b.delta_min !== undefined
+      || b.advance_days !== undefined
+      || b.delay_days !== undefined
+      || b.iso_datetime !== undefined
+    );
+  });
+}
+
+function hasMeaningfulPriorityOrders(po: unknown): boolean {
+  if (!Array.isArray(po)) return false;
+  return po.some((id) => typeof id === 'string' && id.trim().length > 0);
+}
+
+function hasMeaningfulExtraCapacity(ec: unknown): boolean {
+  if (!ec || typeof ec !== 'object') return false;
+  if (Array.isArray(ec)) {
+    return ec.some(
+      (v) =>
+        v
+        && typeof v === 'object'
+        && 'operator_count' in (v as Record<string, unknown>),
     );
   }
+  const ecObj = ec as Record<string, unknown>;
+  return (
+    ecObj.operators !== undefined
+    || ecObj.operator_count !== undefined
+    || ecObj.shift !== undefined
+    || ecObj.duration_min !== undefined
+  );
+}
 
-  const sc = (rules as { shift_changes?: unknown }).shift_changes;
-  if (sc) {
-    if (Array.isArray(sc)) {
-      return sc.some((v) => {
-        if (!v || typeof v !== 'object') return false;
-        const o = v as Record<string, unknown>;
-        return (
-          'shift_id' in o
-          && (o.new_start_min !== undefined
-            || o.new_end_min !== undefined
-            || o.delta_min !== undefined
-            || o.start_min !== undefined
-            || o.end_min !== undefined)
-        );
-      });
-    }
-    if (typeof sc === 'object') {
-      const entries = Object.entries(sc as Record<string, unknown>);
-      if (entries.length === 0) return false;
-      for (const [, body] of entries) {
-        if (!body || typeof body !== 'object') continue;
-        const b = body as Record<string, unknown>;
-        if (
-          b.start_min !== undefined
-          || b.end_min !== undefined
-          || b.new_start_min !== undefined
-          || b.new_end_min !== undefined
-          || b.delta_min !== undefined
-        ) return true;
-      }
-      return false;
-    }
+function hasMeaningfulShiftChanges(sc: unknown): boolean {
+  if (!sc) return false;
+  if (Array.isArray(sc)) {
+    return sc.some((v) => {
+      if (!v || typeof v !== 'object') return false;
+      const o = v as Record<string, unknown>;
+      return (
+        'shift_id' in o
+        && (o.new_start_min !== undefined
+          || o.new_end_min !== undefined
+          || o.delta_min !== undefined
+          || o.start_min !== undefined
+          || o.end_min !== undefined)
+      );
+    });
   }
+  if (typeof sc !== 'object') return false;
+  const entries = Object.entries(sc as Record<string, unknown>);
+  if (entries.length === 0) return false;
+  return entries.some(([, body]) => {
+    if (!body || typeof body !== 'object') return false;
+    const b = body as Record<string, unknown>;
+    return (
+      b.start_min !== undefined
+      || b.end_min !== undefined
+      || b.new_start_min !== undefined
+      || b.new_end_min !== undefined
+      || b.delta_min !== undefined
+    );
+  });
+}
 
-  return false;
+function hasMeaningfulRules(rules: Record<string, unknown>): boolean {
+  if (!rules || typeof rules !== 'object') return false;
+  if (Object.keys(rules).length === 0) return false;
+  return (
+    hasMeaningfulMachineUnavail((rules as { unavailable_machines?: unknown }).unavailable_machines)
+    || hasMeaningfulOperatorUnavail((rules as { operator_unavailability?: unknown }).operator_unavailability)
+    || hasMeaningfulDeadlineChanges((rules as { deadline_changes?: unknown }).deadline_changes)
+    || hasMeaningfulPriorityOrders((rules as { priority_orders?: unknown }).priority_orders)
+    || hasMeaningfulExtraCapacity((rules as { extra_capacity?: unknown }).extra_capacity)
+    || hasMeaningfulShiftChanges((rules as { shift_changes?: unknown }).shift_changes)
+  );
 }
 
 // F-W7-08 — describe the user-facing effect of a Wave 7 intent in short
