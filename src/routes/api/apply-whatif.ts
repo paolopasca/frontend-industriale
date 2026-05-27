@@ -10,7 +10,7 @@ import { parseIntent } from '@/server/llm/intent-parser';
 import { routeIntent, type BaselineFasi } from '@/server/llm/strategy-router';
 import { loadCatalog } from '@/server/llm/catalog/loader';
 import { apply as applyDataModification, canApply as dataModifierCanApply } from '@/server/llm/data-modifier';
-import { buildFrozenPhases, type FrozenPhase } from '@/server/llm/frozen-window-builder';
+import { buildFrozenPhases, detectScenarioStartMin, detectScenarioPhraseMatches, type FrozenPhase } from '@/server/llm/frozen-window-builder';
 import { resolveTemplate } from '@/lib/api';
 
 /**
@@ -129,6 +129,164 @@ function diffKpis(
     }
   }
   return { delta, warnings };
+}
+
+// Wave 16.4 A4 — estimate the max end_min across the baseline solution so
+// the cutoff auto-detect path can warn when the detected scenario start
+// falls past the planning horizon. Devil-advocate LOW-5 (2026-05-27).
+// Scans both nested `{commessa:{fasi:[]}}` and flat `{fasi:[]}` shapes
+// since both are accepted upstream by buildBaselineForRouter.
+function estimateHorizonMaxEndMin(originalSolution: unknown): number {
+  if (!originalSolution || typeof originalSolution !== 'object') return 0;
+  let maxEnd = 0;
+  const visit = (fase: unknown): void => {
+    if (!fase || typeof fase !== 'object') return;
+    const f = fase as { end_min?: unknown };
+    if (typeof f.end_min === 'number' && Number.isFinite(f.end_min) && f.end_min > maxEnd) {
+      maxEnd = f.end_min;
+    }
+  };
+  const root = originalSolution as Record<string, unknown>;
+  if (Array.isArray(root.fasi)) {
+    for (const fase of root.fasi) visit(fase);
+  } else {
+    for (const [, jobRaw] of Object.entries(root)) {
+      if (!jobRaw || typeof jobRaw !== 'object') continue;
+      const fasi = (jobRaw as { fasi?: unknown }).fasi;
+      if (Array.isArray(fasi)) for (const fase of fasi) visit(fase);
+    }
+  }
+  return maxEnd;
+}
+
+// Wave 16.4 A3 — empty-dict guard. A rules payload like
+// `{deadline_changes: {COM-001: {}}}` or `{unavailable_machines: {M01: []}}`
+// looks structurally valid to the solver client but degenerates to a
+// silent no-op once the backend applies it: the order/machine entry has
+// no actionable field, so the schedule comes back unchanged and the
+// manager sees a "solved" state with zero delta — same failure class as
+// F-W10-01. Reject before hitting the wire so the UI surfaces a clear
+// "incomplete rule" toast and the manager can re-issue with a proper
+// quantity / window.
+//
+// Structured as OR-of-predicates so combined rules with one empty + one
+// meaningful key still pass the guard. The Opus translator (Strategy C)
+// can emit multi-key payloads where an early-return per-branch would
+// reject a payload like `{unavailable_machines: {}, priority_orders: ['COM-001']}`
+// even though the priority_orders entry is actionable. Devil-advocate
+// MEDIUM-1 (2026-05-27).
+function hasMeaningfulMachineUnavail(um: unknown): boolean {
+  if (!um || typeof um !== 'object' || Array.isArray(um)) return false;
+  const entries = Object.entries(um as Record<string, unknown>);
+  if (entries.length === 0) return false;
+  return entries.some(
+    ([, windows]) => Array.isArray(windows) && windows.length > 0,
+  );
+}
+
+// D1 contract (be-extractor-extender 2026-05-27): operator_unavailability
+// ships as an ARRAY of entries `[{operator_id, start_min, end_min, date}, ...]`.
+// Sentinel "?" must NOT count as meaningful — A2 early-return should have
+// converted it to unsupported, but if for any reason that path was skipped,
+// A3 acts as defense-in-depth and rejects it as not meaningful.
+function hasMeaningfulOperatorUnavail(ou: unknown): boolean {
+  if (!Array.isArray(ou)) return false;
+  return ou.some((entry) => {
+    if (!entry || typeof entry !== 'object') return false;
+    const e = entry as Record<string, unknown>;
+    const hasId =
+      typeof e.operator_id === 'string'
+      && e.operator_id.length > 0
+      && e.operator_id !== '?';
+    const hasWindow = e.start_min !== undefined || e.end_min !== undefined;
+    return hasId && hasWindow;
+  });
+}
+
+function hasMeaningfulDeadlineChanges(dc: unknown): boolean {
+  if (!dc || typeof dc !== 'object' || Array.isArray(dc)) return false;
+  const entries = Object.entries(dc as Record<string, unknown>);
+  if (entries.length === 0) return false;
+  return entries.some(([, body]) => {
+    if (!body || typeof body !== 'object') return false;
+    const b = body as Record<string, unknown>;
+    return (
+      b.new_deadline_min !== undefined
+      || b.delta_min !== undefined
+      || b.advance_days !== undefined
+      || b.delay_days !== undefined
+      || b.iso_datetime !== undefined
+    );
+  });
+}
+
+function hasMeaningfulPriorityOrders(po: unknown): boolean {
+  if (!Array.isArray(po)) return false;
+  return po.some((id) => typeof id === 'string' && id.trim().length > 0);
+}
+
+function hasMeaningfulExtraCapacity(ec: unknown): boolean {
+  if (!ec || typeof ec !== 'object') return false;
+  if (Array.isArray(ec)) {
+    return ec.some(
+      (v) =>
+        v
+        && typeof v === 'object'
+        && 'operator_count' in (v as Record<string, unknown>),
+    );
+  }
+  const ecObj = ec as Record<string, unknown>;
+  return (
+    ecObj.operators !== undefined
+    || ecObj.operator_count !== undefined
+    || ecObj.shift !== undefined
+    || ecObj.duration_min !== undefined
+  );
+}
+
+function hasMeaningfulShiftChanges(sc: unknown): boolean {
+  if (!sc) return false;
+  if (Array.isArray(sc)) {
+    return sc.some((v) => {
+      if (!v || typeof v !== 'object') return false;
+      const o = v as Record<string, unknown>;
+      return (
+        'shift_id' in o
+        && (o.new_start_min !== undefined
+          || o.new_end_min !== undefined
+          || o.delta_min !== undefined
+          || o.start_min !== undefined
+          || o.end_min !== undefined)
+      );
+    });
+  }
+  if (typeof sc !== 'object') return false;
+  const entries = Object.entries(sc as Record<string, unknown>);
+  if (entries.length === 0) return false;
+  return entries.some(([, body]) => {
+    if (!body || typeof body !== 'object') return false;
+    const b = body as Record<string, unknown>;
+    return (
+      b.start_min !== undefined
+      || b.end_min !== undefined
+      || b.new_start_min !== undefined
+      || b.new_end_min !== undefined
+      || b.delta_min !== undefined
+    );
+  });
+}
+
+function hasMeaningfulRules(rules: Record<string, unknown>): boolean {
+  if (!rules || typeof rules !== 'object') return false;
+  if (Object.keys(rules).length === 0) return false;
+  return (
+    hasMeaningfulMachineUnavail((rules as { unavailable_machines?: unknown }).unavailable_machines)
+    || hasMeaningfulOperatorUnavail((rules as { operator_unavailability?: unknown }).operator_unavailability)
+    || hasMeaningfulDeadlineChanges((rules as { deadline_changes?: unknown }).deadline_changes)
+    || hasMeaningfulPriorityOrders((rules as { priority_orders?: unknown }).priority_orders)
+    || hasMeaningfulExtraCapacity((rules as { extra_capacity?: unknown }).extra_capacity)
+    || hasMeaningfulShiftChanges((rules as { shift_changes?: unknown }).shift_changes)
+  );
 }
 
 // F-W7-08 — describe the user-facing effect of a Wave 7 intent in short
@@ -391,12 +549,74 @@ export const Route = createFileRoute('/api/apply-whatif')({
             try {
               const problemType = detectProblemTypeFromMd(input.consultationMd);
 
+              // wave7Warnings is declared BEFORE the cutoff so the A4 path
+              // can append warnings (ambiguous temporal phrase, horizon
+              // overshoot) without forward-referencing a later const.
+              const wave7Warnings: string[] = [];
+
               // Wave 7 — frozen-window cutoff. Only computed when the
               // caller passes currentTimeMin (Wave 4.1 callers omit this
               // and get the legacy soft-hint behaviour).
-              const cutoffMin = input.currentTimeMin !== undefined
+              //
+              // Wave 16.4 A4 — when the manager utterance describes a future
+              // point in time ("domani", "giorno N", "dopodomani", "fra N
+              // giorni"), prefer that boundary over `currentTimeMin +
+              // cushionMin`. Manager intent: "freeze the schedule up to the
+              // scenario start, replan around the constraint from there".
+              // The 30-min cushion is correct for "ferma adesso", not for a
+              // tomorrow-shaped constraint.
+              //
+              // Clamp pattern (devil-advocate MEDIUM-1 2026-05-27): the
+              // detected scenario start MUST never push the cutoff below
+              // `currentTimeMin + cushionMin` — manager-elapsed time is
+              // sacred. A "domani" utterance from someone already on day 3
+              // cannot retroactively unfreeze phases that have run today.
+              // So we take the max of (detected, legacy) when both exist.
+              const textForCutoff = input.managerText ?? input.whatifText;
+              const detectedScenarioStart = detectScenarioStartMin(textForCutoff);
+              const phraseMatches = detectScenarioPhraseMatches(textForCutoff);
+              const legacyCutoff = input.currentTimeMin !== undefined
                 ? input.currentTimeMin + input.cushionMin
                 : undefined;
+              const cutoffMin =
+                detectedScenarioStart !== null && detectedScenarioStart > 0
+                  ? (legacyCutoff !== undefined
+                      ? Math.max(detectedScenarioStart, legacyCutoff)
+                      : detectedScenarioStart)
+                  : legacyCutoff;
+
+              // Devil-advocate MEDIUM-2: ambiguous temporal phrases (manager
+              // said both "dopodomani" and "giorno 5") are silently resolved
+              // by priority. Surface a marker so the UI can render "you said
+              // both X and Y — used X" instead of letting the manager assume
+              // their second phrase won.
+              if (phraseMatches.length > 1 && detectedScenarioStart !== null && detectedScenarioStart > 0) {
+                wave7Warnings.push(`a4_ambiguous_temporal_picked_${phraseMatches[0]}`);
+              }
+              // Devil-advocate MEDIUM-1: clamp event surfaced for audit. The
+              // manager-elapsed clock won over the detected phrase — they
+              // should know the cutoff isn't where their utterance pointed.
+              if (
+                detectedScenarioStart !== null
+                && detectedScenarioStart > 0
+                && legacyCutoff !== undefined
+                && legacyCutoff > detectedScenarioStart
+              ) {
+                wave7Warnings.push('a4_cutoff_clamped_to_currentTime');
+              }
+              // Devil-advocate LOW-5: scenario start beyond the planning
+              // horizon would freeze every phase in the baseline (silent
+              // no-op illusion at the solver). Warn the manager so they
+              // can re-issue a sensible window.
+              const horizonMaxEnd = estimateHorizonMaxEndMin(input.originalSolution);
+              if (
+                cutoffMin !== undefined
+                && horizonMaxEnd > 0
+                && cutoffMin > horizonMaxEnd
+              ) {
+                wave7Warnings.push(`a4_cutoff_beyond_horizon:${cutoffMin}_max_${horizonMaxEnd}`);
+              }
+
               const frozenPhases: FrozenPhase[] = cutoffMin !== undefined
                 ? buildFrozenPhases(input.originalSolution, cutoffMin)
                 : [];
@@ -408,7 +628,6 @@ export const Route = createFileRoute('/api/apply-whatif')({
               let rulesForSolve: Record<string, unknown> = {};
               let datasetOverrides: Record<string, unknown> | null = null;
               let strategyKind: 'A' | 'B' | 'C' | 'unsupported' = 'C';
-              const wave7Warnings: string[] = [];
               let unsupportedReason: string | null = null;
               // F-W7-08 — audit trail for Strategy A. Manager must see in
               // the UI what was changed at the dataset level (e.g.
@@ -688,6 +907,28 @@ export const Route = createFileRoute('/api/apply-whatif')({
                   rulesForSolve = tr.change.rules;
                   wave7Warnings.push(...(tr.change.warnings ?? []));
                 }
+              }
+
+              // Wave 16.4 A3 — empty-dict guard. Reject underspecified rules
+              // BEFORE the solver call so the manager gets a clear toast
+              // instead of a silent no-op "solved" with zero delta. Skip the
+              // guard when the change goes through dataset_overrides (Strategy A)
+              // since the rules object can legitimately be empty in that path.
+              if (
+                !datasetOverrides
+                && !hasMeaningfulRules(rulesForSolve)
+              ) {
+                flushCost();
+                write('aborted_unsupported', {
+                  reason: 'empty_or_underspecified_rules',
+                  warnings: [...wave7Warnings, 'empty_or_underspecified_rules'],
+                });
+                write('done', {
+                  cost_usd: lastUsage?.cost_usd ?? 0,
+                  tokens_in: lastUsage?.tokens_in ?? 0,
+                  tokens_out: lastUsage?.tokens_out ?? 0,
+                });
+                return;
               }
 
               // Phase 2: solve. No additional LLM cost here.

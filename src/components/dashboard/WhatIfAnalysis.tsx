@@ -27,6 +27,10 @@ interface WhatIfAnalysisProps {
   kpis: Record<string, number>;
   consultationMd?: string;
   dataSchemaMd?: string;
+  // Wave 16.4 A7 — when the manager clicks "Accetta" on a candidate diff
+  // we synthesize a solve-template shaped result and hand it back to the
+  // parent route so `setBackendResult` swaps the dashboard to the new plan.
+  onAcceptResult?: (result: unknown) => void;
 }
 
 interface ChunkPayload { text: string }
@@ -131,6 +135,7 @@ export function WhatIfAnalysis({
   kpis,
   consultationMd,
   dataSchemaMd,
+  onAcceptResult,
 }: WhatIfAnalysisProps) {
   const [scenario, setScenario] = useState('');
   const [response, setResponse] = useState('');
@@ -583,11 +588,54 @@ export function WhatIfAnalysis({
     resetApplyState();
   }, [resetApplyState]);
 
-  const handleAcceptCandidate = useCallback(() => {
-    // Wave 4.1: handler intenzionalmente vuoto. Il commit della candidate sarà cablato in wave 4.2
-    // (push dello state al DashboardContext). Per ora informiamo l'utente.
-    toast.info('Accettazione candidate: feature in arrivo (Wave 4.2).');
-  }, []);
+  const handleAcceptCandidate = useCallback(async () => {
+    // Wave 16.4 A7 — accept the candidate as the new dashboard plan.
+    // The candidate already passed the solver (apply-whatif produced
+    // it), so we just hand it to the parent route after a lightweight
+    // BFF echo for telemetry / audit parity.
+    if (!candidateSolution || !candidateKpis || !slug) {
+      toast.error('Nessuna soluzione candidate da accettare.');
+      return;
+    }
+    try {
+      const res = await fetch('/api/accept-candidate', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          slug,
+          candidateSolution,
+          candidateKpis,
+          warnings: candidateWarnings,
+          intentId: intentId ?? undefined,
+          strategy: strategy === 'A' || strategy === 'B' || strategy === 'C' ? strategy : undefined,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`accept-candidate HTTP ${res.status}: ${text}`);
+      }
+      const payload = (await res.json()) as { result?: unknown };
+      if (!payload?.result) {
+        throw new Error('Risposta accept-candidate priva di result.');
+      }
+      onAcceptResult?.(payload.result);
+      // Reset the diff panel so the dashboard refreshes cleanly.
+      resetApplyState();
+      toast.success('Piano aggiornato con il candidate.');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(`Impossibile accettare il candidate: ${msg}`);
+    }
+  }, [
+    slug,
+    candidateSolution,
+    candidateKpis,
+    candidateWarnings,
+    intentId,
+    strategy,
+    onAcceptResult,
+    resetApplyState,
+  ]);
 
   const handleKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildFrozenPhases } from '../frozen-window-builder';
+import {
+  buildFrozenPhases,
+  detectScenarioStartMin,
+  detectScenarioPhraseMatches,
+} from '../frozen-window-builder';
 
 describe('buildFrozenPhases', () => {
   it('returns empty list when baseline is empty', () => {
@@ -228,5 +232,97 @@ describe('buildFrozenPhases', () => {
     const result = buildFrozenPhases(baseline, 200);
     expect(result).toHaveLength(1);
     expect(result[0].seq).toBe(1);
+  });
+});
+
+describe('Wave 16.4 A4 — detectScenarioStartMin', () => {
+  it('returns null when no temporal phrase is present', () => {
+    expect(detectScenarioStartMin('ferma M-1 dalle 14 alle 18')).toBeNull();
+    expect(detectScenarioStartMin('anticipa COM-001')).toBeNull();
+    expect(detectScenarioStartMin('')).toBeNull();
+  });
+
+  it('detects "domani" → 1440', () => {
+    expect(detectScenarioStartMin('ferma M-1 domani dalle 14')).toBe(1440);
+    expect(detectScenarioStartMin('Domani la linea M-2 non lavora')).toBe(1440);
+  });
+
+  it('detects "dopodomani" → 2880 (and does not match plain "domani")', () => {
+    expect(detectScenarioStartMin('ferma M-1 dopodomani dalle 14')).toBe(2880);
+  });
+
+  it('detects "giorno N" for N>=2 → (N-1) * 1440', () => {
+    expect(detectScenarioStartMin('sposta COM-001 al giorno 2')).toBe(1440);
+    expect(detectScenarioStartMin('GIORNO 3 ferma M-2')).toBe(2880);
+  });
+
+  it('returns null for "giorno 1" (devil-advocate LOW-3 2026-05-27)', () => {
+    // "giorno 1" == horizon start == minute 0. The legacy cushion path
+    // is correct here (manager is already past the boundary), so the
+    // helper returns null and lets the caller fall back.
+    expect(detectScenarioStartMin('giorno 1 inizio orizzonte')).toBeNull();
+  });
+
+  it('detects "fra/tra/in N giorni" for N>=1 → N * 1440', () => {
+    expect(detectScenarioStartMin('fra 3 giorni anticipa COM-001')).toBe(3 * 1440);
+    expect(detectScenarioStartMin('tra 2 giorni ferma M-1')).toBe(2 * 1440);
+    expect(detectScenarioStartMin('in 5 giorni nuova capacita')).toBe(5 * 1440);
+  });
+
+  it('returns null for "fra 0 giorni" (LOW-4 standardize N range)', () => {
+    // "fra 0 giorni" == now == legacy cushion path.
+    expect(detectScenarioStartMin('fra 0 giorni qualcosa')).toBeNull();
+  });
+
+  it('does not match nonsense like "domanichi" or "giorno cento"', () => {
+    expect(detectScenarioStartMin('domanichi non esiste')).toBeNull();
+    expect(detectScenarioStartMin('giorno cento di pioggia')).toBeNull();
+  });
+
+  it('clamps to safety: rejects ranges > 365 days (LOW-4 standardized cap)', () => {
+    expect(detectScenarioStartMin('giorno 999 lontano nel tempo')).toBeNull();
+    expect(detectScenarioStartMin('fra 999 giorni qualcosa')).toBeNull();
+  });
+
+  it('LOW-4: 3-digit N consistent across patterns', () => {
+    // "fra 100 giorni" used to be rejected by \d{1,2}; now accepted up to 365.
+    expect(detectScenarioStartMin('fra 100 giorni anticipa COM-001')).toBe(100 * 1440);
+    expect(detectScenarioStartMin('giorno 200 ferma M-2')).toBe(199 * 1440);
+  });
+});
+
+describe('Wave 16.4 A4 — detectScenarioPhraseMatches (devil-advocate MEDIUM-2)', () => {
+  it('returns empty array when no temporal phrase present', () => {
+    expect(detectScenarioPhraseMatches('ferma M-1 dalle 14 alle 18')).toEqual([]);
+    expect(detectScenarioPhraseMatches('')).toEqual([]);
+  });
+
+  it('returns single match for single phrase', () => {
+    expect(detectScenarioPhraseMatches('domani ferma M-1')).toEqual(['domani']);
+    expect(detectScenarioPhraseMatches('dopodomani ferma M-2')).toEqual(['dopodomani']);
+    expect(detectScenarioPhraseMatches('giorno 3 manutenzione')).toEqual(['giorno_n']);
+    expect(detectScenarioPhraseMatches('fra 5 giorni nuovo turno')).toEqual(['fra_n_giorni']);
+  });
+
+  it('returns multiple matches when manager combines phrases', () => {
+    // Devil-advocate MEDIUM-2: ambiguity must be detectable.
+    const matches = detectScenarioPhraseMatches(
+      'attenzione: dopodomani arriva il giorno 5',
+    );
+    expect(matches.length).toBeGreaterThan(1);
+    expect(matches[0]).toBe('dopodomani'); // priority winner
+    expect(matches).toContain('giorno_n');
+  });
+
+  it('does NOT double-count "domani" inside "dopodomani"', () => {
+    // Regression: pre-fix, "dopodomani" would trigger both 'dopodomani'
+    // and 'domani' (substring match), inflating ambiguity warnings.
+    expect(detectScenarioPhraseMatches('dopodomani ferma M-1')).toEqual(['dopodomani']);
+  });
+
+  it('detects both "domani" and "giorno N" when manager says both', () => {
+    const matches = detectScenarioPhraseMatches('domani ferma M-1, oppure giorno 3');
+    expect(matches).toContain('domani');
+    expect(matches).toContain('giorno_n');
   });
 });

@@ -176,6 +176,7 @@ function Index() {
                   slug={setupData?.companySlug ?? null}
                   solution={aiInputs.solution}
                   kpis={aiInputs.kpis}
+                  onAcceptResult={(result) => setBackendResult(result)}
                 />
                 <SplitSuggestion
                   slug={setupData?.companySlug ?? null}
@@ -197,6 +198,7 @@ function Index() {
                 open={replanOpen}
                 onClose={() => setReplanOpen(false)}
                 companySlug={setupData?.companySlug ?? null}
+                originalSolution={backendResult ?? dashboardData}
                 onResult={(result) => setBackendResult(result)}
               />
               <DataInputModal

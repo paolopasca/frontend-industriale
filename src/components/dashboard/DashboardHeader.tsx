@@ -67,11 +67,13 @@ export function DashboardHeader({
       return;
     }
     const url = `/print/${encodeURIComponent(slug)}`;
-    const win = window.open(url, '_blank', 'noopener,noreferrer');
-    if (!win) {
-      removeSlugScoped(PRINT_SNAPSHOT_KEY, slug);
-      toast.error('Il browser ha bloccato la nuova finestra. Consenti i popup per esportare il PDF.');
-    }
+    setTimeout(() => {
+      const win = window.open(url, '_blank', 'noopener,noreferrer');
+      if (!win) {
+        removeSlugScoped(PRINT_SNAPSHOT_KEY, slug);
+        toast.error('Il browser ha bloccato la nuova finestra. Consenti i popup per esportare il PDF.');
+      }
+    }, 0);
   };
   const handleReset = () => {
     if (companySlug) clearSlugScoped(companySlug);

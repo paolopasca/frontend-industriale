@@ -24,8 +24,11 @@ const KPI_LOWER_IS_BETTER = new Set<string>([
   'total_cost',
   'totalCost',
   'costoTotale',
+  'costo_totale',
   'costoOperatori',
+  'costo_operatori',
   'costoSetup',
+  'costo_setup',
   'total_setup_min',
   'totalSetupTime',
   'tardiness_min',
@@ -39,6 +42,7 @@ const KPI_HIGHER_IS_BETTER = new Set<string>([
   'on_time_rate',
   'highPriorityOnTime',
   'machine_utilization_avg',
+  'machine_utilization_max',
   'avgUtilization',
   'peakUtilization',
   'operator_utilization_avg',
@@ -78,8 +82,11 @@ const KPI_LABELS: Record<string, string> = {
   total_cost: 'Costo totale',
   totalCost: 'Costo totale',
   costoTotale: 'Costo totale',
+  costo_totale: 'Costo totale',
   costoOperatori: 'Costo personale',
+  costo_operatori: 'Costo personale',
   costoSetup: 'Costo setup',
+  costo_setup: 'Costo setup',
   total_setup_min: 'Setup (min)',
   totalSetupTime: 'Setup (min)',
   tardiness_min: 'Ritardo (min)',
@@ -89,7 +96,8 @@ const KPI_LABELS: Record<string, string> = {
   ordersLate: 'Ordini in ritardo',
   on_time_rate: 'On-time (%)',
   highPriorityOnTime: 'Alta priorità on-time (%)',
-  machine_utilization_avg: 'Utilizzo macchina (%)',
+  machine_utilization_avg: 'Utilizzo medio macchine (%)',
+  machine_utilization_max: 'Picco utilizzo macchine (%)',
   avgUtilization: 'Utilizzo medio (%)',
   peakUtilization: 'Picco utilizzo (%)',
   operator_utilization_avg: 'Utilizzo operatori (%)',
@@ -134,15 +142,101 @@ function formatDelta(delta: number | null): string {
   return sign + formatNumber(Math.abs(delta));
 }
 
+// Wave 16.4 E1 — KPI shape normalization.
+//
+// Baseline KPIs (dashboard) use camelCase from resultAdapter, hours for
+// makespan, `costoTotale`, `peakUtilization`. Candidate KPIs come straight
+// from the solver: raw snake_case in minutes, `costo_totale_operatori`,
+// `carico_macchine` as a dict mid->minutes. Without normalization most
+// rows show "—" in one column.
+type CanonicalKpiKey =
+  | 'makespan_min'
+  | 'on_time_rate'
+  | 'machine_utilization_max'
+  | 'machine_utilization_avg'
+  | 'operator_utilization_avg'
+  | 'costo_operatori'
+  | 'costo_setup'
+  | 'costo_totale'
+  | 'tardiness_min'
+  | 'weighted_tardiness'
+  | 'late_orders_count';
+
+function normalizeKpis(input: Record<string, unknown>): Record<string, number> {
+  const out: Record<string, number> = {};
+  const pick = (key: string): number | null => {
+    if (!Object.prototype.hasOwnProperty.call(input, key)) return null;
+    return coerceKpi(input, key);
+  };
+  const set = (key: CanonicalKpiKey, v: number | null): void => {
+    if (v !== null && Number.isFinite(v) && !(key in out)) out[key] = v;
+  };
+  // Makespan — baseline ships `makespan` in HOURS; candidate ships `makespan`
+  // in MINUTES. Disambiguate via `makespan_min` alias when present, otherwise
+  // infer from magnitude (>= 200 -> minutes; 200h ~ 8 days exceeds realistic).
+  const msMin = pick('makespan_min');
+  if (msMin !== null) {
+    set('makespan_min', msMin);
+  } else {
+    const ms = pick('makespan');
+    if (ms !== null) {
+      const asMin = ms >= 200 ? ms : ms * 60;
+      set('makespan_min', Math.round(asMin));
+    } else {
+      const msDays = pick('makespanDays');
+      if (msDays !== null) set('makespan_min', Math.round(msDays * 8 * 60));
+    }
+  }
+  set('costo_operatori', pick('costo_operatori') ?? pick('costoOperatori') ?? pick('costo_totale_operatori'));
+  set('costo_setup', pick('costo_setup') ?? pick('costoSetup') ?? pick('costo_totale_setup'));
+  set(
+    'costo_totale',
+    pick('costo_totale') ?? pick('costoTotale') ?? pick('total_cost') ?? pick('totalCost'),
+  );
+  set(
+    'tardiness_min',
+    pick('tardiness_min') ?? pick('totalTardiness') ?? pick('tardiness_totale_min') ?? pick('total_tardiness'),
+  );
+  set('weighted_tardiness', pick('weighted_tardiness') ?? pick('ritardo_pesato_totale'));
+  set('late_orders_count', pick('late_orders_count') ?? pick('ordersLate'));
+  set('on_time_rate', pick('on_time_rate') ?? pick('highPriorityOnTime'));
+  set('machine_utilization_max', pick('machine_utilization_max') ?? pick('peakUtilization'));
+  set('machine_utilization_avg', pick('machine_utilization_avg') ?? pick('avgUtilization'));
+  // carico_macchine is a dict mid->minutes from the FJSP solver; reduce to
+  // max/avg % usage against makespan_min so the value is comparable.
+  const cm = input.carico_macchine;
+  if (
+    out.machine_utilization_max === undefined
+    && cm
+    && typeof cm === 'object'
+    && !Array.isArray(cm)
+  ) {
+    const loads = Object.values(cm as Record<string, unknown>)
+      .map((v) => Number(v))
+      .filter((n) => Number.isFinite(n));
+    const ms = out.makespan_min;
+    if (loads.length > 0 && typeof ms === 'number' && ms > 0) {
+      const maxLoad = Math.max(...loads);
+      const avgLoad = loads.reduce((s, n) => s + n, 0) / loads.length;
+      set('machine_utilization_max', Math.round((maxLoad / ms) * 1000) / 10);
+      set('machine_utilization_avg', Math.round((avgLoad / ms) * 1000) / 10);
+    }
+  }
+  set('operator_utilization_avg', pick('operator_utilization_avg'));
+  return out;
+}
+
 function buildRows(
   baselineKpis: Record<string, unknown>,
   candidateKpis: Record<string, unknown>,
 ): KpiRow[] {
-  const keys = new Set<string>([...Object.keys(baselineKpis), ...Object.keys(candidateKpis)]);
+  const normBase = normalizeKpis(baselineKpis);
+  const normCand = normalizeKpis(candidateKpis);
+  const keys = new Set<string>([...Object.keys(normBase), ...Object.keys(normCand)]);
   const rows: KpiRow[] = [];
   for (const key of keys) {
-    const baseline = coerceKpi(baselineKpis, key);
-    const candidate = coerceKpi(candidateKpis, key);
+    const baseline = coerceKpi(normBase, key);
+    const candidate = coerceKpi(normCand, key);
     const direction = kpiDirection(key);
     let delta: number | null = null;
     let improves: boolean | null = null;
@@ -782,10 +876,15 @@ export function SolutionDiff({
                   data-testid="solution-diff-machine-exclusion-badge"
                   data-machine-excluded="false"
                   data-offending-count={machineExclusionStatus.count}
-                  aria-label={`${targetMachineId} ancora assegnata a ${machineExclusionStatus.count} fasi post-cutoff`}
+                  aria-label={`${targetMachineId}: vincolo NON applicato (${machineExclusionStatus.count} fasi post-cutoff)`}
+                  title={
+                    typeof skippedRulesCount === 'number' && skippedRulesCount > 0
+                      ? `machine_unavailability rule: skipped, reason=conflict_with_frozen_phase_lock (${skippedRulesCount} regole ignorate dal solver)`
+                      : `${machineExclusionStatus.count} fasi assegnate a ${targetMachineId} dopo il cutoff`
+                  }
                 >
                   <AlertTriangle className="h-3.5 w-3.5" aria-hidden />
-                  {targetMachineId} ancora presente! ({machineExclusionStatus.count})
+                  {targetMachineId}: vincolo NON applicato ({machineExclusionStatus.count} fasi post-cutoff)
                   <span className="sr-only"> — vincolo di indisponibilita macchina non rispettato dal solver</span>
                 </Badge>
               )

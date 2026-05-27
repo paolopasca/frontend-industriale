@@ -185,6 +185,11 @@ export async function solveTemplate(slug: string, problemType?: string, rules?: 
     objective_value: number;
     warnings: string[];
     cost_usd: number;
+    // Wave 16.4 C1 — optional plan_memory handles so the dashboard can
+    // call /api/analysis/{sid}/reschedule. Tolerated absent for the
+    // BE rollout window where the field is not yet populated.
+    session_id?: string | null;
+    run_id?: number | null;
   }>('/api/public/solve-template', {
     method: 'POST',
     body: JSON.stringify({
@@ -458,9 +463,7 @@ export async function chatReschedule(
   const hasSession = !!params.sessionId;
   if (!hasSession && !hasValidRun) {
     return {
-      reply:
-        'Reschedule non disponibile: nessuna sessione/run attiva da rielaborare. '
-        + 'Avvia prima un\'ottimizzazione con strategia codegen.',
+      reply: 'Sessione non trovata. Ricarica la dashboard e riprova.',
       action: 'error',
       cost_usd: 0,
     };
