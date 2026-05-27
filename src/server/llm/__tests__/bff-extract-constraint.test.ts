@@ -205,6 +205,83 @@ describe('Wave 16.2 BFF orchestration', () => {
     expect(createMock).toHaveBeenCalledOnce();
     expect(result.change.type).toBe('force_priority');
   });
+
+  // ── Wave 16.4 A2 — sentinel "?" early-return (no Opus) ─────────────────────
+  // The backend extractor emits unavailable_machines["?"] (or
+  // operator_unavailability["?"]) when the manager's target cannot be
+  // resolved to a canonical id. Calling Opus afterwards is a $0.20 wasted
+  // round-trip that re-confirms what the backend already said.
+
+  it('GRAY_ZONE with unavailable_machines["?"] sentinel: returns unsupported WITHOUT calling Opus', async () => {
+    const sentinelResponse: ExtractConstraintResponse = {
+      result: 'gray_zone',
+      confidence: 0.55,
+      payload: { unavailable_machines: { '?': [{ start_min: 840, end_min: 1080 }] } },
+      rationale: 'Target macchina ambiguo: "linea 99" non e nel catalogo.',
+      pattern_id: null,
+      confirmation_message: 'Non riesco a identificare la macchina "linea 99". Specifica un id valido.',
+    };
+
+    fetchMock.mockResolvedValueOnce(makeBackendResponse(sentinelResponse));
+
+    const { translateWhatIfToConstraint } = await import('../constraint-translator');
+    const result = await translateWhatIfToConstraint(baseInput);
+
+    expect(createMock).not.toHaveBeenCalled();
+    expect(result.change.type).toBe('unsupported');
+    expect(result.change.unsupportedReason).toContain('linea 99');
+    expect(result.change.warnings).toContain('sentinel_unresolved_machine');
+    expect(result.change.requiresConfirmation).toBeFalsy();
+    expect(result.cost_usd).toBe(0);
+  });
+
+  it('GRAY_ZONE with operator_unavailability["?"] sentinel: returns unsupported WITHOUT calling Opus', async () => {
+    const sentinelResponse: ExtractConstraintResponse = {
+      result: 'gray_zone',
+      confidence: 0.55,
+      payload: { operator_unavailability: { '?': [{ start_min: 840, end_min: 1080 }] } },
+      rationale: 'Target operatore ambiguo: "Mario" non e nel catalogo.',
+      pattern_id: null,
+      confirmation_message: 'Non riesco a identificare l\'operatore "Mario". Specifica un id valido.',
+    };
+
+    fetchMock.mockResolvedValueOnce(makeBackendResponse(sentinelResponse));
+
+    const { translateWhatIfToConstraint } = await import('../constraint-translator');
+    const result = await translateWhatIfToConstraint(baseInput);
+
+    expect(createMock).not.toHaveBeenCalled();
+    expect(result.change.type).toBe('unsupported');
+    expect(result.change.unsupportedReason).toContain('Mario');
+    expect(result.change.warnings).toContain('sentinel_unresolved_operator');
+    expect(result.change.requiresConfirmation).toBeFalsy();
+    expect(result.cost_usd).toBe(0);
+  });
+
+  it('HIT with unavailable_machines["?"] sentinel (defensive): returns unsupported WITHOUT calling Opus', async () => {
+    // Backend confidence>=0.85 with a sentinel target should never happen
+    // in practice (the sentinel implies low confidence), but check it
+    // defensively so the path is not silently a "HIT no-op" on the
+    // solver later.
+    const sentinelHit: ExtractConstraintResponse = {
+      result: 'hit',
+      confidence: 0.9,
+      payload: { unavailable_machines: { '?': [{ start_min: 840, end_min: 1080 }] } },
+      rationale: 'Sentinel target.',
+      pattern_id: 'P-XX',
+      confirmation_message: null,
+    };
+
+    fetchMock.mockResolvedValueOnce(makeBackendResponse(sentinelHit));
+
+    const { translateWhatIfToConstraint } = await import('../constraint-translator');
+    const result = await translateWhatIfToConstraint(baseInput);
+
+    expect(createMock).not.toHaveBeenCalled();
+    expect(result.change.type).toBe('unsupported');
+    expect(result.change.warnings).toContain('sentinel_unresolved_machine');
+    expect(result.cost_usd).toBe(0);
+  });
 });
 
 // ── BFF route-level retry-path test (task #18, gray-zone confirmation) ────────

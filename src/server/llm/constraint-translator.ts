@@ -848,6 +848,46 @@ export async function translateWhatIfToConstraint(
     ? null
     : await extractConstraintFromBackend(input.whatifText, solCtx);
 
+  // Wave 16.4 A2 — sentinel "?" early-return. The backend extractor emits
+  // unavailable_machines["?"] (or operator_unavailability["?"]) when the
+  // utterance targets something that cannot be mapped to a canonical
+  // machine/operator (typo, off-list line number, generic noun). Calling
+  // Opus afterwards is a $0.20 round-trip that would only re-confirm the
+  // unmapped target and return unsupported. Short-circuit here so the
+  // BFF emits aborted_unsupported with the backend's pre-built
+  // confirmation_message immediately.
+  if (beResult && (beResult.result === 'hit' || beResult.result === 'gray_zone')) {
+    const payload = beResult.payload ?? {};
+    const unavailMachines = (payload as { unavailable_machines?: Record<string, unknown> })
+      .unavailable_machines;
+    const operatorUnavail = (payload as { operator_unavailability?: Record<string, unknown> })
+      .operator_unavailability;
+    const hasMachineSentinel =
+      unavailMachines && typeof unavailMachines === 'object' && '?' in unavailMachines;
+    const hasOperatorSentinel =
+      operatorUnavail && typeof operatorUnavail === 'object' && '?' in operatorUnavail;
+    if (hasMachineSentinel || hasOperatorSentinel) {
+      const reason = beResult.confirmation_message
+        ?? (hasMachineSentinel
+          ? 'Target macchina non risolto: impossibile mappare al catalogo.'
+          : 'Target operatore non risolto: impossibile mappare al catalogo.');
+      options?.onUsage?.({ cost_usd: 0, tokens_in: 0, tokens_out: 0 });
+      return {
+        change: {
+          type: 'unsupported',
+          rules: {},
+          rationale: beResult.rationale ?? '',
+          confidence: 'medium',
+          warnings: [hasMachineSentinel ? 'sentinel_unresolved_machine' : 'sentinel_unresolved_operator'],
+          unsupportedReason: reason,
+        },
+        cost_usd: 0,
+        tokens_in: 0,
+        tokens_out: 0,
+      };
+    }
+  }
+
   if (beResult?.result === 'hit') {
     const change = mapBackendPayloadToConstraintChange(beResult);
     // If the payload shape is unrecognised, fall through to Opus rather than
