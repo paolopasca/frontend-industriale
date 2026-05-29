@@ -667,17 +667,21 @@ export const Route = createFileRoute('/api/apply-whatif')({
                 // a yellow banner. NB: this is DIFFERENT from B-W8-S-04
                 // short-circuit which fires only on (unknown + high).
                 //
-                // F-W9-04 — when intent_id is 'unknown', the yellow
-                // low_confidence banner contradicts the
-                // aborted_unsupported event that fires downstream.
-                // Skip the banner for unknown intents — the manager
-                // will see the explicit unsupported toast instead, no
-                // need to also tell them "low confidence on a result
-                // that didn't apply anyway".
-                if (
-                  parsed.intent.confidence === 'low'
-                  && parsed.intent.intent_id !== 'unknown'
-                ) {
+                // intent_id='unknown' + low is INCLUDED here. It does not
+                // short-circuit (B-W8-S-04 fires only on unknown+high); it
+                // cascades to the Strategy C Opus translator, and when that
+                // rescues the utterance into an applied solve the manager
+                // must still see the low-confidence banner. The earlier
+                // F-W9-04 guard (`&& intent_id !== 'unknown'`) excluded it on
+                // the theory that unknown always ends in aborted_unsupported
+                // ("low confidence on a result that didn't apply anyway") —
+                // but that premise is false for the Strategy C rescue→solved
+                // path, and the banner ONLY ever renders from solved.warnings
+                // (the aborted_unsupported handler ignores warnings, see
+                // WhatIfAnalysis.tsx). So there was never a contradictory
+                // banner to avoid; the guard merely silenced F-W8-07's
+                // legitimate warning on the rescued path.
+                if (parsed.intent.confidence === 'low') {
                   wave7Warnings.push('low_confidence_classification');
                   console.warn(
                     '[apply-whatif] low_confidence_classification',
