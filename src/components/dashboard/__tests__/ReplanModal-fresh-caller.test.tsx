@@ -4,22 +4,21 @@ import userEvent from '@testing-library/user-event';
 import { ReplanModal } from '../ReplanModal';
 
 /**
- * Wave 16.5 B1 (devil-advocate HIGH + test-gaming) — seam test.
+ * Wave 16.5 B1 (devil-advocate refinement) — seam test / regression guard.
  *
- * The BFF reschedule-fresh tests pass currentTimeMin EXPLICITLY, so they
- * prove the freeze works given the field but NOT that the real caller sends
- * it. This test drives the actual ReplanModal fresh-solve primary path with
- * the literal placeholder utterance ("macchina M1 è rotta, risolvi") — which
- * carries NO temporal phrase — and asserts the POST body to
- * /api/reschedule-fresh contains a derived currentTimeMin > 0.
+ * The fresh-solve primary path must NOT send currentTimeMin. Day-0 is anchored
+ * to min(deadline) of the dataset (data_normalizer.py:379-381), not the system
+ * clock, so a wall-clock-derived cutoff would be meaningless: today is usually
+ * AFTER the demo deadlines, which would push the cutoff past the horizon,
+ * freeze every phase, and leave the solver nothing to reschedule for
+ * "M1 rotta" (INFEASIBLE/no-op — worse than replanning from zero).
  *
- * Without the Wave 16.5 fix this body omitted currentTimeMin, so the BFF
- * cutoff was undefined and the solver reshuffled already-completed work
- * (regression class F-W10-01: tests must mirror the real caller shape).
+ * This drives the real ReplanModal with the literal placeholder utterance and
+ * asserts the POST to /api/reschedule-fresh carries the baseline but NEVER a
+ * currentTimeMin / cushionMin field, so a future "naive now - start_date" fix
+ * can't silently reintroduce the cutoff>horizon bug.
  */
 
-// Baseline anchored at 06:00 on a fixed date with time_config — exactly the
-// shape backendResult carries for deterministic-json.
 const START_DATE = '2026-06-01';
 const BASELINE = {
   status: 'OPTIMAL',
@@ -39,8 +38,8 @@ function freshOkResponse(): Response {
     JSON.stringify({
       ok: true,
       code: 'solved_fresh',
-      cutoff_min: 480,
-      frozen_count: 1,
+      cutoff_min: null,
+      frozen_count: 0,
       result: {
         status: 'OPTIMAL',
         method: 'deterministic-template',
@@ -65,13 +64,7 @@ describe('ReplanModal fresh-solve primary path (real caller shape)', () => {
     window.localStorage.clear();
   });
 
-  it('derives currentTimeMin from the baseline time_config and POSTs it', async () => {
-    // Pin "now" to 14:00 on the start date → 8h after the 06:00 anchor = 480 min.
-    // Mock only Date.now (not the whole timer system) so userEvent + React
-    // effects keep real timers and don't deadlock.
-    const nowMs = Date.parse(`${START_DATE}T14:00:00`);
-    vi.spyOn(Date, 'now').mockReturnValue(nowMs);
-
+  it('POSTs slug + message + baseline, and does NOT send a wall-clock cutoff', async () => {
     const fetchMock = vi.fn().mockResolvedValue(freshOkResponse());
     vi.stubGlobal('fetch', fetchMock);
 
@@ -100,11 +93,13 @@ describe('ReplanModal fresh-solve primary path (real caller shape)', () => {
     expect(body.slug).toBe('acme');
     expect(body.message).toBe('macchina M1 è rotta, risolvi');
     expect(body.baselineSolution).toBeTruthy();
-    // The crux: the real caller derives and sends currentTimeMin (8h = 480).
-    expect(body.currentTimeMin).toBe(480);
+    // Regression guard: day-0 is deadline-anchored, so no wall-clock cutoff is
+    // sent. Re-adding these naively would push the cutoff past the horizon.
+    expect('currentTimeMin' in body).toBe(false);
+    expect('cushionMin' in body).toBe(false);
   });
 
-  it('omits currentTimeMin when the baseline carries no derivable anchor', async () => {
+  it('surfaces the result as a full replan from the horizon start', async () => {
     const fetchMock = vi.fn().mockResolvedValue(freshOkResponse());
     vi.stubGlobal('fetch', fetchMock);
 
@@ -115,8 +110,7 @@ describe('ReplanModal fresh-solve primary path (real caller shape)', () => {
         open
         onClose={() => {}}
         companySlug="acme"
-        // No time_config, no start_datetime on fasi → anchor not derivable.
-        originalSolution={{ solution: { 'COM-001': { fasi: [{ macchina: 'M-1' }] } } }}
+        originalSolution={BASELINE}
         onResult={() => {}}
       />,
     );
@@ -124,10 +118,10 @@ describe('ReplanModal fresh-solve primary path (real caller shape)', () => {
     await user.type(screen.getByPlaceholderText(/macchina M1/i), 'macchina M1 è rotta');
     await user.click(screen.getByRole('button', { name: /Invia/i }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-
-    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
-    // Never send 0 (no-lock = same bug) — the field must be absent entirely.
-    expect('currentTimeMin' in body).toBe(false);
+    // The assistant reply must make the full-horizon replan explicit so the
+    // manager knows the early schedule may have moved (no frozen window).
+    await waitFor(() =>
+      expect(screen.getByText(/ricalcolato da inizio orizzonte/i)).toBeInTheDocument(),
+    );
   });
 });
