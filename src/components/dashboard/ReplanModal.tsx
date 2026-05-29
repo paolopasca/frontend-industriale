@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { X, Send, Loader2, Trash2, RotateCcw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { chatReschedule, autoLogin, type ChatRescheduleResponse } from '@/lib/api';
+import type { SolverMethod } from '@/components/onboarding/SolverMethodSelect';
 import { getSlugScoped, setSlugScoped, migrateLegacyKeys } from '@/lib/storage';
 
 interface Message {
@@ -26,6 +27,21 @@ const WELCOME: Message = {
     "Ciao! Scrivimi cosa è cambiato e ricalcolo il piano. Esempi:\n• \"Macchina M1 è rotta\"\n• \"Operatore W2 malato oggi\"\n• \"Stato attuale\"",
   timestamp: Date.now(),
 };
+
+// Wave 16.5 B1 (devil-advocate refinement) — the fresh-solve path does NOT
+// send currentTimeMin, so /api/reschedule-fresh runs with no frozen window
+// and re-plans the whole horizon. This is deliberate, not an oversight:
+//
+// The backend anchors model-minute 0 to min(deadline) of the dataset
+// (data_normalizer.py:379-381), NOT to the system clock — a known limitation
+// (start_date will become "today" only once the production clock lands).
+// So a wall-clock-derived `currentTimeMin = now - start_date` is meaningless:
+// today is typically AFTER the demo deadlines, which would push the cutoff
+// past the horizon, freeze EVERY phase, and leave the solver nothing to
+// reschedule (INFEASIBLE/no-op for "M1 rotta") — a worse bug than replanning
+// from zero. Until day-0 is wall-clock-anchored we restart from the horizon
+// start and say so in the UI (no silent-wrong). A future temporal anchor can
+// reintroduce a baseline-relative cutoff. See docs/to_do/ start_date item.
 
 function loadStored(slug: string | null): Message[] {
   if (!slug) return [WELCOME];
@@ -63,6 +79,7 @@ export function ReplanModal({
   onClose,
   companySlug,
   originalSolution,
+  solverMethod,
   onResult,
 }: {
   open: boolean;
@@ -70,17 +87,31 @@ export function ReplanModal({
   companySlug: string | null;
   // Wave 16.4 HIGH-3 (devil-advocate fix-then-merge) — pass the baseline
   // solution so /api/reschedule-fresh can build a non-empty
-  // minimalSolutionContext. Without it the BE extractor sees empty
+  // SolutionContext. Without it the BE extractor sees empty
   // operators/machines/orders and every entity-referencing utterance
-  // collapses to MISS/GRAY-sentinel, killing the C4 HIT path.
+  // collapses to MISS/GRAY-sentinel, killing the HIT path.
   originalSolution?: unknown;
+  // Wave 16.5 B1 — the active solver method decides the reschedule path.
+  // deterministic-template plans (deterministic-json / llm-only) cannot use
+  // the authenticated warm-start endpoint (it needs a generated_code artifact
+  // they never emit, TD-022 → "Run not found"), so they go straight to the
+  // fresh-solve route. Only codegen-pipeline keeps the warm-start chat path.
+  solverMethod?: SolverMethod | null;
   onResult?: (result: unknown) => void;
 }) {
   const [messages, setMessages] = useState<Message[]>(() => loadStored(companySlug));
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  // Wave 16.5 B1 — the fresh cold solve (~25 s) gets its own progress label
+  // so the manager knows the longer wait is expected, not a hang.
+  const [busyLabel, setBusyLabel] = useState('Ricalcolo in corso…');
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // The product runs deterministic-template (deterministic-json / llm-only)
+  // by default. Those plans have no functional warm-start handle, so the
+  // fresh-solve route is the primary path. codegen-pipeline keeps warm-start.
+  const usesFreshSolve = solverMethod !== 'codegen-pipeline';
 
   useEffect(() => {
     migrateLegacyKeys();
@@ -128,10 +159,23 @@ export function ReplanModal({
       return;
     }
 
+    // Wave 16.5 B1 — deterministic-template plans go straight to the fresh
+    // cold solve. The warm-start chat endpoint needs a generated_code
+    // artifact these plans never produce, so it always answers "Run not
+    // found". codegen-pipeline keeps the warm-start path below.
+    if (usesFreshSolve) {
+      const userMsg: Message = { id: `${Date.now()}-u`, role: 'user', content: text, timestamp: Date.now() };
+      setMessages(prev => [...prev, userMsg]);
+      setInput('');
+      await runFreshReschedule(text);
+      return;
+    }
+
     const userMsg: Message = { id: `${Date.now()}-u`, role: 'user', content: text, timestamp: Date.now() };
     setMessages(prev => [...prev, userMsg]);
     setInput('');
     setBusy(true);
+    setBusyLabel('Ricalcolo in corso…');
 
     try {
       // The /api/analysis/{sid}/reschedule endpoint is authenticated.
@@ -146,15 +190,20 @@ export function ReplanModal({
         sessionId,
         runId: Number.isFinite(runId) && (runId ?? 0) > 0 ? runId : null,
       });
-      // Wave 16.4 C4 — when the primary reschedule path cannot find the
-      // session/run, attach a fresh-fallback hint so the user can opt
-      // into the ~25 s cold solve.
+      // Wave 16.4 C4 / Wave 16.5 B2 — when the warm-start path cannot find
+      // the session/run, attach a fresh-fallback hint so the user can opt
+      // into the ~25 s cold solve. Broadened to include the backend's
+      // "Run not found" wording (B2) so the codegen-pipeline path degrades
+      // to the fresh fallback instead of dead-ending on a raw error.
+      const replyLower = res.reply.toLowerCase();
       const isSessionNotFound =
         res.action === 'error'
         && (
           res.reply.includes('Sessione non trovata')
-          || res.reply.toLowerCase().includes('session_not_found')
+          || replyLower.includes('session_not_found')
           || res.reply.includes('Reschedule non disponibile')
+          || replyLower.includes('run not found')
+          || replyLower.includes('run_not_found')
         );
       const assistantMsg: Message = {
         id: `${Date.now()}-a`,
@@ -196,18 +245,22 @@ export function ReplanModal({
     }
   };
 
-  // Wave 16.4 C4 — fallback: re-solve from scratch using the manager's
-  // free-text disruption. Slower (~25 s) but does not depend on the
-  // session/run handles that the primary chat-reschedule path needs.
-  const handleFreshReschedule = async (originalText: string) => {
-    if (busy) return;
+  // Wave 16.5 B1 — fresh cold solve. Primary path for deterministic-template
+  // plans (see usesFreshSolve) and the Wave 16.4 C4 fallback button for the
+  // warm-start path. Re-solves from scratch using the manager's free-text
+  // disruption: freeze the schedule up to the cutoff, then replan the rest.
+  // Slower (~25 s) but never depends on a warm-start session/run handle.
+  //
+  // Assumes the user message was already appended by the caller (handleSend
+  // adds it before branching; the fallback button adds its own framing).
+  const runFreshReschedule = async (originalText: string) => {
     if (!companySlug) {
       setMessages(prev => [
         ...prev,
         {
           id: `${Date.now()}-fa`,
           role: 'assistant',
-          content: 'Nessuna azienda selezionata — impossibile ricalcolare da zero.',
+          content: 'Nessuna azienda selezionata — impossibile ricalcolare il piano.',
           timestamp: Date.now(),
           action: 'error',
         },
@@ -215,15 +268,7 @@ export function ReplanModal({
       return;
     }
     setBusy(true);
-    setMessages(prev => [
-      ...prev,
-      {
-        id: `${Date.now()}-fu`,
-        role: 'user',
-        content: `Ricalcolo da zero con: "${originalText}"`,
-        timestamp: Date.now(),
-      },
-    ]);
+    setBusyLabel('Ricalcolo completo del piano da inizio orizzonte… (~25 s)');
     try {
       const res = await fetch('/api/reschedule-fresh', {
         method: 'POST',
@@ -231,9 +276,11 @@ export function ReplanModal({
         body: JSON.stringify({
           slug: companySlug,
           message: originalText,
-          // Wave 16.4 HIGH-3 fix — thread baseline so the BFF can build
-          // a meaningful solution_context for the extractor (machines,
-          // operators, orders). Without this the C4 HIT path is dead.
+          // Wave 16.4 HIGH-3 / Wave 16.5 B3 — thread the baseline so the BFF
+          // can build a non-empty SolutionContext (machines, machine_aliases,
+          // orders) for the extractor. Note: we intentionally do NOT send
+          // currentTimeMin — day-0 is deadline-anchored, not wall-clock, so a
+          // derived cutoff would be wrong (see the note above loadStored).
           baselineSolution: originalSolution,
         }),
       });
@@ -245,6 +292,10 @@ export function ReplanModal({
         ok: boolean;
         code?: string;
         rationale?: string;
+        confirmationMessage?: string;
+        cutoff_min?: number | null;
+        day_anchor?: number | null;
+        frozen_count?: number;
         result?: {
           status: string;
           method: string;
@@ -255,27 +306,64 @@ export function ReplanModal({
           cost_usd: number;
         };
       };
-      if (!payload.ok || !payload.result) {
-        const detail = payload.rationale ?? payload.code ?? 'estrazione vincolo fallita';
+      // Wave 16.5-RE2 — ask-flow. The utterance carries a relative date
+      // ("oggi"/"domani") but no explicit plan-day. We CANNOT freeze the past
+      // without knowing which day it is (day-0 is deadline-anchored, not the
+      // clock — TD-030), so ask instead of guessing, and do NOT recalculate.
+      if (!payload.ok && payload.code === 'needs_day') {
         setMessages(prev => [
           ...prev,
           {
             id: `${Date.now()}-fa`,
             role: 'assistant',
-            content: `Impossibile ricalcolare da zero: ${detail}. Riformula la richiesta in modo piu specifico.`,
+            content:
+              'Che giorno è oggi nel piano? (es. "siamo al giorno 2") — così congelo i giorni già fatti e ricalcolo solo da oggi in poi.',
             timestamp: Date.now(),
-            action: 'error',
+            action: 'clarification',
+          },
+        ]);
+        return;
+      }
+      if (!payload.ok || !payload.result) {
+        // gray_zone carries a confirmation prompt; miss carries a rationale.
+        const detail = payload.confirmationMessage ?? payload.rationale ?? payload.code ?? 'estrazione vincolo fallita';
+        setMessages(prev => [
+          ...prev,
+          {
+            id: `${Date.now()}-fa`,
+            role: 'assistant',
+            content: `Non sono riuscito a ricalcolare il piano: ${detail}. Riformula la richiesta in modo piu specifico (es. "Macchina M1 ferma oggi").`,
+            timestamp: Date.now(),
+            action: payload.code === 'extract_gray_zone' ? 'clarification' : 'error',
           },
         ]);
         return;
       }
       const r = payload.result;
+      // Message reflects what actually happened. The "giorni precedenti
+      // congelati" claim MUST be gated on the ACTUAL frozen_count the BFF
+      // returns, not on day_anchor alone: the defensive path (reschedule-fresh
+      // #9) can return day_anchor>=2 with frozen_count=0 / cutoff_min=null when
+      // the baseline lacks time_config.day_length_min — anchor known, but
+      // nothing was frozen. Claiming a freeze there lies to the manager (devil
+      // M-1). So: freeze claim only when frozen_count>0; anchor-but-no-freeze
+      // says so explicitly; no anchor → full-horizon replan (TD-030).
+      const frozenCount = payload.frozen_count ?? 0;
+      const hasAnchor = typeof payload.day_anchor === 'number' && payload.day_anchor >= 2;
+      let reschedMsg: string;
+      if (hasAnchor && frozenCount > 0) {
+        reschedMsg = `Piano ricalcolato dal giorno ${payload.day_anchor} (giorni precedenti congelati). Stato: ${r.status}.`;
+      } else if (hasAnchor) {
+        reschedMsg = `Piano ricalcolato dal giorno ${payload.day_anchor} (ricalcolo completo, nessun giorno congelato). Stato: ${r.status}.`;
+      } else {
+        reschedMsg = `Piano ricalcolato da inizio orizzonte. Stato: ${r.status}.`;
+      }
       setMessages(prev => [
         ...prev,
         {
           id: `${Date.now()}-fa`,
           role: 'assistant',
-          content: `Piano ricalcolato da zero. Stato: ${r.status}.`,
+          content: reschedMsg,
           timestamp: Date.now(),
           action: 'reschedule',
         },
@@ -295,11 +383,27 @@ export function ReplanModal({
       const msg = err instanceof Error ? err.message : 'Errore di rete';
       setMessages(prev => [
         ...prev,
-        { id: `${Date.now()}-fe`, role: 'assistant', content: `Errore ricalcolo da zero: ${msg}`, timestamp: Date.now(), action: 'error' },
+        { id: `${Date.now()}-fe`, role: 'assistant', content: `Errore ricalcolo del piano: ${msg}`, timestamp: Date.now(), action: 'error' },
       ]);
     } finally {
       setBusy(false);
     }
+  };
+
+  // Wave 16.4 C4 fallback button — adds its own "Ricalcolo da zero" framing
+  // message, then delegates to the shared fresh-solve routine.
+  const handleFreshReschedule = async (originalText: string) => {
+    if (busy) return;
+    setMessages(prev => [
+      ...prev,
+      {
+        id: `${Date.now()}-fu`,
+        role: 'user',
+        content: `Ricalcolo da zero con: "${originalText}"`,
+        timestamp: Date.now(),
+      },
+    ]);
+    await runFreshReschedule(originalText);
   };
 
   return (
@@ -323,7 +427,7 @@ export function ReplanModal({
               <div>
                 <h2 className="text-base font-bold text-foreground">Ripianifica</h2>
                 <p className="text-[11px] text-muted-foreground">
-                  Warm-start • {companySlug ?? 'nessuna azienda'}
+                  {usesFreshSolve ? 'Ricalcolo completo' : 'Warm-start'} • {companySlug ?? 'nessuna azienda'}
                 </p>
               </div>
               <div className="flex items-center gap-1">
@@ -378,7 +482,7 @@ export function ReplanModal({
                 <div className="flex items-start">
                   <div className="bg-accent/70 rounded-xl px-3 py-2 rounded-bl-sm flex items-center gap-2">
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
-                    <span className="text-xs text-muted-foreground">Ricalcolo in corso…</span>
+                    <span className="text-xs text-muted-foreground">{busyLabel}</span>
                   </div>
                 </div>
               )}

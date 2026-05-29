@@ -28,7 +28,13 @@ const BodySchema = z.object({
   // re-validate the internal `solution.schedule[]` here — the candidate
   // was already validated by the solver inside apply-whatif.
   candidateSolution: z.unknown(),
-  candidateKpis: z.record(z.string(), z.number()),
+  // KPIs are display-only audit echo. Most are flat numbers, but the FJSP
+  // solver also emits nested dicts (e.g. carico_macchine: {M01: 703, ...}).
+  // Accept either so a nested KPI does not 400 the whole accept.
+  candidateKpis: z.record(
+    z.string(),
+    z.union([z.number(), z.record(z.string(), z.number())]),
+  ),
   warnings: z.array(z.string()).optional().default([]),
   intentId: z.string().optional(),
   strategy: z.enum(['A', 'B', 'C']).optional(),

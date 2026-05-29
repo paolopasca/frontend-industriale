@@ -23,25 +23,58 @@ function extractMachines(fasi: Array<Record<string, unknown>>): string[] {
   return [...seen];
 }
 
-function buildMachineAliases(machines: string[]): Record<string, string> {
-  const aliases: Record<string, string> = {};
-  for (const m of machines) {
-    // Case-folding alias so backend extractor can match lowercase queries.
-    const lower = m.toLowerCase();
-    if (lower !== m) aliases[lower] = m;
+export function buildMachineAliases(machines: string[]): Record<string, string> {
+  // Collision-safe alias builder. The backend extractor resolves an entity
+  // ("m1") only via an exact (case-insensitive) match in `machines` OR a key
+  // in this map. When two machines would claim the same alias we DROP it
+  // rather than let last-write-wins fabricate a wrong resolution — an
+  // ambiguous alias is worse than a GRAY "?" (the manager just re-phrases).
+  const proposals = new Map<string, string>(); // aliasKey -> canonical
+  const ambiguous = new Set<string>();
+  const add = (key: string, canonical: string) => {
+    if (ambiguous.has(key)) return;
+    const existing = proposals.get(key);
+    if (existing !== undefined && existing !== canonical) {
+      proposals.delete(key);
+      ambiguous.add(key);
+      return;
+    }
+    proposals.set(key, canonical);
+  };
 
-    // NL aliases: "linea N" / "macchina N" / "machine N" → exact canonical string.
-    // Extract first integer from canonical name and build common Italian/English phrasings.
-    // Value is always one of the strings in machines[] — never fabricated.
+  for (const m of machines) {
+    // Case-folding alias so the extractor matches lowercase queries.
+    const lower = m.toLowerCase();
+    if (lower !== m) add(lower, m);
+
+    // Compact forms that strip the separator and (de-)pad the number, so a
+    // canonical "M-001" also resolves "m1", "m01", "m001", "m-1" — the way
+    // managers actually type. Value is always one of machines[]; never
+    // fabricated. Devil/be-temporal Wave 16.5: with machines=["M-001"] alone,
+    // "m1" fell to GRAY because no such alias existed, defeating the HIT path.
+    const prefixNum = m.match(/^([A-Za-z]+)\D*?(\d+)$/);
+    if (prefixNum) {
+      const prefix = prefixNum[1].toLowerCase();
+      const n = parseInt(prefixNum[2], 10);
+      if (Number.isFinite(n)) {
+        const raw = prefixNum[2]; // preserve original padding, e.g. "001"
+        add(`${prefix}${n}`, m); // m1
+        add(`${prefix}${raw}`, m); // m001 (no separator, original padding)
+        add(`${prefix}-${n}`, m); // m-1
+        add(`${prefix} ${n}`, m); // "m 1"
+      }
+    }
+
+    // NL aliases: "linea N" / "macchina N" / "machine N".
     const numMatch = m.match(/(\d+)/);
     if (numMatch) {
       const n = parseInt(numMatch[1], 10);
-      aliases[`linea ${n}`] = m;
-      aliases[`macchina ${n}`] = m;
-      aliases[`machine ${n}`] = m;
+      add(`linea ${n}`, m);
+      add(`macchina ${n}`, m);
+      add(`machine ${n}`, m);
     }
   }
-  return aliases;
+  return Object.fromEntries(proposals);
 }
 
 function extractOrders(commesse: Record<string, unknown>): string[] {
