@@ -28,6 +28,68 @@ const WELCOME: Message = {
   timestamp: Date.now(),
 };
 
+// Wave 16.5 B1 (devil-advocate HIGH) — derive "now" in baseline-relative
+// minutes so /api/reschedule-fresh can freeze phases that already ran today.
+// Without this, a plain "M1 è rotta" (no temporal phrase) yields no cutoff →
+// the solver replans from minute 0 and reshuffles work already completed this
+// morning, exactly the regression the What-If panel avoids.
+//
+// Model-minute 0 == company opening (company_start_hour) on time_config
+// start_date. We anchor on time_config first, then fall back to the earliest
+// fase.start_datetime in the baseline. Returns null when neither anchor is
+// derivable — the caller then omits currentTimeMin so the BFF skips the
+// freeze rather than silently sending 0 (which would also mean "no lock").
+export function deriveCurrentTimeMin(baseline: unknown, now: number = Date.now()): number | null {
+  const anchorMs = baselineStartMs(baseline);
+  if (anchorMs === null) return null;
+  const rel = Math.round((now - anchorMs) / 60_000);
+  // A negative or zero offset means the schedule hasn't started yet (or the
+  // clock/anchor disagree) — nothing has run, so there is nothing to freeze.
+  return rel > 0 ? rel : null;
+}
+
+export function baselineStartMs(baseline: unknown): number | null {
+  if (!baseline || typeof baseline !== 'object') return null;
+  const root = baseline as Record<string, unknown>;
+
+  // Preferred anchor: time_config.start_date ("YYYY-MM-DD") + company opening.
+  const tc = root.time_config;
+  if (tc && typeof tc === 'object') {
+    const t = tc as Record<string, unknown>;
+    const startDate = typeof t.start_date === 'string' ? t.start_date : null;
+    const startHour = typeof t.company_start_hour === 'number' ? t.company_start_hour : 0;
+    if (startDate && /^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+      const hh = String(Math.max(0, Math.min(23, Math.trunc(startHour)))).padStart(2, '0');
+      const ms = Date.parse(`${startDate}T${hh}:00:00`);
+      if (Number.isFinite(ms)) return ms;
+    }
+  }
+
+  // Fallback: earliest fase.start_datetime across the baseline. Handles both
+  // the flat-fasi envelope and the raw { solution: { COM: { fasi } } } shape.
+  let earliest: number | null = null;
+  const visitFase = (fase: unknown): void => {
+    if (!fase || typeof fase !== 'object') return;
+    const dt = (fase as Record<string, unknown>).start_datetime;
+    if (typeof dt === 'string') {
+      const ms = Date.parse(dt);
+      if (Number.isFinite(ms) && (earliest === null || ms < earliest)) earliest = ms;
+    }
+  };
+  const flatFasi = root.fasi;
+  if (Array.isArray(flatFasi)) {
+    for (const f of flatFasi) visitFase(f);
+  }
+  const inner = root.solution ?? root.commesse;
+  if (inner && typeof inner === 'object') {
+    for (const job of Object.values(inner as Record<string, unknown>)) {
+      const fasi = job && typeof job === 'object' ? (job as Record<string, unknown>).fasi : null;
+      if (Array.isArray(fasi)) for (const f of fasi) visitFase(f);
+    }
+  }
+  return earliest;
+}
+
 function loadStored(slug: string | null): Message[] {
   if (!slug) return [WELCOME];
   try {
@@ -254,6 +316,11 @@ export function ReplanModal({
     }
     setBusy(true);
     setBusyLabel('Ricalcolo completo del piano… (~25 s)');
+    // Wave 16.5 B1 (devil-advocate HIGH) — "now" in baseline-relative minutes.
+    // Sent only when derivable; omitting it (null) tells the BFF to skip the
+    // freeze rather than lock from minute 0. With it, phases already completed
+    // this morning stay pinned and only future work is replanned.
+    const currentTimeMin = deriveCurrentTimeMin(originalSolution);
     try {
       const res = await fetch('/api/reschedule-fresh', {
         method: 'POST',
@@ -266,6 +333,9 @@ export function ReplanModal({
           // orders) for the extractor and a frozen-window from the baseline
           // phases. Without it the HIT path and the freeze both collapse.
           baselineSolution: originalSolution,
+          // Freeze already-elapsed work. cushionMin defaults to 30 in the BFF
+          // BodySchema, so we only need to forward currentTimeMin.
+          ...(currentTimeMin !== null ? { currentTimeMin } : {}),
         }),
       });
       if (!res.ok) {
