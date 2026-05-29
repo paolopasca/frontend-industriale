@@ -293,6 +293,9 @@ export function ReplanModal({
         code?: string;
         rationale?: string;
         confirmationMessage?: string;
+        cutoff_min?: number | null;
+        day_anchor?: number | null;
+        frozen_count?: number;
         result?: {
           status: string;
           method: string;
@@ -303,6 +306,24 @@ export function ReplanModal({
           cost_usd: number;
         };
       };
+      // Wave 16.5-RE2 — ask-flow. The utterance carries a relative date
+      // ("oggi"/"domani") but no explicit plan-day. We CANNOT freeze the past
+      // without knowing which day it is (day-0 is deadline-anchored, not the
+      // clock — TD-030), so ask instead of guessing, and do NOT recalculate.
+      if (!payload.ok && payload.code === 'needs_day') {
+        setMessages(prev => [
+          ...prev,
+          {
+            id: `${Date.now()}-fa`,
+            role: 'assistant',
+            content:
+              'Che giorno è oggi nel piano? (es. "siamo al giorno 2") — così congelo i giorni già fatti e ricalcolo solo da oggi in poi.',
+            timestamp: Date.now(),
+            action: 'clarification',
+          },
+        ]);
+        return;
+      }
       if (!payload.ok || !payload.result) {
         // gray_zone carries a confirmation prompt; miss carries a rationale.
         const detail = payload.confirmationMessage ?? payload.rationale ?? payload.code ?? 'estrazione vincolo fallita';
@@ -319,15 +340,19 @@ export function ReplanModal({
         return;
       }
       const r = payload.result;
+      // Message reflects what actually happened: when a day anchor froze the
+      // past, say so ("dal giorno N"); otherwise it was a full-horizon replan
+      // (the documented TD-030 case when no anchor is available).
+      const reschedMsg =
+        typeof payload.day_anchor === 'number' && payload.day_anchor >= 2
+          ? `Piano ricalcolato dal giorno ${payload.day_anchor} (giorni precedenti congelati). Stato: ${r.status}.`
+          : `Piano ricalcolato da inizio orizzonte. Stato: ${r.status}.`;
       setMessages(prev => [
         ...prev,
         {
           id: `${Date.now()}-fa`,
           role: 'assistant',
-          // Be explicit that this is a full replan from the horizon start, not
-          // a warm patch of the current plan — the manager should know the
-          // earlier part of the schedule may have moved (no frozen window).
-          content: `Piano ricalcolato da inizio orizzonte. Stato: ${r.status}.`,
+          content: reschedMsg,
           timestamp: Date.now(),
           action: 'reschedule',
         },

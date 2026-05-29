@@ -104,6 +104,34 @@ function contextInput(baseline: unknown): unknown {
   };
 }
 
+/**
+ * Wave 16.5-RE2 — the solver working-day length (model-minutes, e.g. 960 for
+ * 06:00-22:00) from the baseline's time_config. This is the ONLY correct unit
+ * for the day_anchor cutoff: the model axis compresses nights, so a calendar
+ * 1440 would over-freeze (TD-031). Returns null when absent → caller skips the
+ * freeze rather than computing a bogus cutoff.
+ */
+function dayLengthMinFromBaseline(baseline: unknown): number | null {
+  if (!baseline || typeof baseline !== 'object') return null;
+  const tc = (baseline as Record<string, unknown>).time_config;
+  if (!tc || typeof tc !== 'object') return null;
+  const dl = (tc as Record<string, unknown>).day_length_min;
+  return typeof dl === 'number' && Number.isFinite(dl) && dl > 0 ? dl : null;
+}
+
+/**
+ * Wave 16.5-RE2 — the manager's "siamo al giorno N" anchor, parsed by the
+ * extractor (be-temporal #8) and carried 1-based inside `payload.day_anchor`.
+ * Returns null when absent or not a positive integer. The matching
+ * needs_day_clarification flag (also in payload) is read separately and
+ * short-circuits BEFORE this is used (see handler).
+ */
+function dayAnchorFromPayload(payload: unknown): number | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const n = (payload as Record<string, unknown>).day_anchor;
+  return typeof n === 'number' && Number.isInteger(n) && n >= 1 ? n : null;
+}
+
 export const Route = createFileRoute('/api/reschedule-fresh')({
   server: {
     handlers: {
@@ -166,6 +194,33 @@ export const Route = createFileRoute('/api/reschedule-fresh')({
           );
         }
 
+        // Wave 16.5-RE2 — ask-flow gate. When the extractor signals that the
+        // utterance carries a relative date ("oggi"/"domani") but NO explicit
+        // day anchor, we MUST ask the manager which plan-day it is before
+        // freezing/solving: day-0 is anchored to min(deadline), not the system
+        // clock (TD-030), so the payload's fallback day-0 window is unreliable.
+        //
+        // This check is intentionally placed BEFORE the miss/gray/hit branches
+        // (devil-advocate Option 1): the "needs_day_clarification ⇒ never
+        // resolveTemplate" property is then structural — independent of how the
+        // extractor maps `result` — so a future contract change cannot let an
+        // un-anchored utterance fall through to a blind solve. payload may be
+        // null (MISS), hence optional chaining.
+        if (
+          extracted.payload
+          && typeof extracted.payload === 'object'
+          && (extracted.payload as Record<string, unknown>).needs_day_clarification === true
+        ) {
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              code: 'needs_day',
+              rationale: extracted.rationale,
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+
         if (extracted.result === 'miss') {
           return new Response(
             JSON.stringify({
@@ -197,30 +252,55 @@ export const Route = createFileRoute('/api/reschedule-fresh')({
         const problemType = input.problemType ?? 'fjsp';
 
         // Step 2 — frozen window. Re-solving from scratch must NOT reshuffle
-        // work the shop has already done. Freeze every phase that finishes
-        // at or before the cutoff and let the solver replan the rest.
+        // work the shop has already done. Freeze every phase that finishes at
+        // or before the cutoff and let the solver replan the rest.
         //
-        // cutoff = max(detected future scenario start, currentTimeMin +
-        // cushion). The "da domani torna a funzionare" half of a compound
-        // utterance pushes the boundary to the start of day 2 so the solver
-        // can place work around the unavailability window without disturbing
-        // today's committed schedule. detectScenarioStartMin returns null
-        // when no temporal phrase is present (the plain "ferma adesso" case),
-        // in which case the legacy currentTime+cushion cutoff applies.
-        const detectedScenarioStart = detectScenarioStartMin(input.message);
-        const legacyCutoff =
-          input.currentTimeMin !== undefined
-            ? input.currentTimeMin + input.cushionMin
-            : undefined;
-        const cutoffMin =
-          detectedScenarioStart !== null && detectedScenarioStart > 0
-            ? legacyCutoff !== undefined
-              ? Math.max(detectedScenarioStart, legacyCutoff)
-              : detectedScenarioStart
-            : legacyCutoff;
+        // Wave 16.5-RE2 — PRIMARY path: the manager's explicit day anchor
+        // ("siamo al giorno N", 1-based) → freeze the completed days 1..N-1.
+        // cutoffMin = (N-1) × day_length_min. day_length_min comes from the
+        // baseline's time_config (e.g. 960 for a 16h day), NOT 1440 — the model
+        // axis compresses nights, so a calendar day would over-freeze half of
+        // day N (TD-031). We deliberately do NOT reuse detectScenarioStartMin
+        // for the anchor, since it hardcodes DAY_MIN=1440.
+        //   day_anchor=1 → cutoff 0 → freeze nothing (we're at the start).
+        //   day_anchor=2 → cutoff 1×dl → freeze day 1 (end_min <= dl).
+        //
+        // FALLBACK path (no day_anchor): keep the Wave 16.4/16.5-B3 behaviour —
+        // a "domani"-style phrase or an explicit currentTimeMin. Without either
+        // there is no cutoff (full-horizon replan), the documented TD-030 limit.
+        const dayAnchor = dayAnchorFromPayload(extracted.payload);
+        const dayLengthMin = dayLengthMinFromBaseline(input.baselineSolution);
+
+        let cutoffMin: number | undefined;
+        let cutoffSource: 'day_anchor' | 'scenario_or_clock' | 'none' = 'none';
+        if (dayAnchor !== null) {
+          // An explicit day anchor is authoritative. Only the (N-1)*day_length
+          // formula is correct here — so when day_length is unknown we skip the
+          // freeze rather than fall through to detectScenarioStartMin, which
+          // would RE-parse "giorno 2" from the text with the wrong calendar
+          // DAY_MIN=1440 unit (TD-031) and produce a bogus cutoff.
+          if (dayLengthMin !== null) {
+            cutoffMin = (dayAnchor - 1) * dayLengthMin;
+            cutoffSource = 'day_anchor';
+          }
+          // else: cutoffMin stays undefined, cutoffSource 'none' → no freeze.
+        } else {
+          const detectedScenarioStart = detectScenarioStartMin(input.message);
+          const legacyCutoff =
+            input.currentTimeMin !== undefined
+              ? input.currentTimeMin + input.cushionMin
+              : undefined;
+          cutoffMin =
+            detectedScenarioStart !== null && detectedScenarioStart > 0
+              ? legacyCutoff !== undefined
+                ? Math.max(detectedScenarioStart, legacyCutoff)
+                : detectedScenarioStart
+              : legacyCutoff;
+          if (cutoffMin !== undefined) cutoffSource = 'scenario_or_clock';
+        }
 
         const frozenPhases: FrozenPhase[] =
-          cutoffMin !== undefined
+          cutoffMin !== undefined && cutoffMin > 0
             ? buildFrozenPhases(baselineCommessaMap(input.baselineSolution), cutoffMin)
             : [];
 
@@ -241,6 +321,10 @@ export const Route = createFileRoute('/api/reschedule-fresh')({
               code: 'solved_fresh',
               extracted_pattern_id: extracted.pattern_id,
               cutoff_min: cutoffMin ?? null,
+              cutoff_source: cutoffSource,
+              // Echo the resolved day anchor so the client can render
+              // "ricalcolato dal giorno N (giorni precedenti congelati)".
+              day_anchor: dayAnchor,
               frozen_count: frozenPhases.length,
               result: {
                 status: solveResult.status,

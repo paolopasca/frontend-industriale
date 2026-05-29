@@ -124,4 +124,67 @@ describe('ReplanModal fresh-solve primary path (real caller shape)', () => {
       expect(screen.getByText(/ricalcolato da inizio orizzonte/i)).toBeInTheDocument(),
     );
   });
+
+  // Wave 16.5-RE2 — ask-flow. When the BFF returns code 'needs_day', the modal
+  // must ask which plan-day it is and NOT propagate any result to the
+  // dashboard (no recalculation). Mirrors the BFF guarantee that no solve ran.
+  it('asks for the plan-day and does NOT apply a result on needs_day', async () => {
+    const onResult = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: false, code: 'needs_day', rationale: 'manca il giorno' }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal open onClose={() => {}} companySlug="acme" originalSolution={BASELINE} onResult={onResult} />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'm1 rotta oggi');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/che giorno è oggi nel piano/i)).toBeInTheDocument(),
+    );
+    // No dashboard update — the manager must answer the day first.
+    expect(onResult).not.toHaveBeenCalled();
+  });
+
+  // Wave 16.5-RE2 — when a day anchor froze the past, the reply names the day
+  // so the manager knows the earlier days were preserved (not reshuffled).
+  it('reports "dal giorno N" when the BFF resolved a day_anchor', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          code: 'solved_fresh',
+          cutoff_min: 960,
+          cutoff_source: 'day_anchor',
+          day_anchor: 2,
+          frozen_count: 3,
+          result: {
+            status: 'OPTIMAL', method: 'deterministic-template', solution: {},
+            kpis: {}, objective_value: 0, warnings: [], cost_usd: 0,
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal open onClose={() => {}} companySlug="acme" originalSolution={BASELINE} onResult={() => {}} />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'siamo al giorno 2, m1 rotta');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/ricalcolato dal giorno 2/i)).toBeInTheDocument(),
+    );
+  });
 });

@@ -271,4 +271,213 @@ describe('POST /api/reschedule-fresh', () => {
     // "domani" → 1*1440, max(1440, 60+30) = 1440.
     expect(body.cutoff_min).toBe(1440);
   });
+
+  // ── Wave 16.5-RE2 — day_anchor cutoff (the real "freeze the past" fix) ──
+
+  // day_anchor=N → cutoff = (N-1) × day_length_min, using the COMPRESSED model
+  // day length from time_config (NOT calendar 1440 — that is TD-031). With
+  // day_length=960, "siamo al giorno 2" → cutoff 960 → freeze all of day 1.
+  it('day_anchor=2 freezes day 1 using (N-1)*day_length_min (960, NOT 1440)', async () => {
+    vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
+      result: 'hit',
+      confidence: 0.95,
+      payload: {
+        day_anchor: 2,
+        unavailable_machines: { 'M-1': [{ start_min: 960, end_min: 1920, date: '2026-06-02' }] },
+      },
+      rationale: 'giorno 2, m1 rotta',
+      pattern_id: 'machine_unavailability_v3',
+      confirmation_message: null,
+    });
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL', method: 'deterministic-template', solution: {},
+          kpis: {}, objective_value: 0, warnings: [], cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const baselineSolution = {
+      time_config: { start_date: '2026-06-01', company_start_hour: 6, day_length_min: 960 },
+      solution: {
+        'COM-001': {
+          fasi: [
+            // day 1: ends at 900 <= cutoff(960) → frozen
+            { operazione: 'taglio', macchina: 'M-1', operatore: 'W-1', start_min: 0, end_min: 900 },
+            // straddles into day 2: starts 900 < 960 < 1500 → NOT frozen
+            { operazione: 'finitura', macchina: 'M-2', operatore: 'W-2', start_min: 900, end_min: 1500 },
+          ],
+        },
+      },
+    };
+
+    const res = await invokeRoute(
+      makeRequest({ slug: 'acme', message: 'siamo al giorno 2, m1 rotta', baselineSolution }, 'ip-fresh-anchor2'),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // The crux: 1×960, NOT 1×1440.
+    expect(body.cutoff_min).toBe(960);
+    expect(body.cutoff_source).toBe('day_anchor');
+    expect(body.day_anchor).toBe(2);
+    expect(body.frozen_count).toBe(1);
+
+    const solveBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(solveBody.cutoff_min).toBe(960);
+    expect(solveBody.force_cold_start).toBe(true);
+    expect(solveBody.frozen_phases).toHaveLength(1);
+    // Identity guard (devil-advocate): the frozen phase pins the EXACT baseline
+    // coordinates, so day-1 work cannot be reshuffled by the re-solve.
+    expect(solveBody.frozen_phases[0]).toMatchObject({
+      job_id: 'COM-001',
+      machine_id: 'M-1',
+      start_min: 0,
+      end_min: 900,
+      seq: 1,
+    });
+  });
+
+  // Off-by-one: day_anchor=1 == we are at the first day → nothing completed →
+  // cutoff 0 → no frozen phases (buildFrozenPhases returns [] for cutoff<=0).
+  it('day_anchor=1 yields cutoff 0 and freezes nothing', async () => {
+    vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
+      result: 'hit',
+      confidence: 0.95,
+      payload: { day_anchor: 1, unavailable_machines: { 'M-1': [{ start_min: 0, end_min: 480, date: '2026-06-01' }] } },
+      rationale: 'giorno 1',
+      pattern_id: 'machine_unavailability_v3',
+      confirmation_message: null,
+    });
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL', method: 'deterministic-template', solution: {},
+          kpis: {}, objective_value: 0, warnings: [], cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const baselineSolution = {
+      time_config: { day_length_min: 960 },
+      solution: { 'COM-001': { fasi: [{ macchina: 'M-1', start_min: 0, end_min: 480 }] } },
+    };
+    const res = await invokeRoute(
+      makeRequest({ slug: 'acme', message: 'siamo al giorno 1, m1 rotta', baselineSolution }, 'ip-fresh-anchor1'),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.cutoff_min).toBe(0);
+    expect(body.frozen_count).toBe(0);
+    // cutoff 0 → no frozen_phases forwarded.
+    const solveBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect('frozen_phases' in solveBody).toBe(false);
+  });
+
+  // day_anchor=3 with day_length=960 → cutoff 1920 (days 1+2 frozen).
+  it('day_anchor=3 yields cutoff = 2*day_length_min', async () => {
+    vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
+      result: 'hit',
+      confidence: 0.95,
+      payload: { day_anchor: 3, unavailable_machines: { 'M-1': [{ start_min: 1920, end_min: 2880, date: '2026-06-03' }] } },
+      rationale: 'giorno 3',
+      pattern_id: 'machine_unavailability_v3',
+      confirmation_message: null,
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL', method: 'deterministic-template', solution: {},
+          kpis: {}, objective_value: 0, warnings: [], cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    ));
+    const res = await invokeRoute(
+      makeRequest(
+        { slug: 'acme', message: 'siamo al giorno 3, m1 rotta', baselineSolution: { time_config: { day_length_min: 960 }, solution: {} } },
+        'ip-fresh-anchor3',
+      ),
+    );
+    const body = await res.json();
+    expect(body.cutoff_min).toBe(1920);
+  });
+
+  // Ask-flow gate (devil-advocate Option 1): needs_day_clarification → the
+  // route returns code 'needs_day' and NEVER calls resolveTemplate. This is the
+  // structural guarantee that an un-anchored utterance cannot trigger a blind
+  // solve that reshuffles the past.
+  it('needs_day_clarification short-circuits BEFORE any solve', async () => {
+    vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
+      result: 'hit',
+      confidence: 0.9,
+      payload: {
+        needs_day_clarification: true,
+        // A fallback day-0 window may be present — must be ignored, not solved.
+        unavailable_machines: { 'M-1': [{ start_min: 0, end_min: 960, date: '2026-06-01' }] },
+      },
+      rationale: 'manca il giorno',
+      pattern_id: 'machine_unavailability_v3',
+      confirmation_message: null,
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await invokeRoute(
+      makeRequest(
+        { slug: 'acme', message: 'm1 rotta oggi', baselineSolution: { time_config: { day_length_min: 960 }, solution: {} } },
+        'ip-fresh-needday',
+      ),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.code).toBe('needs_day');
+    // The structural invariant: NO solve was attempted.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // Defensive: day_anchor present but baseline lacks time_config.day_length_min
+  // → cannot compute a correct cutoff → skip the freeze (no bogus 1440), still
+  // solve. Better an un-frozen replan than a wrong-unit freeze.
+  it('day_anchor without day_length_min skips the freeze (no bogus cutoff)', async () => {
+    vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
+      result: 'hit',
+      confidence: 0.95,
+      payload: { day_anchor: 2, unavailable_machines: { 'M-1': [{ start_min: 960, end_min: 1920 }] } },
+      rationale: 'giorno 2 ma niente day_length',
+      pattern_id: 'machine_unavailability_v3',
+      confirmation_message: null,
+    });
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL', method: 'deterministic-template', solution: {},
+          kpis: {}, objective_value: 0, warnings: [], cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await invokeRoute(
+      makeRequest(
+        // No time_config → day_length_min unknown.
+        { slug: 'acme', message: 'siamo al giorno 2, m1 rotta', baselineSolution: { solution: { 'COM-001': { fasi: [{ macchina: 'M-1', start_min: 0, end_min: 900 }] } } } },
+        'ip-fresh-nodl',
+      ),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.cutoff_min).toBeNull();
+    expect(body.cutoff_source).toBe('none');
+    expect(body.frozen_count).toBe(0);
+    // Still solved (just without a frozen window).
+    expect(body.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
