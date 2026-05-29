@@ -31,6 +31,13 @@ interface WhatIfAnalysisProps {
   // we synthesize a solve-template shaped result and hand it back to the
   // parent route so `setBackendResult` swaps the dashboard to the new plan.
   onAcceptResult?: (result: unknown) => void;
+  // Wave 16.5 A3 — the full original backend envelope (status, solution,
+  // kpis, time_config, maintenance, operator_config, …). The apply-whatif
+  // `solved` event only returns solution+kpis; `adaptResult` needs the rest
+  // (time_config for wall-clock labels, maintenance windows, operator
+  // shifts) to render the Gantt/KPI/OperationalPlan. On accept we merge the
+  // candidate's solution+kpis over this so the dashboard refreshes fully.
+  originalBackendResult?: unknown;
 }
 
 interface ChunkPayload { text: string }
@@ -136,6 +143,7 @@ export function WhatIfAnalysis({
   consultationMd,
   dataSchemaMd,
   onAcceptResult,
+  originalBackendResult,
 }: WhatIfAnalysisProps) {
   const [scenario, setScenario] = useState('');
   const [response, setResponse] = useState('');
@@ -589,16 +597,45 @@ export function WhatIfAnalysis({
   }, [resetApplyState]);
 
   const handleAcceptCandidate = useCallback(async () => {
-    // Wave 16.4 A7 — accept the candidate as the new dashboard plan.
-    // The candidate already passed the solver (apply-whatif produced
-    // it), so we just hand it to the parent route after a lightweight
-    // BFF echo for telemetry / audit parity.
+    // Wave 16.5 A3 — accept the candidate as the new dashboard plan.
+    //
+    // The apply-whatif `solved` event only carries solution+kpis. But
+    // `adaptResult` (deterministic-json path) reads time_config (wall-clock
+    // labels), maintenance (down-day shading) and operator_config (operator
+    // shifts) off the result root. Those live only on the ORIGINAL backend
+    // envelope. So we merge the candidate's solution+kpis over the original
+    // full envelope — the result is a shape `adaptResult` consumes whole,
+    // and the Gantt / KPI cards / OperationalPlan all refresh to the
+    // candidate (Wave 16.4 A7 fed it only solution+kpis → degraded render).
     if (!candidateSolution || !candidateKpis || !slug) {
       toast.error('Nessuna soluzione candidate da accettare.');
       return;
     }
+
+    const base =
+      originalBackendResult && typeof originalBackendResult === 'object'
+        ? (originalBackendResult as Record<string, unknown>)
+        : {};
+    const merged: Record<string, unknown> = {
+      ...base,
+      // Swap in the candidate plan; keep status OPTIMAL so the header badge
+      // and adaptResult treat it as a solved plan.
+      status: 'OPTIMAL',
+      solution: candidateSolution,
+      kpis: candidateKpis,
+      warnings: candidateWarnings,
+    };
+
+    // Hand the merged plan to the parent FIRST so the dashboard refreshes
+    // even if the audit echo below fails (the candidate is already valid).
+    onAcceptResult?.(merged);
+    resetApplyState();
+    toast.success('Piano aggiornato con il candidate.');
+
+    // Fire-and-forget audit echo to the BFF (telemetry parity with
+    // apply-whatif). A failure here must NOT roll back the dashboard.
     try {
-      const res = await fetch('/api/accept-candidate', {
+      await fetch('/api/accept-candidate', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -610,21 +647,8 @@ export function WhatIfAnalysis({
           strategy: strategy === 'A' || strategy === 'B' || strategy === 'C' ? strategy : undefined,
         }),
       });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`accept-candidate HTTP ${res.status}: ${text}`);
-      }
-      const payload = (await res.json()) as { result?: unknown };
-      if (!payload?.result) {
-        throw new Error('Risposta accept-candidate priva di result.');
-      }
-      onAcceptResult?.(payload.result);
-      // Reset the diff panel so the dashboard refreshes cleanly.
-      resetApplyState();
-      toast.success('Piano aggiornato con il candidate.');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      toast.error(`Impossibile accettare il candidate: ${msg}`);
+    } catch {
+      // Audit-only; swallow. The plan already updated client-side.
     }
   }, [
     slug,
@@ -634,6 +658,7 @@ export function WhatIfAnalysis({
     intentId,
     strategy,
     onAcceptResult,
+    originalBackendResult,
     resetApplyState,
   ]);
 
