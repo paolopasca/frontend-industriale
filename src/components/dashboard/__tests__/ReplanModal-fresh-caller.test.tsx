@@ -187,4 +187,45 @@ describe('ReplanModal fresh-solve primary path (real caller shape)', () => {
       expect(screen.getByText(/ricalcolato dal giorno 2/i)).toBeInTheDocument(),
     );
   });
+
+  // Wave 16.5 M-1 (devil) — the defensive reschedule-fresh path can return
+  // day_anchor>=2 with frozen_count=0 / cutoff_min=null (baseline lacks
+  // time_config.day_length_min → nothing could be frozen). The reply must NOT
+  // claim "giorni precedenti congelati" then — that lies to the manager. It
+  // must name the day but state plainly that nothing was frozen.
+  it('does NOT claim a freeze when day_anchor>=2 but frozen_count=0', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          code: 'solved_fresh',
+          cutoff_min: null,
+          cutoff_source: 'none',
+          day_anchor: 2,
+          frozen_count: 0,
+          result: {
+            status: 'OPTIMAL', method: 'deterministic-template', solution: {},
+            kpis: {}, objective_value: 0, warnings: [], cost_usd: 0,
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal open onClose={() => {}} companySlug="acme" originalSolution={BASELINE} onResult={() => {}} />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'siamo al giorno 2, m1 rotta');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    // The honest message: names the day, explicitly says nothing was frozen.
+    await waitFor(() =>
+      expect(screen.getByText(/nessun giorno congelato/i)).toBeInTheDocument(),
+    );
+    // The lie must be absent: no "giorni precedenti congelati" claim.
+    expect(screen.queryByText(/giorni precedenti congelati/i)).not.toBeInTheDocument();
+  });
 });

@@ -340,13 +340,24 @@ export function ReplanModal({
         return;
       }
       const r = payload.result;
-      // Message reflects what actually happened: when a day anchor froze the
-      // past, say so ("dal giorno N"); otherwise it was a full-horizon replan
-      // (the documented TD-030 case when no anchor is available).
-      const reschedMsg =
-        typeof payload.day_anchor === 'number' && payload.day_anchor >= 2
-          ? `Piano ricalcolato dal giorno ${payload.day_anchor} (giorni precedenti congelati). Stato: ${r.status}.`
-          : `Piano ricalcolato da inizio orizzonte. Stato: ${r.status}.`;
+      // Message reflects what actually happened. The "giorni precedenti
+      // congelati" claim MUST be gated on the ACTUAL frozen_count the BFF
+      // returns, not on day_anchor alone: the defensive path (reschedule-fresh
+      // #9) can return day_anchor>=2 with frozen_count=0 / cutoff_min=null when
+      // the baseline lacks time_config.day_length_min — anchor known, but
+      // nothing was frozen. Claiming a freeze there lies to the manager (devil
+      // M-1). So: freeze claim only when frozen_count>0; anchor-but-no-freeze
+      // says so explicitly; no anchor → full-horizon replan (TD-030).
+      const frozenCount = payload.frozen_count ?? 0;
+      const hasAnchor = typeof payload.day_anchor === 'number' && payload.day_anchor >= 2;
+      let reschedMsg: string;
+      if (hasAnchor && frozenCount > 0) {
+        reschedMsg = `Piano ricalcolato dal giorno ${payload.day_anchor} (giorni precedenti congelati). Stato: ${r.status}.`;
+      } else if (hasAnchor) {
+        reschedMsg = `Piano ricalcolato dal giorno ${payload.day_anchor} (ricalcolo completo, nessun giorno congelato). Stato: ${r.status}.`;
+      } else {
+        reschedMsg = `Piano ricalcolato da inizio orizzonte. Stato: ${r.status}.`;
+      }
       setMessages(prev => [
         ...prev,
         {
