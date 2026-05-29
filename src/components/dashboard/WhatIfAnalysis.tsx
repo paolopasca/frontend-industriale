@@ -850,7 +850,7 @@ export function WhatIfAnalysis({
                 )}
               </div>
             </div>
-            <ScrollArea className="max-h-[480px]">
+            <ScrollArea className="h-[480px]">
               <div ref={responseRef} className="p-3 text-sm whitespace-pre-wrap break-words leading-relaxed">
                 {response || (streaming ? '' : '')}
                 {streaming && (
