@@ -9,7 +9,6 @@ import { buildAiSolutionEnvelope } from '@/lib/aiInputs';
 import { buildSolutionContext } from '@/lib/solutionContext';
 import {
   buildFrozenPhases,
-  detectScenarioStartMin,
   type FrozenPhase,
 } from '@/server/llm/frozen-window-builder';
 import { resolveTemplate, type ResolveTemplateFrozenPhase } from '@/lib/api';
@@ -265,9 +264,18 @@ export const Route = createFileRoute('/api/reschedule-fresh')({
         //   day_anchor=1 → cutoff 0 → freeze nothing (we're at the start).
         //   day_anchor=2 → cutoff 1×dl → freeze day 1 (end_min <= dl).
         //
-        // FALLBACK path (no day_anchor): keep the Wave 16.4/16.5-B3 behaviour —
-        // a "domani"-style phrase or an explicit currentTimeMin. Without either
-        // there is no cutoff (full-horizon replan), the documented TD-030 limit.
+        // FALLBACK path (no day_anchor): the ONLY legitimate cutoff source is an
+        // explicit currentTimeMin ("freeze up to the wall clock"). Wave 16.5 #6
+        // removed the detectScenarioStartMin(message) fallback that used to live
+        // here: it re-parsed dopodomani/fra-N/giorno-N from the text at calendar
+        // DAY_MIN=1440 (wrong unit: the model axis compresses nights → TD-031)
+        // AND anchored to day-0=wall-clock (wrong: day-0 is deadline-anchored,
+        // see ReplanModal.tsx + B1 eea9dea). It was also UNREACHABLE once the BE
+        // ask-flow gate (_REL_DATE_SCAN_RX) began firing needs_day_clarification
+        // for every relative-date form (oggi/domani/dopodomani/fra-N) without a
+        // day anchor — those short-circuit upstream as gray_zone and never reach
+        // this hit-path. With neither day_anchor nor currentTimeMin → no cutoff
+        // (full-horizon replan), the documented TD-030 limit.
         const dayAnchor = dayAnchorFromPayload(extracted.payload);
         const dayLengthMin = dayLengthMinFromBaseline(input.baselineSolution);
 
@@ -284,20 +292,12 @@ export const Route = createFileRoute('/api/reschedule-fresh')({
             cutoffSource = 'day_anchor';
           }
           // else: cutoffMin stays undefined, cutoffSource 'none' → no freeze.
-        } else {
-          const detectedScenarioStart = detectScenarioStartMin(input.message);
-          const legacyCutoff =
-            input.currentTimeMin !== undefined
-              ? input.currentTimeMin + input.cushionMin
-              : undefined;
-          cutoffMin =
-            detectedScenarioStart !== null && detectedScenarioStart > 0
-              ? legacyCutoff !== undefined
-                ? Math.max(detectedScenarioStart, legacyCutoff)
-                : detectedScenarioStart
-              : legacyCutoff;
-          if (cutoffMin !== undefined) cutoffSource = 'scenario_or_clock';
+        } else if (input.currentTimeMin !== undefined) {
+          cutoffMin = input.currentTimeMin + input.cushionMin;
+          cutoffSource = 'scenario_or_clock';
         }
+        // else: neither day_anchor nor currentTimeMin → cutoffMin undefined,
+        // cutoffSource 'none' → full-horizon replan (TD-030).
 
         const frozenPhases: FrozenPhase[] =
           cutoffMin !== undefined && cutoffMin > 0

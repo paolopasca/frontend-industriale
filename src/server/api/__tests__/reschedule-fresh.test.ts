@@ -232,10 +232,14 @@ describe('POST /api/reschedule-fresh', () => {
     expect(solveBody.frozen_phases[0].seq).toBe(1);
   });
 
-  // Wave 16.5 B3 — a future scenario boundary ("da domani") pushes the cutoff
-  // to the start of day 2, overriding the smaller currentTime+cushion window
-  // so the compound "oggi rotta, da domani torna" intent freezes only today.
-  it('uses the detected future scenario start when larger than currentTime+cushion', async () => {
+  // Wave 16.5 #6 — the no-anchor cutoff comes ONLY from the explicit
+  // currentTimeMin (wall clock), NEVER re-parsed from the message text. The
+  // old code ran detectScenarioStartMin(message) and Math.max'd it with the
+  // clock cutoff, so "da domani" forced 1440 (calendar DAY_MIN, wrong unit +
+  // wrong anchor — TD-031). That fallback is removed: relative-date phrases in
+  // the text are irrelevant here; with currentTimeMin=60 cushionMin=30 the
+  // cutoff is exactly 90, regardless of the "oggi/domani" words in the message.
+  it('no-anchor cutoff is currentTime+cushion only, ignoring relative-date words in the message', async () => {
     vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
       result: 'hit',
       confidence: 0.9,
@@ -268,8 +272,9 @@ describe('POST /api/reschedule-fresh', () => {
     );
     expect(res.status).toBe(200);
     const body = await res.json();
-    // "domani" → 1*1440, max(1440, 60+30) = 1440.
-    expect(body.cutoff_min).toBe(1440);
+    // clock only: 60 + 30 = 90. NOT 1440 (the deleted scenario-text fallback).
+    expect(body.cutoff_min).toBe(90);
+    expect(body.cutoff_source).toBe('scenario_or_clock');
   });
 
   // ── Wave 16.5-RE2 — day_anchor cutoff (the real "freeze the past" fix) ──
@@ -439,6 +444,54 @@ describe('POST /api/reschedule-fresh', () => {
     expect(body.code).toBe('needs_day');
     // The structural invariant: NO solve was attempted.
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // Wave 16.5 #6 — the regression this fix exists for. A relative-date
+  // message ("dopodomani") with NO day_anchor and NO currentTimeMin must NOT
+  // synthesise a cutoff from the text. Pre-fix, detectScenarioStartMin parsed
+  // "dopodomani" → 2*1440 = 2880 and froze ~3 model-days of real shop-floor
+  // work silently (TD-031). Post-fix: no cutoff source at all → full-horizon
+  // replan (cutoff null), and crucially NEVER the calendar 2880. (In prod the
+  // BE ask-flow gate would already have returned gray_zone/needs_day; the mock
+  // forces 'hit' to isolate the FE cutoff logic.)
+  it('no-anchor + no currentTimeMin + "dopodomani" message → no cutoff, never a calendar freeze', async () => {
+    vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
+      result: 'hit',
+      confidence: 0.9,
+      payload: { unavailable_machines: { 'M-1': [{ start_min: 0, end_min: 960 }] } },
+      rationale: 'ok',
+      pattern_id: 'machine_unavailability_v3',
+      confirmation_message: null,
+    });
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL', method: 'deterministic-template', solution: {},
+          kpis: {}, objective_value: 0, warnings: [], cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await invokeRoute(
+      makeRequest(
+        // "dopodomani" + no day_anchor + no currentTimeMin.
+        { slug: 'acme', message: 'sposta com-001 dopodomani', baselineSolution: { time_config: { day_length_min: 960 }, solution: {} } },
+        'ip-fresh-dopodomani',
+      ),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // The crux: NOT 2880, NOT any calendar value — no cutoff source.
+    expect(body.cutoff_min).toBeNull();
+    expect(body.cutoff_source).toBe('none');
+    expect(body.frozen_count).toBe(0);
+    expect(body.ok).toBe(true);
+    // Solve still runs, just full-horizon.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const solveBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(solveBody.cutoff_min ?? null).toBeNull();
   });
 
   // Defensive: day_anchor present but baseline lacks time_config.day_length_min
