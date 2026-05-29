@@ -57,6 +57,32 @@ describe('POST /api/accept-candidate', () => {
     expect(typeof body.accepted_at).toBe('string');
   });
 
+  // Wave 16.5 A2 regression — the FJSP solver emits a nested carico_macchine
+  // dict alongside the flat KPIs (daino fjsp.py). The original
+  // z.record(string, number) rejected it with HTTP 400; the union widening
+  // must accept it AND forward it verbatim into the echoed result.
+  it('accepts nested carico_macchine KPI dict and preserves it (200, not 400)', async () => {
+    const res = await invokeRoute(
+      makeRequest(
+        {
+          slug: 'acme-spa',
+          candidateSolution: { 'COM-001': { fasi: [] } },
+          candidateKpis: {
+            makespan: 703,
+            costo_totale_operatori: 50,
+            costo_totale_setup: 10,
+            carico_macchine: { M01: 703, M02: 540 },
+          },
+        },
+        'ip-accept-candidate-nested-kpi',
+      ),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.result.kpis.carico_macchine).toEqual({ M01: 703, M02: 540 });
+    expect(body.result.kpis.makespan).toBe(703);
+  });
+
   it('rejects invalid body with 400', async () => {
     const res = await invokeRoute(
       makeRequest({ slug: 'acme-spa' }, 'ip-accept-candidate-invalid'),
