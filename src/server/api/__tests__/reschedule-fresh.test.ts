@@ -182,7 +182,7 @@ describe('POST /api/reschedule-fresh', () => {
       confidence: 0.9,
       payload: { unavailable_machines: { 'M-2': [{ start: 1440, end: 1680 }] } },
       rationale: 'ok',
-      pattern_id: 'machine_unavailability_v1',
+      pattern_id: 'machine_unavail_v1',
       confirmation_message: null,
     });
     const fetchMock = vi.fn().mockResolvedValueOnce(
@@ -211,7 +211,9 @@ describe('POST /api/reschedule-fresh', () => {
 
     const res = await invokeRoute(
       makeRequest(
-        { slug: 'acme', message: 'M-2 ferma', baselineSolution, currentTimeMin: 120, cushionMin: 30 },
+        // Realistic HIT shape (devil M-2): an explicit dalle-alle window genuinely
+        // HITs machine_unavail_v1 with no needs_day. "M-2 ferma" alone only GRAYs.
+        { slug: 'acme', message: 'ferma M-2 dalle 14 alle 18', baselineSolution, currentTimeMin: 120, cushionMin: 30 },
         'ip-fresh-frozen',
       ),
     );
@@ -236,16 +238,24 @@ describe('POST /api/reschedule-fresh', () => {
   // currentTimeMin (wall clock), NEVER re-parsed from the message text. The
   // old code ran detectScenarioStartMin(message) and Math.max'd it with the
   // clock cutoff, so "da domani" forced 1440 (calendar DAY_MIN, wrong unit +
-  // wrong anchor — TD-031). That fallback is removed: relative-date phrases in
-  // the text are irrelevant here; with currentTimeMin=60 cushionMin=30 the
-  // cutoff is exactly 90, regardless of the "oggi/domani" words in the message.
-  it('no-anchor cutoff is currentTime+cushion only, ignoring relative-date words in the message', async () => {
+  // wrong anchor — TD-031). That fallback is removed: with currentTimeMin=60
+  // cushionMin=30 the cutoff is exactly 90.
+  //
+  // Devil M-2 / memory feedback_test_realistic_caller_shape: the prior version
+  // of this test mocked result:'hit' for an "...oggi...da domani..." string,
+  // which is an IMPOSSIBLE caller shape — the real BE returns MISS for that
+  // phrase (and, for a resolvable relative date with no anchor, would set
+  // needs_day_clarification and the route would short-circuit before this
+  // cutoff logic). That masked C-1. Use a genuine no-needs_day HIT instead:
+  // "ferma M-1 dalle 14 alle 18" → machine_unavail_v1 HIT, needs_day absent,
+  // an explicit-window intent that legitimately reaches the no-anchor cutoff.
+  it('no-anchor cutoff is currentTime+cushion only (realistic dalle-alle HIT, no needs_day)', async () => {
     vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
       result: 'hit',
       confidence: 0.9,
-      payload: { unavailable_machines: { 'M-1': [{ start: 0, end: 1440 }] } },
+      payload: { unavailable_machines: { 'M-1': [{ start_min: 840, end_min: 1080 }] } },
       rationale: 'ok',
-      pattern_id: 'machine_unavailability_v3',
+      pattern_id: 'machine_unavail_v1',
       confirmation_message: null,
     });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(
@@ -262,12 +272,12 @@ describe('POST /api/reschedule-fresh', () => {
       makeRequest(
         {
           slug: 'acme',
-          message: 'la macchina m1 oggi e in riparazione, da domani torna a funzionare',
+          message: 'ferma M-1 dalle 14 alle 18',
           baselineSolution: { solution: {} },
           currentTimeMin: 60,
           cushionMin: 30,
         },
-        'ip-fresh-tomorrow',
+        'ip-fresh-clockonly',
       ),
     );
     expect(res.status).toBe(200);
@@ -446,21 +456,54 @@ describe('POST /api/reschedule-fresh', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  // Wave 16.5 #6 — the regression this fix exists for. A relative-date
-  // message ("dopodomani") with NO day_anchor and NO currentTimeMin must NOT
-  // synthesise a cutoff from the text. Pre-fix, detectScenarioStartMin parsed
-  // "dopodomani" → 2*1440 = 2880 and froze ~3 model-days of real shop-floor
-  // work silently (TD-031). Post-fix: no cutoff source at all → full-horizon
-  // replan (cutoff null), and crucially NEVER the calendar 2880. (In prod the
-  // BE ask-flow gate would already have returned gray_zone/needs_day; the mock
-  // forces 'hit' to isolate the FE cutoff logic.)
-  it('no-anchor + no currentTimeMin + "dopodomani" message → no cutoff, never a calendar freeze', async () => {
+  // Wave 16.5 #6 — the regression this fix exists for, end-to-end with the
+  // REAL caller shape (devil M-2 / memory feedback_test_realistic_caller_shape).
+  // After the BE gate extension (#3), "sposta com-001 dopodomani" — a relative
+  // date with no day anchor — returns needs_day_clarification=true. The route's
+  // gate (placed before the miss/gray/hit branches) then returns code 'needs_day'
+  // and NEVER reaches the cutoff logic, so the old detectScenarioStartMin
+  // "dopodomani"→2880 calendar over-freeze (TD-031) can no longer occur: the
+  // system ASKS instead. We mock the realistic GRAY+needs_day payload (NOT a
+  // fabricated hit) so this also guards that the gate fires for dopodomani.
+  it('"dopodomani" with no anchor → needs_day (asks), never solves or over-freezes', async () => {
+    vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
+      result: 'gray_zone',
+      confidence: 0.55,
+      payload: { deadline_changes: { 'COM-001': {} }, needs_day_clarification: true },
+      rationale: 'manca il giorno',
+      pattern_id: 'deadline_change_v3',
+      confirmation_message: null,
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await invokeRoute(
+      makeRequest(
+        // "dopodomani" + no day_anchor + no currentTimeMin.
+        { slug: 'acme', message: 'sposta com-001 dopodomani', baselineSolution: { time_config: { day_length_min: 960 }, solution: {} } },
+        'ip-fresh-dopodomani',
+      ),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // Asks the day; crucially NO solve ran → no 2880 calendar freeze possible.
+    expect(body.ok).toBe(false);
+    expect(body.code).toBe('needs_day');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // Companion (FE-isolation): a NON-relative HIT with no day_anchor and no
+  // currentTimeMin reaches the no-anchor branch and yields NO cutoff — the
+  // full-horizon replan (TD-030). This is the path the deleted
+  // detectScenarioStartMin fallback used to corrupt; it must now be a clean
+  // no-freeze. "ferma M-1 dalle 14 alle 18" is a realistic v1 HIT (no needs_day).
+  it('no-anchor + no currentTimeMin (non-relative HIT) → no cutoff, full-horizon solve', async () => {
     vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
       result: 'hit',
       confidence: 0.9,
-      payload: { unavailable_machines: { 'M-1': [{ start_min: 0, end_min: 960 }] } },
+      payload: { unavailable_machines: { 'M-1': [{ start_min: 840, end_min: 1080 }] } },
       rationale: 'ok',
-      pattern_id: 'machine_unavailability_v3',
+      pattern_id: 'machine_unavail_v1',
       confirmation_message: null,
     });
     const fetchMock = vi.fn().mockResolvedValueOnce(
@@ -476,19 +519,16 @@ describe('POST /api/reschedule-fresh', () => {
 
     const res = await invokeRoute(
       makeRequest(
-        // "dopodomani" + no day_anchor + no currentTimeMin.
-        { slug: 'acme', message: 'sposta com-001 dopodomani', baselineSolution: { time_config: { day_length_min: 960 }, solution: {} } },
-        'ip-fresh-dopodomani',
+        { slug: 'acme', message: 'ferma M-1 dalle 14 alle 18', baselineSolution: { time_config: { day_length_min: 960 }, solution: {} } },
+        'ip-fresh-noanchor-noclock',
       ),
     );
     expect(res.status).toBe(200);
     const body = await res.json();
-    // The crux: NOT 2880, NOT any calendar value — no cutoff source.
     expect(body.cutoff_min).toBeNull();
     expect(body.cutoff_source).toBe('none');
     expect(body.frozen_count).toBe(0);
     expect(body.ok).toBe(true);
-    // Solve still runs, just full-horizon.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const solveBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
     expect(solveBody.cutoff_min ?? null).toBeNull();
