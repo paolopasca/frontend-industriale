@@ -72,3 +72,53 @@ describe('buildSolutionContext — alias integration', () => {
     expect(ctx.machine_aliases['m2']).toBe('M-002');
   });
 });
+
+describe('buildSolutionContext — closed-set populates for EVERY originalSolution shape', () => {
+  // Wave 16.6: the what-if route hands buildSolutionContext one of three shapes.
+  // The interpreter's machine/order ENUMS come from ctx.machines / ctx.orders,
+  // so the closed set MUST populate regardless of shape — otherwise the enum is
+  // omitted and every machine/order instruction silently fails the gate. These
+  // pin all three so a future refactor can't quietly starve the interpreter.
+  it('FLAT envelope {fasi:[...]} → machines from the flat fasi[]', () => {
+    const flat = {
+      fasi: [
+        { commessa: 'COM-001', macchina: 'M01', start_min: 0, end_min: 100 },
+        { commessa: 'COM-002', macchina: 'M02', start_min: 0, end_min: 200 },
+      ],
+    };
+    const ctx = buildSolutionContext(flat, {});
+    expect([...ctx.machines].sort()).toEqual(['M01', 'M02']);
+  });
+
+  it('BARE-NESTED map {COM-001:{fasi:[...]}} → BOTH machines and orders', () => {
+    const nested = {
+      'COM-001': { fasi: [{ macchina: 'M01' }], scadenza_min: 2880 },
+      'COM-002': { fasi: [{ macchina: 'M02' }], scadenza_min: 4320 },
+    };
+    const ctx = buildSolutionContext(nested, {});
+    expect([...ctx.machines].sort()).toEqual(['M01', 'M02']);
+    expect([...ctx.orders].sort()).toEqual(['COM-001', 'COM-002']);
+    expect(ctx.order_deadlines).toEqual({ 'COM-001': 2880, 'COM-002': 4320 });
+  });
+
+  it('RAW backend {status, solution:{COM-001:{fasi}}} → machines and orders', () => {
+    const raw = {
+      status: 'OPTIMAL',
+      solution: { 'COM-001': { fasi: [{ macchina: 'M01' }], scadenza_min: 2880 } },
+    };
+    const ctx = buildSolutionContext(raw, {});
+    expect(ctx.machines).toEqual(['M01']);
+    expect(ctx.orders).toEqual(['COM-001']);
+  });
+
+  it('GUARD: a flat envelope with time_config does NOT treat time_config as a commessa', () => {
+    const flatWithCfg = {
+      fasi: [{ commessa: 'COM-001', macchina: 'M01', start_min: 0, end_min: 100 }],
+      time_config: { day_length_min: 1440, start_date: '2026-01-01' },
+    };
+    const ctx = buildSolutionContext(flatWithCfg, {});
+    expect(ctx.machines).toEqual(['M01']);
+    // time_config has no `fasi`, so the bare-nested fallback must skip it.
+    expect(ctx.orders).toEqual([]);
+  });
+});

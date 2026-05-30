@@ -14,11 +14,37 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-function extractMachines(fasi: Array<Record<string, unknown>>): string[] {
-  const seen = new Set<string>();
+function collectMachinesFromFasi(
+  fasi: Array<Record<string, unknown>>,
+  seen: Set<string>,
+): void {
   for (const f of fasi) {
     const m = f.macchina ?? f.machine ?? f.machine_id ?? f.machineId;
     if (typeof m === 'string' && m.trim()) seen.add(m.trim());
+  }
+}
+
+// Wave 16.6: the machine closed set must populate for EVERY originalSolution
+// shape the BFF passes, not just the flat AiSolutionEnvelope. The what-if route
+// hands buildSolutionContext either a flat `{fasi:[...]}`, a nested
+// `{COM-001:{fasi:[...]}}`, or a raw backend `{solution:{COM-001:{fasi}}}`.
+// Pre-fix, extractMachines read ONLY the top-level fasi[], so nested/raw shapes
+// produced machines=[] → the interpreter's machine enum was omitted and every
+// machine instruction silently failed the gate. Harvest from BOTH the flat
+// fasi[] AND each commessa's nested fasi[] so the set is shape-agnostic. Orders
+// already came from the commesse map (extractOrders); now machines mirror that.
+function extractMachines(
+  flatFasi: Array<Record<string, unknown>>,
+  commesse: Record<string, unknown>,
+): string[] {
+  const seen = new Set<string>();
+  collectMachinesFromFasi(flatFasi, seen);
+  for (const jobRaw of Object.values(commesse)) {
+    if (!isObject(jobRaw)) continue;
+    const jobFasi = jobRaw.fasi;
+    if (Array.isArray(jobFasi)) {
+      collectMachinesFromFasi(jobFasi as Array<Record<string, unknown>>, seen);
+    }
   }
   return [...seen];
 }
@@ -137,12 +163,26 @@ function extractShiftTypes(
 //
 // Raw shape (from apply-whatif route): { status, solution: { COM-001: { fasi, scadenza_min }, ... }, kpis }
 // Normalised shape (AiSolutionEnvelope): { commesse: { COM-001: { fasi, ... } }, fasi: [...], ... }
+// Bare-nested shape (what-if originalSolution): { COM-001: { fasi, scadenza_min }, ... }
 function extractCommesse(solution: unknown): Record<string, unknown> {
   if (!isObject(solution)) return {};
   // Normalised AiSolutionEnvelope — commesse field is set by buildAiSolutionEnvelope
   if (isObject(solution.commesse)) return solution.commesse as Record<string, unknown>;
   // Raw backend response — commessa map lives under solution.solution
   if (isObject(solution.solution)) return solution.solution as Record<string, unknown>;
+  // Bare-nested map `{COM-001:{fasi:[...]}}` (the what-if route hands this shape
+  // directly — buildBaselineForRouter flattens it the same way). Only when there
+  // is no top-level fasi[] (flat envelope) and the root's OWN values look like
+  // commessa entries (objects carrying a `fasi` array). Guarded against false
+  // positives: a stray `time_config`/`kpis` key without `fasi` is never treated
+  // as a commessa. Wave 16.6 — without this the bare-nested shape produced an
+  // empty closed set (machines & orders both []), starving the interpreter enum.
+  if (!Array.isArray(solution.fasi)) {
+    const entries = Object.entries(solution).filter(
+      ([, v]) => isObject(v) && Array.isArray((v as { fasi?: unknown }).fasi),
+    );
+    if (entries.length > 0) return Object.fromEntries(entries);
+  }
   return {};
 }
 
@@ -157,7 +197,7 @@ export function buildSolutionContext(
     Array.isArray(envelope?.fasi) ? envelope!.fasi : [];
   const commesse = extractCommesse(solution);
 
-  const machines = extractMachines(fasi);
+  const machines = extractMachines(fasi, commesse);
   const machine_aliases = buildMachineAliases(machines);
   const orders = extractOrders(commesse);
   const order_deadlines = extractOrderDeadlines(commesse);
