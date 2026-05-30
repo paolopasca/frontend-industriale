@@ -76,14 +76,20 @@ async function streamToString(stream: ReadableStream<Uint8Array>): Promise<strin
   return out;
 }
 
-function fakeAnthropicReply(payload: object, usage?: Partial<{
+// Wave 16.6 §A — the managerText path now drives the Haiku instruction-
+// interpreter, which reads a forced `tool_use` block (name 'emit_constraint')
+// whose input is the FLAT entity shape (intent_id + machine_id/order_ids/…),
+// NOT the legacy parseIntent TEXT block with nested `entities`. `input` here is
+// that flat tool input; the gate re-resolves ids against the plan's closed set
+// and builds the canonical rules payload.
+function fakeInterpreterReply(input: object, usage?: Partial<{
   input_tokens: number;
   output_tokens: number;
   cache_read_input_tokens: number;
   cache_creation_input_tokens: number;
 }>) {
   return {
-    content: [{ type: 'text', text: JSON.stringify(payload) }],
+    content: [{ type: 'tool_use', name: 'emit_constraint', input }],
     usage: {
       input_tokens: usage?.input_tokens ?? 200,
       output_tokens: usage?.output_tokens ?? 30,
@@ -161,9 +167,11 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
     // the BFF ships rules.unavailable_machines directly without any
     // dataset_overrides.
     anthropicCreate.mockResolvedValueOnce(
-      fakeAnthropicReply({
+      fakeInterpreterReply({
         intent_id: 'machine_unavailability',
-        entities: { machine_id: 'M01', start_min: 720, end_min: 1080 },
+        machine_id: 'M01',
+        start_min: 720,
+        end_min: 1080,
         confidence: 'high',
       }),
     );
@@ -241,9 +249,9 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
 
   it('Strategy B (order_priority): emits rules.priority_orders without Opus translator', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeAnthropicReply({
+      fakeInterpreterReply({
         intent_id: 'order_priority',
-        entities: { order_ids: ['COM-007'] },
+        order_ids: ['COM-007'],
         confidence: 'high',
       }),
     );
@@ -279,44 +287,24 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
     expect(anthropicCreate).toHaveBeenCalledTimes(1);
   });
 
-  it('Strategy C (unknown intent + low confidence): falls back to Opus translator', async () => {
-    // B-W8-S-04 (2026-05-22 stress-engineer finding): when Haiku is
-    // CONFIDENT the utterance is out-of-catalog (`unknown` + `high`),
-    // the BFF short-circuits aborted_unsupported without paying for
-    // Opus. The cascade still runs when Haiku is UNCERTAIN
-    // (`unknown` + `low`/`medium`) — Opus may rescue the case. This
-    // test pins the rescue path.
-    // First call: Haiku says unknown with low confidence.
-    anthropicCreate
-      .mockResolvedValueOnce(
-        fakeAnthropicReply({
-          intent_id: 'unknown',
-          entities: {},
-          confidence: 'low',
-          fallback_reasoning: 'ambiguo, possibile vincolo non catalogato',
-        }),
-      )
-      .mockResolvedValueOnce(
-        // Second call: Opus translator.
-        fakeAnthropicReply({
-          type: 'block_machine',
-          rules: { unavailable_machines: { M02: [{ start_min: 720, end_min: 1080 }] } },
-          rationale: 'Fermo M02.',
-          confidence: 'high',
-          warnings: [],
-        }),
-      );
-
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat',
-          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: { makespan_min: 3000 },
-          objective_value: 3000, warnings: [], cost_usd: 0,
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      ),
+  it('managerText + unknown intent → aborted_unsupported via interpreter, NO Opus cascade (Wave 16.6)', async () => {
+    // OBSOLETE-PREMISE rewrite (Wave 16.6): the legacy premise was
+    // "managerText + unknown + low confidence → fall back to the Opus
+    // translator (Strategy C)". That cascade no longer exists. When
+    // managerText is set, the route ALWAYS runs the closed-set instruction
+    // interpreter, which is AUTHORITATIVE: an `intent_id:'unknown'` is a
+    // structural reject → `routed` strategy 'unsupported' then
+    // `aborted_unsupported`, and the stream ends WITHOUT ever reaching the
+    // Opus translator. We pin the replacement behaviour with equal rigor:
+    // the interpreter is the ONLY LLM call (no second Opus call), and no
+    // translating/translated/solved event appears.
+    anthropicCreate.mockResolvedValueOnce(
+      fakeInterpreterReply({ intent_id: 'unknown', confidence: 'low' }),
     );
+
+    // No backend call expected — the reject bails before the solver. A
+    // failing fetch impl makes any unexpected call loud.
+    const fetchMock = vi.fn().mockRejectedValue(new Error('unexpected backend call'));
     vi.stubGlobal('fetch', fetchMock);
 
     const res = await invokeRoute(
@@ -329,21 +317,28 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
     const chunks = parseSse(await streamToString(res.body!));
     const events = chunks.map((c) => c.event);
     expect(events).toContain('parsing_intent');
+    expect(events).toContain('intent_parsed');
     expect(events).toContain('routed');
-    expect(events).toContain('translating');
-    expect(events).toContain('translated');
-    expect(events).toContain('solved');
+    expect(events).toContain('aborted_unsupported');
+    // The Opus translator (Strategy C) path must NOT be reached.
+    expect(events).not.toContain('translating');
+    expect(events).not.toContain('translated');
+    expect(events).not.toContain('solving');
+    expect(events).not.toContain('solved');
 
     const routed = chunks.find((c) => c.event === 'routed')!.data as { strategy: string };
-    expect(routed.strategy).toBe('C');
-    expect(anthropicCreate).toHaveBeenCalledTimes(2);
+    expect(routed.strategy).toBe('unsupported');
+
+    // Interpreter only — exactly ONE LLM call, never a second Opus call.
+    expect(anthropicCreate).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('Frozen-window: cutoff is currentTimeMin + cushionMin and frozen_phases reflects baseline', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeAnthropicReply({
+      fakeInterpreterReply({
         intent_id: 'order_priority',
-        entities: { order_ids: ['COM-001'] },
+        order_ids: ['COM-001'],
         confidence: 'high',
       }),
     );
@@ -404,9 +399,9 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
 
   it('F-W7-02 — INFEASIBLE with frozen_phases triggers soft retry + lock_relaxed_to_soft warning', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeAnthropicReply({
+      fakeInterpreterReply({
         intent_id: 'order_priority',
-        entities: { order_ids: ['COM-001'] },
+        order_ids: ['COM-001'],
         confidence: 'high',
       }),
     );
@@ -508,9 +503,9 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
     const pending = new Promise<void>((r) => { release = r; });
     anthropicCreate.mockImplementation(async () => {
       await pending;
-      return fakeAnthropicReply({
+      return fakeInterpreterReply({
         intent_id: 'order_priority',
-        entities: { order_ids: ['COM-001'] },
+        order_ids: ['COM-001'],
         confidence: 'high',
       });
     });
@@ -546,11 +541,13 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
     await streamToString(firstRes.body!);
   });
 
-  it('F-W7-08 — machine_unavailability under Strategy B still emits audit summary', async () => {
+  it('F-W7-08 — machine_unavailability under Strategy B echoes the canonical applied rule (Wave 16.6)', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeAnthropicReply({
+      fakeInterpreterReply({
         intent_id: 'machine_unavailability',
-        entities: { machine_id: 'M02', start_min: 2160, end_min: 2520 },
+        machine_id: 'M02',
+        start_min: 2160,
+        end_min: 2520,
         confidence: 'high',
       }),
     );
@@ -574,22 +571,28 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
     const solved = chunks.find((c) => c.event === 'solved')!.data as {
       dataset_overrides_summary: string[];
       strategy: string;
+      applied_rules: { unavailable_machines?: Record<string, Array<{ start_min: number; end_min: number }>> };
     };
-    // machine_unavailability now routes via rule_addition (Strategy B)
-    // per the team-lead catalog change, but the audit summary still
-    // fires so the manager sees what changed.
+    // OBSOLETE-PREMISE rewrite (Wave 16.6): the legacy premise was that
+    // machine_unavailability under Strategy B populated
+    // `dataset_overrides_summary` (the dead Strategy A audit channel). That
+    // channel is gone — `dataset_overrides_summary` is now always empty. The
+    // REPLACEMENT audit signal is `applied_rules`, the canonical rules slot
+    // the interpreter built; the UI appends it to the ledger. Assert the same
+    // facts (M02 + 2160 + 2520) on that authoritative channel, plus strategy B.
     expect(solved.strategy).toBe('B');
-    expect(Array.isArray(solved.dataset_overrides_summary)).toBe(true);
-    expect(solved.dataset_overrides_summary[0]).toMatch(/M02/);
-    expect(solved.dataset_overrides_summary[0]).toMatch(/2160/);
-    expect(solved.dataset_overrides_summary[0]).toMatch(/2520/);
+    // M02 is already canonical in this fixture's closed set (machines = M01/M02/M03).
+    expect(solved.applied_rules.unavailable_machines).toBeDefined();
+    expect(solved.applied_rules.unavailable_machines!.M02).toEqual([
+      { start_min: 2160, end_min: 2520 },
+    ]);
   });
 
   it('Wave7 envelope: reads locked_count from response.wave7.locked_count and modified_count from apply_rules.length', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeAnthropicReply({
+      fakeInterpreterReply({
         intent_id: 'order_priority',
-        entities: { order_ids: ['COM-001'] },
+        order_ids: ['COM-001'],
         confidence: 'high',
       }),
     );
@@ -636,9 +639,9 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
 
   it('Wave7 envelope: modified_count excludes skipped and passthrough entries (backend caveat)', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeAnthropicReply({
+      fakeInterpreterReply({
         intent_id: 'order_priority',
-        entities: { order_ids: ['COM-001'] },
+        order_ids: ['COM-001'],
         confidence: 'high',
       }),
     );
@@ -690,9 +693,9 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
 
   it('Wave7 envelope: locked_count defaults to 0 when backend returns no wave7 field (legacy/Wave 4.1)', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeAnthropicReply({
+      fakeInterpreterReply({
         intent_id: 'order_priority',
-        entities: { order_ids: ['COM-001'] },
+        order_ids: ['COM-001'],
         confidence: 'high',
       }),
     );
@@ -734,9 +737,9 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
     vi.useFakeTimers();
     try {
       anthropicCreate.mockResolvedValueOnce(
-        fakeAnthropicReply({
+        fakeInterpreterReply({
           intent_id: 'order_priority',
-          entities: { order_ids: ['COM-001'] },
+          order_ids: ['COM-001'],
           confidence: 'high',
         }),
       );
@@ -774,9 +777,9 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
       ));
       // Re-arm Haiku reply for the third request.
       anthropicCreate.mockResolvedValueOnce(
-        fakeAnthropicReply({
+        fakeInterpreterReply({
           intent_id: 'order_priority',
-          entities: { order_ids: ['COM-001'] },
+          order_ids: ['COM-001'],
           confidence: 'high',
         }),
       );

@@ -14,6 +14,29 @@ vi.mock('@/server/llm/extract-constraint-client', () => ({
   extractConstraintFromBackend: vi.fn(),
 }));
 
+// Wave 16.6 §A — on extractor MISS/GRAY the route now falls back to the Haiku
+// instruction-interpreter (interpretInstruction), which calls
+// getAnthropicClient() → new Anthropic(...). Mock the SDK (same FakeAnthropic
+// pattern as the apply-whatif suite) so that fallback doesn't throw
+// "ANTHROPIC_API_KEY not set" or hit the network. `anthropicCreate` returns a
+// forced `tool_use` block (name 'emit_constraint') with a FLAT entity input.
+const anthropicCreate = vi.fn();
+
+vi.mock('@anthropic-ai/sdk', () => {
+  class FakeAnthropic {
+    public messages = { create: anthropicCreate };
+    constructor(_: unknown) { void _; }
+  }
+  return { default: FakeAnthropic };
+});
+
+function fakeInterpreterReply(input: object) {
+  return {
+    content: [{ type: 'tool_use', name: 'emit_constraint', input }],
+    usage: { input_tokens: 100, output_tokens: 40, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+  };
+}
+
 import { extractConstraintFromBackend } from '@/server/llm/extract-constraint-client';
 
 function makeRequest(body: unknown, ip = '127.0.0.1'): Request {
@@ -41,9 +64,12 @@ async function invokeRoute(request: Request): Promise<Response> {
 describe('POST /api/reschedule-fresh', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Required by getAnthropicClient() for the interpreter fallback on MISS/GRAY.
+    process.env.ANTHROPIC_API_KEY = 'test-key';
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.ANTHROPIC_API_KEY;
   });
 
   it('returns solve-template shaped envelope on extract HIT + solve OK', async () => {
@@ -83,7 +109,14 @@ describe('POST /api/reschedule-fresh', () => {
     expect(body.result.kpis).toEqual({ makespan_min: 1500 });
   });
 
-  it('returns extract_miss when the extractor cannot classify', async () => {
+  it('returns extract_miss when BOTH the extractor and the interpreter decline', async () => {
+    // Wave 16.6 §A: on extractor MISS the route now gives the closed-set Haiku
+    // interpreter a second pass. When the interpreter ALSO declines
+    // (intent_id:'unknown' → structural reject) the route still returns
+    // code 'extract_miss', but the rationale is now the interpreter's
+    // manager-facing clarify message (`ix.confirmation_message ??
+    // extracted.rationale`), not the extractor's raw rationale. We assert the
+    // ACTUAL new outcome rather than forcing the old 'vaga' string.
     vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
       result: 'miss',
       confidence: 0.2,
@@ -92,6 +125,9 @@ describe('POST /api/reschedule-fresh', () => {
       pattern_id: null,
       confirmation_message: null,
     });
+    anthropicCreate.mockResolvedValueOnce(
+      fakeInterpreterReply({ intent_id: 'unknown', confidence: 'high' }),
+    );
 
     const res = await invokeRoute(
       makeRequest({ slug: 'acme', message: 'fai qualcosa' }, 'ip-fresh-miss'),
@@ -100,7 +136,12 @@ describe('POST /api/reschedule-fresh', () => {
     const body = await res.json();
     expect(body.ok).toBe(false);
     expect(body.code).toBe('extract_miss');
-    expect(body.rationale).toContain('vaga');
+    // The interpreter supplied the clarify rationale (a non-empty, meaningful
+    // message); it is NOT the extractor's 'vaga' string anymore.
+    expect(typeof body.rationale).toBe('string');
+    expect(body.rationale.length).toBeGreaterThanOrEqual(10);
+    // Exactly one interpreter call was made for the fallback.
+    expect(anthropicCreate).toHaveBeenCalledTimes(1);
   });
 
   it('returns extract_unavailable when extract-constraint backend is down', async () => {

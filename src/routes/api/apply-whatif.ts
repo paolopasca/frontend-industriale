@@ -8,9 +8,97 @@ import {
 import { translateWhatIfToConstraint } from '@/server/llm/constraint-translator';
 import { interpretInstruction } from '@/server/llm/instruction-interpreter';
 import { buildFrozenPhases, detectScenarioStartMin, detectScenarioPhraseMatches, type FrozenPhase } from '@/server/llm/frozen-window-builder';
-import { buildSolutionContext } from '@/lib/solutionContext';
+import { buildSolutionContext, type SolutionContext } from '@/lib/solutionContext';
 import { mergeRuleSlots } from '@/lib/appliedRulesLedger';
+import { resolveMachineAlias, resolveOrderAlias, resolveShiftAlias } from '@/lib/entityResolver';
 import { resolveTemplate } from '@/lib/api';
+
+/**
+ * Wave 16.6 M-4 — re-gate a manager-confirmed gray-zone payload against the
+ * live plan's closed set. The gray pause emitted a payload that was already
+ * gated (interpreter) or translator-produced, but the confirm re-entry receives
+ * that payload back FROM the client (echoed via confirmedPayload). A stale or
+ * tampered client could swap an entity id (e.g. M02 → M99) between the pause and
+ * the confirm to push an off-set entity into the solver — the closed-set
+ * guarantee would then be bypassed on the trust-the-client second pass. So we
+ * re-resolve every machine/order/shift id against the live closed set:
+ *   - valid id (possibly an alias like "m2") → canonicalised in place,
+ *   - off-set / ambiguous id → reject (fail-closed, per
+ *     feedback_closed_set_fail_closed: an empty or non-matching set returns null,
+ *     never accept-all).
+ * Shift ids are only re-gated when the plan exposes a non-empty shift set; an
+ * absent shift closed set means the backend treats an unknown shift key as a
+ * no-op passthrough, so there is no wrong-entity-edited risk to guard there.
+ *
+ * @returns the canonicalised payload, or the first offending raw id.
+ */
+function regateConfirmedRules(
+  payload: Record<string, unknown>,
+  ctx: SolutionContext,
+): { ok: true; payload: Record<string, unknown> } | { ok: false; offending: string } {
+  const out: Record<string, unknown> = { ...payload };
+  const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+
+  // unavailable_machines: { [machineId]: window[] }
+  if (isPlainObject(payload.unavailable_machines)) {
+    const remapped: Record<string, unknown> = {};
+    for (const [mid, windows] of Object.entries(payload.unavailable_machines)) {
+      const canon = resolveMachineAlias(mid, ctx);
+      if (canon === null) return { ok: false, offending: mid };
+      remapped[canon] = windows;
+    }
+    out.unavailable_machines = remapped;
+  }
+
+  // priority_orders: [orderId, ...]
+  if (Array.isArray(payload.priority_orders)) {
+    const remapped: string[] = [];
+    for (const oid of payload.priority_orders) {
+      if (typeof oid !== 'string') return { ok: false, offending: String(oid) };
+      const canon = resolveOrderAlias(oid, ctx);
+      if (canon === null) return { ok: false, offending: oid };
+      remapped.push(canon);
+    }
+    out.priority_orders = remapped;
+  }
+
+  // deadline_changes: { [orderId]: {...} }
+  if (isPlainObject(payload.deadline_changes)) {
+    const remapped: Record<string, unknown> = {};
+    for (const [oid, body] of Object.entries(payload.deadline_changes)) {
+      const canon = resolveOrderAlias(oid, ctx);
+      if (canon === null) return { ok: false, offending: oid };
+      remapped[canon] = body;
+    }
+    out.deadline_changes = remapped;
+  }
+
+  // extra_capacity: { machine_id?, shift?, operators?, duration_min? }
+  if (isPlainObject(payload.extra_capacity)) {
+    const ec = { ...payload.extra_capacity };
+    if (typeof ec.machine_id === 'string') {
+      const canon = resolveMachineAlias(ec.machine_id, ctx);
+      if (canon === null) return { ok: false, offending: ec.machine_id };
+      ec.machine_id = canon;
+    }
+    out.extra_capacity = ec;
+  }
+
+  // shift_changes: { [shiftId]: {...} } — only re-gate when the plan exposes a
+  // shift closed set (else the backend handles unknown keys as no-op passthrough).
+  if (isPlainObject(payload.shift_changes) && ctx.shifts.length > 0) {
+    const remapped: Record<string, unknown> = {};
+    for (const [sid, body] of Object.entries(payload.shift_changes)) {
+      const canon = resolveShiftAlias(sid, ctx);
+      if (canon === null) return { ok: false, offending: sid };
+      remapped[canon] = body;
+    }
+    out.shift_changes = remapped;
+  }
+
+  return { ok: true, payload: out };
+}
 
 /**
  * Wave 7 BFF route — apply a what-if scenario as a real constraint
@@ -735,10 +823,10 @@ export const Route = createFileRoute('/api/apply-whatif')({
                 // Strategy-B equivalent (rule_addition) with no router needed.
                 strategyKind = 'B';
                 rulesForSolve = ix.payload;
-                if (ix.confidence === 'low' || ix.confidence === 'medium') {
-                  // Carry a low-confidence banner like the legacy path did.
-                  wave7Warnings.push('low_confidence_classification');
-                }
+                // Note: a hit is ALWAYS high-confidence — the interpreter's gate
+                // routes any low/medium confidence (or any assumption) to gray
+                // (requires_confirmation) upstream, so there is no low-confidence
+                // banner to carry on this hit path (the legacy push was dead code).
                 write('routed', {
                   strategy: 'B',
                   intent_id: ix.intent_id ?? 'unknown',
@@ -784,7 +872,36 @@ export const Route = createFileRoute('/api/apply-whatif')({
                     });
                     return;
                   }
-                  rulesForSolve = input.confirmedPayload;
+                  // Wave 16.6 M-4 — re-gate the client-echoed confirmedPayload
+                  // against the live closed set before it reaches the solver.
+                  // The gray payload was gated when emitted, but the confirm
+                  // re-entry trusts the client echo; a tampered/stale id (M02→M99)
+                  // would otherwise slip an off-set entity past the closed-set
+                  // guarantee. Off-set id → fail-closed abort.
+                  const reCtx = buildSolutionContext(
+                    input.originalSolution,
+                    input.kpis ?? {},
+                    input.consultationMd,
+                  );
+                  const regated = regateConfirmedRules(input.confirmedPayload, reCtx);
+                  if (!regated.ok) {
+                    flushCost();
+                    write('aborted_unsupported', {
+                      reason: 'unresolved_entity_target',
+                      warnings: [
+                        ...wave7Warnings,
+                        `gray_zone_offset_target:${regated.offending}`,
+                        'use_opus_fallback_to_disambiguate',
+                      ],
+                    });
+                    write('done', {
+                      cost_usd: lastUsage?.cost_usd ?? 0,
+                      tokens_in: lastUsage?.tokens_in ?? 0,
+                      tokens_out: lastUsage?.tokens_out ?? 0,
+                    });
+                    return;
+                  }
+                  rulesForSolve = regated.payload;
                   wave7Warnings.push('gray_zone_confirmed_by_manager');
                 } else {
                   write('translating', { phase: 'translating' });

@@ -58,7 +58,22 @@ async function streamToString(stream: ReadableStream<Uint8Array>): Promise<strin
   return out;
 }
 
-function fakeHaikuReply(payload: object) {
+// Wave 16.6 §A — the managerText path now drives the Haiku instruction-
+// interpreter, which reads a forced `tool_use` block (name 'emit_constraint')
+// whose input is the FLAT entity shape (intent_id + machine_id/order_ids/…),
+// NOT the legacy parseIntent TEXT block with nested `entities`. The gate then
+// re-resolves those ids against the plan's closed set and builds the canonical
+// rules payload. `input` here is that flat tool input.
+function fakeInterpreterReply(input: object) {
+  return {
+    content: [{ type: 'tool_use', name: 'emit_constraint', input }],
+    usage: { input_tokens: 100, output_tokens: 40, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+  };
+}
+
+// The no-managerText (Strategy C) path still calls the Opus translator, which
+// reads a TEXT block. Used only by the overlapping-window test below.
+function fakeTranslatorReply(payload: object) {
   return {
     content: [{ type: 'text', text: JSON.stringify(payload) }],
     usage: { input_tokens: 100, output_tokens: 40, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
@@ -137,7 +152,7 @@ afterEach(() => {
 describe('Wave 16.6 §C — priorRules ledger merge (NEW-WINS)', () => {
   it('merges priorRules under the new scenario and sends the union to the backend', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({ intent_id: 'order_priority', entities: { order_ids: ['COM-007'] }, confidence: 'high' }),
+      fakeInterpreterReply({ intent_id: 'order_priority', order_ids: ['COM-007'], confidence: 'high' }),
     );
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify(NON_EMPTY_SOLVE), { status: 200, headers: { 'content-type': 'application/json' } }),
@@ -166,7 +181,7 @@ describe('Wave 16.6 §C — priorRules ledger merge (NEW-WINS)', () => {
     // replaces it (no double-ban). Disjoint windows would instead accumulate
     // (covered in appliedRulesLedger.test.ts).
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeTranslatorReply({
         type: 'block_machine',
         rules: { unavailable_machines: { M02: [{ start_min: 900, end_min: 1200 }] } },
         rationale: 'Correggo finestra M02.',
@@ -198,7 +213,7 @@ describe('Wave 16.6 §C — priorRules ledger merge (NEW-WINS)', () => {
     // and the manager now issues a NEW priority constraint. The solve must
     // honour BOTH — the M02 downtime is not lost when priority is added.
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({ intent_id: 'order_priority', entities: { order_ids: ['COM-001'] }, confidence: 'high' }),
+      fakeInterpreterReply({ intent_id: 'order_priority', order_ids: ['COM-001'], confidence: 'high' }),
     );
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify(NON_EMPTY_SOLVE), { status: 200, headers: { 'content-type': 'application/json' } }),
@@ -221,7 +236,7 @@ describe('Wave 16.6 §C — priorRules ledger merge (NEW-WINS)', () => {
 
   it('omitting priorRules is a no-op (only the new scenario reaches the backend)', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({ intent_id: 'order_priority', entities: { order_ids: ['COM-007'] }, confidence: 'high' }),
+      fakeInterpreterReply({ intent_id: 'order_priority', order_ids: ['COM-007'], confidence: 'high' }),
     );
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify(NON_EMPTY_SOLVE), { status: 200, headers: { 'content-type': 'application/json' } }),
@@ -240,7 +255,7 @@ describe('Wave 16.6 §C — priorRules ledger merge (NEW-WINS)', () => {
 
   it('merges priorRules into the INFEASIBLE retry payload too (both calls)', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({ intent_id: 'order_priority', entities: { order_ids: ['COM-001'] }, confidence: 'high' }),
+      fakeInterpreterReply({ intent_id: 'order_priority', order_ids: ['COM-001'], confidence: 'high' }),
     );
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
@@ -273,7 +288,7 @@ describe('Wave 16.6 §C — priorRules ledger merge (NEW-WINS)', () => {
 describe('Wave 16.6 §D — empty-solution guard (Gantt-not-updating fix)', () => {
   it('OPTIMAL with zero phases on a non-empty baseline → aborted_unsupported(empty_solution_after_solve)', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({ intent_id: 'order_priority', entities: { order_ids: ['COM-007'] }, confidence: 'high' }),
+      fakeInterpreterReply({ intent_id: 'order_priority', order_ids: ['COM-007'], confidence: 'high' }),
     );
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify({
@@ -300,7 +315,7 @@ describe('Wave 16.6 §D — empty-solution guard (Gantt-not-updating fix)', () =
 
   it('a flat top-level fasi:[] solution is also treated as empty', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({ intent_id: 'order_priority', entities: { order_ids: ['COM-007'] }, confidence: 'high' }),
+      fakeInterpreterReply({ intent_id: 'order_priority', order_ids: ['COM-007'], confidence: 'high' }),
     );
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify({
@@ -320,7 +335,7 @@ describe('Wave 16.6 §D — empty-solution guard (Gantt-not-updating fix)', () =
     // Both first solve AND retry INFEASIBLE → the UI must still get `solved`
     // with status INFEASIBLE so it can render "scenario impossibile".
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({ intent_id: 'order_priority', entities: { order_ids: ['COM-001'] }, confidence: 'high' }),
+      fakeInterpreterReply({ intent_id: 'order_priority', order_ids: ['COM-001'], confidence: 'high' }),
     );
     const infeasible = {
       status: 'INFEASIBLE', method: 'cp-sat', solution: {}, kpis: {}, objective_value: 0,
@@ -345,7 +360,7 @@ describe('Wave 16.6 §D — empty-solution guard (Gantt-not-updating fix)', () =
 
   it('non-empty solution passes the guard (normal solved)', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({ intent_id: 'order_priority', entities: { order_ids: ['COM-007'] }, confidence: 'high' }),
+      fakeInterpreterReply({ intent_id: 'order_priority', order_ids: ['COM-007'], confidence: 'high' }),
     );
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify(NON_EMPTY_SOLVE), { status: 200, headers: { 'content-type': 'application/json' } }),
@@ -362,7 +377,7 @@ describe('Wave 16.6 §D — empty-solution guard (Gantt-not-updating fix)', () =
 describe('Wave 16.6 §E — time_window_start_unsupported flag', () => {
   it('emits the warning when a clock start-time rides on a day anchor', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({ intent_id: 'order_priority', entities: { order_ids: ['COM-007'] }, confidence: 'high' }),
+      fakeInterpreterReply({ intent_id: 'order_priority', order_ids: ['COM-007'], confidence: 'high' }),
     );
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify(NON_EMPTY_SOLVE), { status: 200, headers: { 'content-type': 'application/json' } }),
@@ -384,9 +399,11 @@ describe('Wave 16.6 §E — time_window_start_unsupported flag', () => {
     // enforced — the clock time is the window itself, not an unpinnable
     // order start. No day anchor → no warning.
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'machine_unavailability',
-        entities: { machine_id: 'M03', start_min: 840, end_min: 1080 },
+        machine_id: 'M03',
+        start_min: 840,
+        end_min: 1080,
         confidence: 'high',
       }),
     );
@@ -405,7 +422,7 @@ describe('Wave 16.6 §E — time_window_start_unsupported flag', () => {
 
   it('does NOT emit the warning for a day anchor with no explicit clock time', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({ intent_id: 'order_priority', entities: { order_ids: ['COM-007'] }, confidence: 'high' }),
+      fakeInterpreterReply({ intent_id: 'order_priority', order_ids: ['COM-007'], confidence: 'high' }),
     );
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify(NON_EMPTY_SOLVE), { status: 200, headers: { 'content-type': 'application/json' } }),

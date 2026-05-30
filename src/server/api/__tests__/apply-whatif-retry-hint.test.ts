@@ -76,9 +76,13 @@ async function streamToString(stream: ReadableStream<Uint8Array>): Promise<strin
   return out;
 }
 
-function fakeHaikuReply(payload: object) {
+// Wave 16.6 §A — the managerText path now drives the Haiku instruction-
+// interpreter, which reads a forced `tool_use` block (name 'emit_constraint')
+// whose input is the FLAT entity shape (intent_id + machine_id/start_min/…),
+// NOT the legacy parseIntent TEXT block with nested `entities`.
+function fakeInterpreterReply(input: object) {
   return {
-    content: [{ type: 'text', text: JSON.stringify(payload) }],
+    content: [{ type: 'tool_use', name: 'emit_constraint', input }],
     usage: {
       input_tokens: 180,
       output_tokens: 25,
@@ -160,11 +164,12 @@ afterEach(() => {
 describe('F-W9-08 — BFF retry payload contract (e2e test 5 companion)', () => {
   it('machine_unavailability + INFEASIBLE -> retry includes frozen_lock_mode=hint AND preserves frozen_phases', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'machine_unavailability',
-        entities: { machine_id: 'M01', start_min: 0, end_min: 1200 },
+        machine_id: 'M01',
+        start_min: 0,
+        end_min: 1200,
         confidence: 'high',
-        fallback_reasoning: null,
       }),
     );
 
@@ -276,11 +281,12 @@ describe('F-W9-08 — BFF retry payload contract (e2e test 5 companion)', () => 
     // and must not stamp `frozen_lock_mode` on the (single) backend
     // request.
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'machine_unavailability',
-        entities: { machine_id: 'M01', start_min: 0, end_min: 1200 },
+        machine_id: 'M01',
+        start_min: 0,
+        end_min: 1200,
         confidence: 'high',
-        fallback_reasoning: null,
       }),
     );
 

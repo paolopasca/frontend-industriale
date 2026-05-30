@@ -103,8 +103,32 @@ export function buildMachineAliases(machines: string[]): Record<string, string> 
   return Object.fromEntries(proposals);
 }
 
-function extractOrders(commesse: Record<string, unknown>): string[] {
-  return Object.keys(commesse);
+function collectOrdersFromFasi(
+  fasi: Array<Record<string, unknown>>,
+  seen: Set<string>,
+): void {
+  for (const f of fasi) {
+    const o = f.commessa ?? f.order ?? f.order_id ?? f.commessa_id;
+    if (typeof o === 'string' && o.trim()) seen.add(o.trim());
+  }
+}
+
+// Wave 16.6 OBS-1 — the order closed set must populate for EVERY originalSolution
+// shape, mirroring the machine fix (extractMachines). The flat AiSolutionEnvelope
+// shape `{status, fasi:[{commessa}], machines, orders}` carries NO commesse map,
+// so reading only Object.keys(commesse) yielded orders=[] for that shape — which
+// made the interpreter (and the M-4 re-gate) reject every order_priority /
+// deadline_change against a flat baseline (fail-closed on an empty set, per
+// feedback_closed_set_fail_closed). Harvest order ids from the flat fasi[].commessa
+// too so the set-source is symmetric with machines. The top-level `orders` field
+// is intentionally NOT trusted (it is not the schedule's own assignment record).
+function extractOrders(
+  flatFasi: Array<Record<string, unknown>>,
+  commesse: Record<string, unknown>,
+): string[] {
+  const seen = new Set<string>(Object.keys(commesse));
+  collectOrdersFromFasi(flatFasi, seen);
+  return [...seen];
 }
 
 function extractOrderDeadlines(
@@ -199,7 +223,7 @@ export function buildSolutionContext(
 
   const machines = extractMachines(fasi, commesse);
   const machine_aliases = buildMachineAliases(machines);
-  const orders = extractOrders(commesse);
+  const orders = extractOrders(fasi, commesse);
   const order_deadlines = extractOrderDeadlines(commesse);
 
   const raw = isObject(solution) ? solution : {};

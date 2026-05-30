@@ -111,14 +111,17 @@ describe('buildSolutionContext — closed-set populates for EVERY originalSoluti
     expect(ctx.orders).toEqual(['COM-001']);
   });
 
-  it('GUARD: a flat envelope with time_config does NOT treat time_config as a commessa', () => {
+  it('GUARD: a flat envelope harvests orders from fasi[].commessa but does NOT treat time_config as a commessa', () => {
     const flatWithCfg = {
       fasi: [{ commessa: 'COM-001', macchina: 'M01', start_min: 0, end_min: 100 }],
       time_config: { day_length_min: 1440, start_date: '2026-01-01' },
     };
     const ctx = buildSolutionContext(flatWithCfg, {});
     expect(ctx.machines).toEqual(['M01']);
-    // time_config has no `fasi`, so the bare-nested fallback must skip it.
-    expect(ctx.orders).toEqual([]);
+    // Wave 16.6 OBS-1: orders are harvested from the flat fasi[].commessa
+    // (symmetric with machines). time_config is a top-level SIBLING, not a fasi
+    // entry, so it is never mistaken for a commessa.
+    expect(ctx.orders).toEqual(['COM-001']);
+    expect(ctx.orders).not.toContain('time_config');
   });
 });
