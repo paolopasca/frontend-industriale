@@ -5,6 +5,7 @@ import {
   getClientIp,
 } from '@/server/llm/client';
 import { extractConstraintFromBackend } from '@/server/llm/extract-constraint-client';
+import { interpretInstruction } from '@/server/llm/instruction-interpreter';
 import { buildAiSolutionEnvelope } from '@/lib/aiInputs';
 import { buildSolutionContext } from '@/lib/solutionContext';
 import {
@@ -220,34 +221,66 @@ export const Route = createFileRoute('/api/reschedule-fresh')({
           );
         }
 
-        if (extracted.result === 'miss') {
-          return new Response(
-            JSON.stringify({
-              ok: false,
-              code: 'extract_miss',
-              rationale: extracted.rationale,
-              confidence: extracted.confidence,
-            }),
-            { status: 200, headers: { 'content-type': 'application/json' } },
-          );
+        // Wave 16.6 §A — interpreter fallback on MISS/GRAY. The deterministic
+        // backend extractor is pattern-based and misses utterances the
+        // closed-set Haiku interpreter can still map ("m2 rotta" with a loose
+        // alias, an intent phrased outside the extractor's templates). On a
+        // non-hit we give interpretInstruction a second pass over the SAME ctx.
+        //   - interpreter 'hit'    → use its payload as the rules and SOLVE
+        //                            (fall through below, like an extractor hit).
+        //   - interpreter 'gray'   → ask for confirmation (extract_gray_zone shape).
+        //   - interpreter 'reject' → keep the extractor's original miss/gray
+        //                            response (no worse than before).
+        // The needs_day_clarification short-circuit ABOVE is untouched — an
+        // un-anchored relative-date utterance never reaches this fallback.
+        let rules: Record<string, unknown>;
+        if (extracted.result === 'hit') {
+          rules = (extracted.payload ?? {}) as Record<string, unknown>;
+        } else {
+          const interp = await interpretInstruction(input.message, ctx);
+          const ix = interp.interpretation;
+          if (ix.result === 'hit') {
+            rules = ix.payload;
+          } else if (ix.result === 'gray') {
+            return new Response(
+              JSON.stringify({
+                ok: false,
+                code: 'extract_gray_zone',
+                rationale: extracted.rationale,
+                confirmationMessage: ix.confirmation_message ?? extracted.confirmation_message,
+                confidence: ix.confidence,
+                payload: ix.payload,
+              }),
+              { status: 200, headers: { 'content-type': 'application/json' } },
+            );
+          } else if (extracted.result === 'gray_zone') {
+            // Both the extractor and the interpreter declined; surface the
+            // extractor's gray-zone confirmation prompt (richer rationale).
+            return new Response(
+              JSON.stringify({
+                ok: false,
+                code: 'extract_gray_zone',
+                rationale: extracted.rationale,
+                confirmationMessage: extracted.confirmation_message,
+                confidence: extracted.confidence,
+                payload: extracted.payload,
+              }),
+              { status: 200, headers: { 'content-type': 'application/json' } },
+            );
+          } else {
+            // extractor MISS + interpreter reject → clarify.
+            return new Response(
+              JSON.stringify({
+                ok: false,
+                code: 'extract_miss',
+                rationale: ix.confirmation_message ?? extracted.rationale,
+                confidence: extracted.confidence,
+              }),
+              { status: 200, headers: { 'content-type': 'application/json' } },
+            );
+          }
         }
 
-        if (extracted.result === 'gray_zone') {
-          return new Response(
-            JSON.stringify({
-              ok: false,
-              code: 'extract_gray_zone',
-              rationale: extracted.rationale,
-              confirmationMessage: extracted.confirmation_message,
-              confidence: extracted.confidence,
-              payload: extracted.payload,
-            }),
-            { status: 200, headers: { 'content-type': 'application/json' } },
-          );
-        }
-
-        // result === 'hit'
-        const rules = (extracted.payload ?? {}) as Record<string, unknown>;
         const problemType = input.problemType ?? 'fjsp';
 
         // Step 2 — frozen window. Re-solving from scratch must NOT reshuffle

@@ -6,11 +6,9 @@ import {
   recordCost,
 } from '@/server/llm/client';
 import { translateWhatIfToConstraint } from '@/server/llm/constraint-translator';
-import { parseIntent } from '@/server/llm/intent-parser';
-import { routeIntent, type BaselineFasi } from '@/server/llm/strategy-router';
-import { loadCatalog } from '@/server/llm/catalog/loader';
-import { apply as applyDataModification, canApply as dataModifierCanApply } from '@/server/llm/data-modifier';
+import { interpretInstruction } from '@/server/llm/instruction-interpreter';
 import { buildFrozenPhases, detectScenarioStartMin, detectScenarioPhraseMatches, type FrozenPhase } from '@/server/llm/frozen-window-builder';
+import { buildSolutionContext } from '@/lib/solutionContext';
 import { mergeRuleSlots } from '@/lib/appliedRulesLedger';
 import { resolveTemplate } from '@/lib/api';
 
@@ -143,7 +141,7 @@ function diffKpis(
 // the cutoff auto-detect path can warn when the detected scenario start
 // falls past the planning horizon. Devil-advocate LOW-5 (2026-05-27).
 // Scans both nested `{commessa:{fasi:[]}}` and flat `{fasi:[]}` shapes
-// since both are accepted upstream by buildBaselineForRouter.
+// since both are accepted as the originalSolution baseline.
 function estimateHorizonMaxEndMin(originalSolution: unknown): number {
   if (!originalSolution || typeof originalSolution !== 'object') return 0;
   let maxEnd = 0;
@@ -352,33 +350,6 @@ function hasMeaningfulRules(rules: Record<string, unknown>): boolean {
   );
 }
 
-// F-W7-08 — describe the user-facing effect of a Wave 7 intent in short
-// Italian strings the SolutionDiff renders as an audit trail. The text
-// is about WHAT changed in the plan (the manager's mental model), not
-// which wire channel carries the payload. So it fires for both Strategy
-// A (data_modification) and Strategy B (rule_addition) variants of the
-// supported intents — the manager doesn't care about the routing detail.
-function describeIntentEffect(
-  intentId: string,
-  entities: Record<string, unknown>,
-): string[] {
-  if (intentId === 'machine_unavailability') {
-    const machineId = String(entities.machine_id ?? '');
-    const start = Number(entities.start_min);
-    const end = entities.end_min !== undefined ? Number(entities.end_min) : null;
-    const window = end !== null && Number.isFinite(end)
-      ? `[${start}, ${end}]`
-      : `[${start}, fine orizzonte]`;
-    return [`Bloccata macchina ${machineId} in finestra ${window} min`];
-  }
-  if (intentId === 'deadline_change') {
-    const orderId = String(entities.order_id ?? '');
-    const newDeadline = Number(entities.new_deadline_min);
-    return [`Aggiornata scadenza commessa ${orderId} → ${newDeadline} min`];
-  }
-  return [];
-}
-
 // Per-IP in-flight guard. Solve is expensive (Opus + backend CPU); a
 // second concurrent request from the same client almost always indicates
 // a runaway UI or a misclick — fail fast with 409 rather than double-pay.
@@ -389,62 +360,6 @@ const _inFlight = new Map<string, AbortController>();
 // memory) and corrupt the persisted plan. The lock is scoped to the
 // company slug so unrelated tenants stay independent.
 const _inFlightBySlug = new Map<string, AbortController>();
-
-// Wave 7 — coerce the solution payload (which can be top-level fasi[]
-// or `{commessa: {fasi: []}}`) into the BaselineFasi shape the strategy
-// router expects. Tolerant to legacy fixtures that ship a flat fasi[]
-// at the root.
-function buildBaselineForRouter(originalSolution: unknown): BaselineFasi {
-  if (!originalSolution || typeof originalSolution !== 'object') {
-    return { fasi: [] };
-  }
-  const root = originalSolution as Record<string, unknown>;
-  const flatFasi = Array.isArray(root.fasi)
-    ? (root.fasi as Array<Record<string, unknown>>)
-    : null;
-  const machines = Array.isArray(root.machines) ? (root.machines as string[]) : undefined;
-  const orders = Array.isArray(root.orders) ? (root.orders as string[]) : undefined;
-  const operators = Array.isArray(root.operators) ? (root.operators as string[]) : undefined;
-  const fasi: BaselineFasi['fasi'] = [];
-
-  if (flatFasi) {
-    for (const f of flatFasi) {
-      const commessa = typeof f.commessa === 'string' ? f.commessa : '';
-      const macchina = typeof f.macchina === 'string'
-        ? f.macchina
-        : typeof f.machine_id === 'string'
-          ? (f.machine_id as string)
-          : '';
-      const operatore = typeof f.operatore === 'string' ? f.operatore : undefined;
-      const start_min = typeof f.start_min === 'number' ? f.start_min : 0;
-      const end_min = typeof f.end_min === 'number' ? f.end_min : 0;
-      if (commessa && macchina) {
-        fasi.push({ commessa, macchina, operatore, start_min, end_min });
-      }
-    }
-  } else {
-    // Nested shape `{commessa: {fasi: [...]}}` — flatten into the router's fasi[].
-    for (const [commessa, jobRaw] of Object.entries(root)) {
-      if (!jobRaw || typeof jobRaw !== 'object') continue;
-      const jobFasi = (jobRaw as { fasi?: unknown }).fasi;
-      if (!Array.isArray(jobFasi)) continue;
-      for (const f of jobFasi as Array<Record<string, unknown>>) {
-        const macchina = typeof f.macchina === 'string'
-          ? f.macchina
-          : typeof f.machine_id === 'string'
-            ? (f.machine_id as string)
-            : '';
-        const operatore = typeof f.operatore === 'string' ? f.operatore : undefined;
-        const start_min = typeof f.start_min === 'number' ? f.start_min : 0;
-        const end_min = typeof f.end_min === 'number' ? f.end_min : 0;
-        if (macchina) {
-          fasi.push({ commessa, macchina, operatore, start_min, end_min });
-        }
-      }
-    }
-  }
-  return { fasi, machines, orders, operators };
-}
 
 const SOLVE_TIMEOUT_MS = 60_000;
 // Apply-whatif is the most expensive surface (Opus translator + backend
@@ -698,31 +613,49 @@ export const Route = createFileRoute('/api/apply-whatif')({
               // run the Haiku intent parser + strategy router. Otherwise
               // we keep the Wave 4.1 path (translator only).
               let rulesForSolve: Record<string, unknown> = {};
-              let datasetOverrides: Record<string, unknown> | null = null;
+              // Wave 16.6 §A — the interpreter (and the Wave 4.1 translator)
+              // both emit dynamic `rules` only; the legacy Strategy A
+              // (data_modification → dataset_overrides) path is gone. We keep
+              // datasetOverrides as a null constant so the resolveTemplate
+              // signature + the empty-dict guard's `!datasetOverrides` branch
+              // stay unchanged on the wire.
+              const datasetOverrides: Record<string, unknown> | null = null;
+              // strategyKind is now only 'B' (interpreter hit / translator rule),
+              // 'C' (Wave 4.1 translator path), or 'unsupported' — 'A' is dead
+              // but kept in the union to avoid touching the solved-telemetry type.
               let strategyKind: 'A' | 'B' | 'C' | 'unsupported' = 'C';
-              let unsupportedReason: string | null = null;
-              // F-W7-08 — audit trail for Strategy A. Manager must see in
-              // the UI what was changed at the dataset level (e.g.
-              // "Aggiunta finestra manutenzione: M02 [2160,2520]") rather
-              // than just "constraint applied".
+              // Audit trail surfaced on `solved` (empty now that Strategy A is
+              // gone; the interpreter's intent_id carries the labelling).
               const datasetOverridesSummary: string[] = [];
 
-              // Wave 16.6 §A WIRING STUB — interpreter-resolver (Task #1) is
-              // building `interpretInstruction` (closed-set enum intent +
-              // shared entity resolver + deterministic gate). Once it publishes
-              // and ACKs its contract, the `parseIntent(...)` call below is
-              // replaced by `interpretInstruction(...)`. Until then we keep the
-              // shipped Haiku intent-parser path so apply-whatif stays
-              // functional. Everything else in this route (ledger merge,
-              // empty-solution guard, time-anchor flag) is independent of that
-              // swap. DO NOT wire the interpreter before the ACK.
-              if (input.managerText) {
+              // Wave 16.6 §A — closed-set instruction interpreter. Replaces the
+              // legacy parseIntent + strategy-router chain for the managerText
+              // path. interpretInstruction (Haiku + a forced enum tool over the
+              // plan's REAL machine/order/shift ids + a deterministic gate)
+              // either returns a canonical `rules` payload (hit), a confirm
+              // pause (gray), or a structural reject (off-set / non-catalog) —
+              // the anti-hallucination guarantee. On hit, payload IS the solver
+              // rules slot (same shape the ledger merges), so it feeds straight
+              // into the §C merge + §D guards below.
+              //
+              // The userConfirmedGrayZone fast-path (manager already confirmed a
+              // gray payload) must SKIP the interpreter and fall through to the
+              // confirmed-payload handler in the Strategy C block — otherwise we
+              // would re-interpret and re-gray the same utterance. We mark
+              // strategyKind 'C' so the `!managerText || strategyKind==='C'`
+              // block below claims it.
+              if (input.managerText && !input.userConfirmedGrayZone) {
                 write('parsing_intent', { phase: 'parsing_intent', model: 'haiku-4.5' });
-                const parsed = await parseIntent(input.managerText, {
+                const ctx = buildSolutionContext(
+                  input.originalSolution,
+                  input.kpis ?? {},
+                  input.consultationMd,
+                );
+                const interp = await interpretInstruction(input.managerText, ctx, undefined, {
                   signal: abort.signal,
                   onUsage: (u) => { accumulateUsage(u); },
                 });
-                if (abort.signal.aborted || parsed.aborted) {
+                if (abort.signal.aborted || interp.aborted) {
                   flushCost();
                   write('aborted', { reason: 'client_disconnect' });
                   write('done', {
@@ -732,78 +665,33 @@ export const Route = createFileRoute('/api/apply-whatif')({
                   });
                   return;
                 }
+                const ix = interp.interpretation;
                 write('intent_parsed', {
-                  intent_id: parsed.intent.intent_id,
-                  entities: parsed.intent.entities,
-                  confidence: parsed.intent.confidence,
-                  fallback_reasoning: parsed.intent.fallback_reasoning,
+                  intent_id: ix.intent_id ?? 'unknown',
+                  entities: ix.entities ?? {},
+                  confidence: ix.confidence,
                 });
 
-                // F-W8-07 — low confidence classification warning. When
-                // Haiku says confidence='low' it has classified an intent
-                // but with multiple assumptions; the manager must be told
-                // the result may not match their intent. Continue the
-                // normal flow (do NOT short-circuit) so the constraint is
-                // still applied, but tag wave7Warnings so the UI renders
-                // a yellow banner. NB: this is DIFFERENT from B-W8-S-04
-                // short-circuit which fires only on (unknown + high).
-                //
-                // intent_id='unknown' + low is INCLUDED here. It does not
-                // short-circuit (B-W8-S-04 fires only on unknown+high); it
-                // cascades to the Strategy C Opus translator, and when that
-                // rescues the utterance into an applied solve the manager
-                // must still see the low-confidence banner. The earlier
-                // F-W9-04 guard (`&& intent_id !== 'unknown'`) excluded it on
-                // the theory that unknown always ends in aborted_unsupported
-                // ("low confidence on a result that didn't apply anyway") —
-                // but that premise is false for the Strategy C rescue→solved
-                // path, and the banner ONLY ever renders from solved.warnings
-                // (the aborted_unsupported handler ignores warnings, see
-                // WhatIfAnalysis.tsx). So there was never a contradictory
-                // banner to avoid; the guard merely silenced F-W8-07's
-                // legitimate warning on the rescued path.
-                if (parsed.intent.confidence === 'low') {
-                  wave7Warnings.push('low_confidence_classification');
-                  console.warn(
-                    '[apply-whatif] low_confidence_classification',
-                    {
-                      intent_id: parsed.intent.intent_id,
-                      fallback_reasoning: parsed.intent.fallback_reasoning,
-                      manager_text: input.managerText?.slice(0, 200),
-                    },
-                  );
-                }
-
-                // B-W8-S-04 — short-circuit the Opus cascade when Haiku
-                // confidently classified the utterance as out-of-catalog.
-                // Previously the router returned `opus_translator` for
-                // every `intent_id === 'unknown'` (strategy-router.ts:452),
-                // which fired the Opus 4.7 translator only to have it
-                // also return `unsupported`. Cost: $0.20 per stress
-                // cycle × 5 = $1.00 wasted per stress run.
-                //
-                // When Haiku says "definitely outside the 5 catalog
-                // intents" (intent_id=unknown + confidence=high), trust
-                // it and emit aborted_unsupported directly. We still
-                // run the cascade for confidence=medium/low so the
-                // Opus translator can rescue ambiguous classifications.
-                if (
-                  parsed.intent.intent_id === 'unknown'
-                  && parsed.intent.confidence === 'high'
-                ) {
+                // reject — structural anti-hallucination outcome: off-set target
+                // ("M99") or non-catalog request. The closed-set gate is
+                // authoritative, so we do NOT cascade to the Opus translator;
+                // surface the clarify message + the raw unresolved token.
+                if (ix.result === 'reject') {
                   strategyKind = 'unsupported';
-                  const reason = parsed.intent.fallback_reasoning
-                    ?? 'haiku_classified_unknown_high_confidence';
-                  wave7Warnings.push('haiku_unknown_high_no_cascade');
+                  const rejectWarnings = [
+                    ...wave7Warnings,
+                    'interpreter_reject',
+                    ...(ix.unresolved_target ? [`unresolved_target:${ix.unresolved_target}`] : []),
+                  ];
                   write('routed', {
                     strategy: 'unsupported',
-                    intent_id: 'unknown',
-                    warnings: ['haiku_unknown_high_no_cascade'],
+                    intent_id: ix.intent_id ?? 'unknown',
+                    warnings: rejectWarnings,
                   });
                   flushCost();
                   write('aborted_unsupported', {
-                    reason,
-                    warnings: wave7Warnings,
+                    reason: ix.confirmation_message ?? 'interpreter_reject',
+                    warnings: rejectWarnings,
                   });
                   write('done', {
                     cost_usd: lastUsage?.cost_usd ?? 0,
@@ -815,80 +703,47 @@ export const Route = createFileRoute('/api/apply-whatif')({
                   return;
                 }
 
-                const baselineForRouter = buildBaselineForRouter(input.originalSolution);
-                const catalog = loadCatalog();
-                const outcome = routeIntent({
-                  intent: parsed.intent,
-                  baseline: baselineForRouter,
-                  catalog,
-                  tryDataModification: (intentId, entities) =>
-                    dataModifierCanApply(intentId)
-                      ? applyDataModification(intentId, entities).modified
-                      : null,
-                });
-
-                if (outcome.kind === 'data_modification') {
-                  strategyKind = 'A';
-                  const modRes = applyDataModification(outcome.intent_id, outcome.entities);
-                  if (modRes.modified) {
-                    datasetOverrides = modRes.dataset_overrides;
-                    if (modRes.rules_fallback) {
-                      // Pure Strategy A path uses rules_fallback because
-                      // the backend's dataset-merge is not deep enough
-                      // for the orders shape today.
-                      rulesForSolve = modRes.rules_fallback;
-                      wave7Warnings.push('strategy_a_via_rule_fallback');
-                    }
-                    datasetOverridesSummary.push(
-                      ...describeIntentEffect(outcome.intent_id, outcome.entities),
-                    );
-                  } else {
-                    // Router promised A but modifier rejected — fall back
-                    // to the Opus translator path. Warn but don't fail.
-                    strategyKind = 'C';
-                    wave7Warnings.push('data_modifier_rejected_post_route');
-                  }
-                  wave7Warnings.push(...outcome.warnings);
-                } else if (outcome.kind === 'rule_addition') {
-                  strategyKind = 'B';
-                  rulesForSolve = outcome.rules;
-                  wave7Warnings.push(...outcome.warnings);
-                  // F-W7-08 — emit audit summary for Strategy B too. The
-                  // manager sees what changed regardless of whether the
-                  // intent routed through data_modification or
-                  // rule_addition (machine_unavailability lives here now
-                  // per team-lead 2026-05-22 directive).
-                  datasetOverridesSummary.push(
-                    ...describeIntentEffect(outcome.intent_id, outcome.entities),
-                  );
-                } else if (outcome.kind === 'unsupported') {
-                  strategyKind = 'unsupported';
-                  unsupportedReason = outcome.reason;
-                  wave7Warnings.push(...outcome.warnings);
-                } else {
-                  strategyKind = 'C';
-                  wave7Warnings.push(...outcome.warnings);
-                  wave7Warnings.push(`route_reason:${outcome.reason}`);
-                }
-                write('routed', {
-                  strategy: strategyKind,
-                  intent_id: parsed.intent.intent_id,
-                  warnings: outcome.warnings,
-                });
-
-                if (strategyKind === 'unsupported') {
+                // gray — validated but Haiku flagged an assumption. Mirror the
+                // existing GRAY_ZONE pause: emit requires_confirmation and close.
+                // The manager confirms via userConfirmedGrayZone+confirmedPayload
+                // (re-enters and is claimed by the fast-path below).
+                if (ix.result === 'gray') {
+                  write('routed', {
+                    strategy: 'B',
+                    intent_id: ix.intent_id ?? 'unknown',
+                    warnings: ['interpreter_gray'],
+                  });
                   flushCost();
-                  write('aborted_unsupported', {
-                    reason: unsupportedReason ?? 'unsupported',
-                    warnings: wave7Warnings,
+                  write('requires_confirmation', {
+                    confirmationMessage:
+                      ix.confirmation_message ?? "Confermi l'interpretazione?",
+                    confidence: ix.confidence,
+                    confirmedPayload: ix.payload,
                   });
                   write('done', {
                     cost_usd: lastUsage?.cost_usd ?? 0,
                     tokens_in: lastUsage?.tokens_in ?? 0,
                     tokens_out: lastUsage?.tokens_out ?? 0,
+                    cache_read_tokens: lastUsage?.cache_read_tokens,
+                    cache_write_tokens: lastUsage?.cache_write_tokens,
                   });
                   return;
                 }
+
+                // hit — payload is the canonical rules slot. The interpreter
+                // already alias-resolved + gated the entities, so this is the
+                // Strategy-B equivalent (rule_addition) with no router needed.
+                strategyKind = 'B';
+                rulesForSolve = ix.payload;
+                if (ix.confidence === 'low' || ix.confidence === 'medium') {
+                  // Carry a low-confidence banner like the legacy path did.
+                  wave7Warnings.push('low_confidence_classification');
+                }
+                write('routed', {
+                  strategy: 'B',
+                  intent_id: ix.intent_id ?? 'unknown',
+                  warnings: [],
+                });
               }
 
               // Strategy C path — also taken when managerText is absent
