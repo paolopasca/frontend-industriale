@@ -17,29 +17,50 @@
  */
 export function canonicaliseId(raw: string, known: Set<string>): string | null {
   if (known.size === 0) return null;
-  const candidates: string[] = [];
-  const push = (s: string) => {
-    if (s && !candidates.includes(s)) candidates.push(s);
-  };
-  push(raw);
-  push(raw.toUpperCase());
+
+  // TIER 1 — "exact tier": the token as the manager wrote it, modulo trivial
+  // case folding and separator stripping. A hit here means the manager typed a
+  // real id (or its bare form); it is unambiguous by definition and takes
+  // precedence over any padding-derived guess. Probed in order so the closest
+  // literal form wins.
   const alnum = raw.replace(/[^a-zA-Z0-9]/g, '');
-  push(alnum);
-  push(alnum.toUpperCase());
-  // Zero-pad / strip numeric tail. Matches "M2", "M-2", "M02", "COM-7", "COM-007".
-  // Pattern: letters + optional separator + digits.
+  const exactTier: string[] = [];
+  const pushExact = (s: string) => {
+    if (s && !exactTier.includes(s)) exactTier.push(s);
+  };
+  pushExact(raw);
+  pushExact(raw.toUpperCase());
+  pushExact(alnum);
+  pushExact(alnum.toUpperCase());
+  for (const cand of exactTier) {
+    if (known.has(cand)) return cand;
+  }
+
+  // TIER 2 — "derived tier": zero-pad / strip numeric tail / re-separate.
+  // Matches "m2"→"M02", "COM7"→"COM-007", etc. This tier GUESSES at the
+  // canonical width/separator, so it CAN map one token onto two different real
+  // ids when a plan mixes padded + unpadded forms for the same number
+  // (e.g. known={"M1","M-001"} and token "m001" → both "M1" and "M-001").
+  // M-3 (devil-advocate Wave 16.6, 2026-05-30): the pre-fix code returned the
+  // FIRST such match by push-order, silently resolving to the WRONG real
+  // machine (high confidence, no gray) — a breach of the resolver's
+  // ambiguous→null contract (not a hallucination: always a real member, just
+  // the wrong one). Fix: collect ALL distinct derived members and return the
+  // single match, or null on >1 so the caller surfaces a clarify ("?") instead
+  // of editing the wrong resource.
+  const derived: string[] = [];
+  const pushDerived = (s: string) => {
+    if (s && !derived.includes(s)) derived.push(s);
+  };
   const m = alnum.match(/^([A-Za-z]+)(\d+)$/);
   if (m) {
     const prefix = m[1].toUpperCase();
     const num = parseInt(m[2], 10);
     if (Number.isFinite(num)) {
-      // Try the candidate prefix as-is (covers "M" + "2" → both M2 and M02 below)
-      // and a few common widths.
       for (const width of [2, 3, 4]) {
-        push(`${prefix}${String(num).padStart(width, '0')}`);
+        pushDerived(`${prefix}${String(num).padStart(width, '0')}`);
       }
-      // Strip-leading-zeros variant (baseline "M2" + Haiku said "M02")
-      push(`${prefix}${num}`);
+      pushDerived(`${prefix}${num}`);
     }
   }
   // COM-007 style: keep the hyphen since baselines often have hyphenated
@@ -50,13 +71,16 @@ export function canonicaliseId(raw: string, known: Set<string>): string | null {
     const num = parseInt(mh[2], 10);
     if (Number.isFinite(num)) {
       for (const width of [2, 3, 4]) {
-        push(`${prefix}-${String(num).padStart(width, '0')}`);
+        pushDerived(`${prefix}-${String(num).padStart(width, '0')}`);
       }
-      push(`${prefix}-${num}`);
+      pushDerived(`${prefix}-${num}`);
     }
   }
-  for (const cand of candidates) {
-    if (known.has(cand)) return cand;
+  const derivedMatches = new Set<string>();
+  for (const cand of derived) {
+    if (known.has(cand)) derivedMatches.add(cand);
   }
+  if (derivedMatches.size === 1) return [...derivedMatches][0];
+  // 0 matches → unresolved; >1 → ambiguous. Both → null (never guess).
   return null;
 }
