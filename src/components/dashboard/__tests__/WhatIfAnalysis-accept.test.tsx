@@ -77,6 +77,8 @@ const APPLY_EVENTS = [
       modified_count: 1,
       skipped_rules_count: 0,
       frozen_count: 0,
+      // Wave 16.6 §C — the NEW scenario's rule slot echoed for the ledger.
+      applied_rules: { unavailable_machines: { M02: [{ start_min: 840, end_min: 1080 }] } },
     },
   },
   { event: 'done', data: { cost_usd: 0.002 } },
@@ -206,6 +208,12 @@ describe('WhatIfAnalysis — Accetta merges candidate over original (Wave 16.5 A
     expect(merged.time_config).toEqual(ORIGINAL_BACKEND_RESULT.time_config);
     expect(merged.maintenance).toEqual(ORIGINAL_BACKEND_RESULT.maintenance);
     expect(merged.operator_config).toEqual(ORIGINAL_BACKEND_RESULT.operator_config);
+
+    // Wave 16.6 §C — the accepted rule slot is forwarded as the 2nd arg so the
+    // parent appends it to the cumulative ledger for the next What-If.
+    expect(onAcceptResult.mock.calls[0][1]).toEqual({
+      unavailable_machines: { M02: [{ start_min: 840, end_min: 1080 }] },
+    });
   });
 
   it('produces a shape adaptResult consumes whole (deterministic-json path renders candidate machines + original shifts)', async () => {

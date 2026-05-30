@@ -173,7 +173,7 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
         JSON.stringify({
           status: 'OPTIMAL',
           method: 'cp-sat',
-          solution: { 'COM-001': { fasi: [] } },
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
           kpis: { makespan_min: 3000 },
           objective_value: 3000,
           warnings: [],
@@ -252,7 +252,7 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
       new Response(
         JSON.stringify({
           status: 'OPTIMAL', method: 'cp-sat',
-          solution: {}, kpis: { makespan_min: 2700 },
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: { makespan_min: 2700 },
           objective_value: 2700, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -311,7 +311,7 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
       new Response(
         JSON.stringify({
           status: 'OPTIMAL', method: 'cp-sat',
-          solution: {}, kpis: { makespan_min: 3000 },
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: { makespan_min: 3000 },
           objective_value: 3000, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -352,7 +352,7 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
       new Response(
         JSON.stringify({
           status: 'OPTIMAL', method: 'cp-sat',
-          solution: {}, kpis: {},
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
           locked_count: 2,
         }),
@@ -446,7 +446,7 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
           JSON.stringify({
             status: 'OPTIMAL',
             method: 'cp-sat',
-            solution: { 'COM-001': { fasi: [] } },
+            solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
             kpis: { makespan_min: 2900 },
             objective_value: 2900,
             warnings: [],
@@ -517,7 +517,7 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({
         status: 'OPTIMAL', method: 'cp-sat',
-        solution: {}, kpis: {}, objective_value: 0,
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {}, objective_value: 0,
         warnings: [], cost_usd: 0,
       }), { status: 200, headers: { 'content-type': 'application/json' } }),
     );
@@ -557,7 +557,7 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify({
         status: 'OPTIMAL', method: 'cp-sat',
-        solution: {}, kpis: { makespan_min: 3000 },
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: { makespan_min: 3000 },
         objective_value: 3000, warnings: [], cost_usd: 0,
       }), { status: 200, headers: { 'content-type': 'application/json' } }),
     );
@@ -596,7 +596,7 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify({
         status: 'OPTIMAL', method: 'cp-sat',
-        solution: {}, kpis: {},
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
         objective_value: 0, warnings: [], cost_usd: 0,
         wave7: {
           cutoff_min: 120,
@@ -646,7 +646,7 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify({
         status: 'OPTIMAL', method: 'cp-sat',
-        solution: {}, kpis: {},
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
         objective_value: 0, warnings: [], cost_usd: 0,
         wave7: {
           cutoff_min: 120,
@@ -699,7 +699,7 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify({
         status: 'OPTIMAL', method: 'cp-sat',
-        solution: {}, kpis: {},
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
         objective_value: 0, warnings: [], cost_usd: 0,
         // no wave7 field — backend ran in legacy mode
       }), { status: 200, headers: { 'content-type': 'application/json' } }),
@@ -769,7 +769,7 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
       fetchMock.mockImplementationOnce(() => Promise.resolve(
         new Response(JSON.stringify({
           status: 'OPTIMAL', method: 'cp-sat',
-          solution: {}, kpis: {}, objective_value: 0, warnings: [], cost_usd: 0,
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {}, objective_value: 0, warnings: [], cost_usd: 0,
         }), { status: 200, headers: { 'content-type': 'application/json' } }),
       ));
       // Re-arm Haiku reply for the third request.

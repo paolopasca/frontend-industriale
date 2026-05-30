@@ -125,6 +125,44 @@ describe('ReplanModal fresh-solve primary path (real caller shape)', () => {
     );
   });
 
+  // Wave 16.6 §C — the fresh-solve HIT echoes `applied_rules`; the modal must
+  // forward them as the 2nd arg of onResult so the parent appends them to the
+  // applied-rules ledger (cumulative constraints across What-If/Ripianifica).
+  it('forwards applied_rules to onResult so the parent can ledger them', async () => {
+    const onResult = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          code: 'solved_fresh',
+          cutoff_min: null,
+          frozen_count: 0,
+          applied_rules: { unavailable_machines: { 'M-1': [{ start_min: 0, end_min: 480 }] } },
+          result: {
+            status: 'OPTIMAL', method: 'deterministic-template', solution: {},
+            kpis: {}, objective_value: 0, warnings: [], cost_usd: 0,
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal open onClose={() => {}} companySlug="acme" originalSolution={BASELINE} onResult={onResult} />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'macchina M1 è rotta, risolvi');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    await waitFor(() => expect(onResult).toHaveBeenCalledTimes(1));
+    // 2nd arg carries the extracted rule slot for the ledger.
+    expect(onResult.mock.calls[0][1]).toEqual({
+      unavailable_machines: { 'M-1': [{ start_min: 0, end_min: 480 }] },
+    });
+  });
+
   // Wave 16.5-RE2 — ask-flow. When the BFF returns code 'needs_day', the modal
   // must ask which plan-day it is and NOT propagate any result to the
   // dashboard (no recalculation). Mirrors the BFF guarantee that no solve ran.

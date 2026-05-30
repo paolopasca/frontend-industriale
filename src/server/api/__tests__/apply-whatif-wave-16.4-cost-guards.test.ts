@@ -226,7 +226,7 @@ describe('Wave 16.4 A3 — empty-dict guard', () => {
         JSON.stringify({
           status: 'OPTIMAL',
           method: 'cp-sat',
-          solution: { status: 'OPTIMAL', fasi: [] },
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
           kpis: { makespan_min: 2700 },
           objective_value: 2700,
           warnings: [],
@@ -281,7 +281,7 @@ describe('Wave 16.4 A3 — empty-dict guard', () => {
         JSON.stringify({
           status: 'OPTIMAL',
           method: 'cp-sat',
-          solution: { status: 'OPTIMAL', fasi: [] },
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
           kpis: { makespan_min: 2700 },
           objective_value: 2700,
           warnings: [],
@@ -321,7 +321,7 @@ describe('Wave 16.4 A3 — empty-dict guard', () => {
       new Response(
         JSON.stringify({
           status: 'OPTIMAL', method: 'cp-sat',
-          solution: { status: 'OPTIMAL', fasi: [] },
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
           kpis: { makespan_min: 2700 }, objective_value: 2700,
           warnings: [], cost_usd: 0,
         }),
@@ -435,7 +435,7 @@ describe('Wave 16.4 A3 — empty-dict guard', () => {
       new Response(
         JSON.stringify({
           status: 'OPTIMAL', method: 'cp-sat',
-          solution: { status: 'OPTIMAL', fasi: [] },
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
           kpis: { makespan_min: 2700 }, objective_value: 2700,
           warnings: [], cost_usd: 0,
         }),
@@ -492,7 +492,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -520,7 +521,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -548,7 +550,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -576,7 +579,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -624,7 +628,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -656,7 +661,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -693,7 +699,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -730,7 +737,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -767,7 +775,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -805,7 +814,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },

@@ -191,7 +191,7 @@ describe('Wave 16.3 CRITICAL-1 — sentinel "?" rejection on GRAY confirm', () =
         JSON.stringify({
           status: 'OPTIMAL',
           method: 'cp-sat',
-          solution: { status: 'OPTIMAL', fasi: [] },
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
           kpis: { makespan_min: 3120, on_time_rate: 0.78, ritardo_totale_min: 180 },
           objective_value: 3120,
           warnings: [],

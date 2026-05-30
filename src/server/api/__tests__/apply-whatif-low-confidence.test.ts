@@ -163,7 +163,7 @@ describe('F-W8-07 — low_confidence_classification warning', () => {
       jsonResponse({
         status: 'OPTIMAL',
         method: 'cp-sat',
-        solution: { 'COM-001': { fasi: [] } },
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
         kpis: { makespan_min: 2900 },
         objective_value: 2900,
         warnings: [],
@@ -219,7 +219,7 @@ describe('F-W8-07 — low_confidence_classification warning', () => {
       jsonResponse({
         status: 'OPTIMAL',
         method: 'cp-sat',
-        solution: { 'COM-001': { fasi: [] } },
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
         kpis: { makespan_min: 2900 },
         objective_value: 2900,
         warnings: [],
@@ -256,7 +256,7 @@ describe('F-W8-07 — low_confidence_classification warning', () => {
       jsonResponse({
         status: 'OPTIMAL',
         method: 'cp-sat',
-        solution: { 'COM-001': { fasi: [] } },
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
         kpis: { makespan_min: 2900 },
         objective_value: 2900,
         warnings: [],
@@ -321,7 +321,7 @@ describe('F-W8-07 — low_confidence_classification warning', () => {
       jsonResponse({
         status: 'OPTIMAL',
         method: 'cp-sat',
-        solution: { 'COM-001': { fasi: [] } },
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
         kpis: { makespan_min: 2900 },
         objective_value: 2900,
         warnings: [],
@@ -367,7 +367,7 @@ describe('F-W8-07 — low_confidence_classification warning', () => {
         jsonResponse({
           status: 'OPTIMAL',
           method: 'cp-sat',
-          solution: { 'COM-001': { fasi: [] } },
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
           kpis: { makespan_min: 2900 },
           objective_value: 2900,
           warnings: [],

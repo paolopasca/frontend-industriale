@@ -326,6 +326,10 @@ export const Route = createFileRoute('/api/reschedule-fresh')({
               // "ricalcolato dal giorno N (giorni precedenti congelati)".
               day_anchor: dayAnchor,
               frozen_count: frozenPhases.length,
+              // Wave 16.6 §C — the extracted rule slot that produced this plan.
+              // The client appends it to the applied-rules ledger so the next
+              // What-If / Ripianifica re-applies it (cumulative constraints).
+              applied_rules: rules,
               result: {
                 status: solveResult.status,
                 method: 'deterministic-template',

@@ -11,6 +11,7 @@ import { routeIntent, type BaselineFasi } from '@/server/llm/strategy-router';
 import { loadCatalog } from '@/server/llm/catalog/loader';
 import { apply as applyDataModification, canApply as dataModifierCanApply } from '@/server/llm/data-modifier';
 import { buildFrozenPhases, detectScenarioStartMin, detectScenarioPhraseMatches, type FrozenPhase } from '@/server/llm/frozen-window-builder';
+import { mergeRuleSlots } from '@/lib/appliedRulesLedger';
 import { resolveTemplate } from '@/lib/api';
 
 /**
@@ -78,6 +79,13 @@ const BodySchema = z.object({
   userConfirmedGrayZone: z.boolean().optional(),
   confirmedPayload: z.record(z.string(), z.unknown()).optional(),
   forceOpusFallback: z.boolean().optional(),
+  // Wave 16.6 §C — cumulative applied-rules ledger. The UI folds every
+  // previously-accepted rule payload (mergeLedgerRules) and threads it here
+  // so the solver re-applies prior-accepted constraints together with the
+  // new scenario. Merged NEW-WINS (the new scenario beats a conflicting
+  // prior slot) via mergeRuleSlots before the solve. Optional so Wave 4.1
+  // and pre-16.6 callers (no ledger) keep the single-rule behaviour.
+  priorRules: z.record(z.string(), z.unknown()).optional(),
 });
 
 type Body = z.infer<typeof BodySchema>;
@@ -157,6 +165,61 @@ function estimateHorizonMaxEndMin(originalSolution: unknown): number {
     }
   }
   return maxEnd;
+}
+
+// Wave 16.6 §D — empty-solution guard (the Gantt-not-updating fix).
+// The dashboard's adaptFJSP (resultAdapter.ts) builds machines/operators/
+// operations by iterating `solution[commessa].fasi[]`. The apply-whatif
+// `solved` event updates the KPI cards from `newKpis`, but if the backend
+// returns a solution map with NO job carrying a non-empty fasi[] (a
+// degenerate/empty solve — e.g. a rule that the solver applied to an empty
+// model, or a backend that echoed `{}`), the KPIs change but the Gantt /
+// OperationalPlan render blank. The manager sees numbers move while the
+// visual plan stays empty — indistinguishable from a frozen Gantt. We
+// detect that here and emit aborted_unsupported(empty_solution_after_solve)
+// instead of a misleading `solved`. Tolerant to both the nested
+// `{commessa:{fasi:[]}}` shape (the real solver output) and a flat
+// top-level `fasi[]` (legacy fixtures).
+function countSolutionPhases(solution: unknown): number {
+  if (!solution || typeof solution !== 'object') return 0;
+  const root = solution as Record<string, unknown>;
+  if (Array.isArray(root.fasi)) return root.fasi.length;
+  let total = 0;
+  for (const [, jobRaw] of Object.entries(root)) {
+    if (!jobRaw || typeof jobRaw !== 'object') continue;
+    const fasi = (jobRaw as { fasi?: unknown }).fasi;
+    if (Array.isArray(fasi)) total += fasi.length;
+  }
+  return total;
+}
+
+// Wave 16.6 §E — explicit clock-time start anchor with no enforcing slot.
+// Utterances like "anticipa COM-007 a domani alle 8" or "fai partire COM-001
+// il giorno 2 dalle 14" carry BOTH a day anchor (handled by the frozen-window
+// cutoff) AND an explicit wall-clock start time. The solver has NO release-time
+// constraint slot: f_apply_rules.py applies unavailable_machines / priority /
+// deadline / shift / capacity, but nothing that forces a given operation to
+// START at a given clock minute. So the start-time half of such an utterance is
+// silently dropped — the solver may schedule the order anywhere the day-anchor
+// freeze allows. We surface an amber `time_window_start_unsupported` warning so
+// the manager knows the time-of-day was not hard-enforced (the day-level freeze
+// still applies). NON-blocking: the solve proceeds.
+//
+// Detection is deliberately narrow to avoid false positives: a clock time
+// ("alle 14", "dalle 8:30", "alle ore 9") AND a day anchor ("domani",
+// "dopodomani", "giorno N", "fra N giorni") must BOTH be present. A bare "ferma
+// M-3 dalle 14 alle 18" (machine downtime window) is NOT flagged — that maps to
+// unavailable_machines which IS enforced; the guard only fires when the clock
+// time is attached to a day-shifted order anchor the solver can't pin.
+const RE_CLOCK_TIME = /\b(?:alle|dalle)\s+(?:ore\s+)?\d{1,2}(?:[:.]\d{2})?\b/;
+
+function hasExplicitTimeWindowStart(text: string | undefined): boolean {
+  if (typeof text !== 'string' || text.trim().length === 0) return false;
+  const t = text.toLowerCase();
+  if (!RE_CLOCK_TIME.test(t)) return false;
+  // Reuse the frozen-window detector's vocabulary: a non-null scenario start
+  // means a day anchor (domani/dopodomani/giorno N/fra N giorni) is present.
+  return detectScenarioStartMin(t) !== null;
 }
 
 // Wave 16.4 A3 — empty-dict guard. A rules payload like
@@ -617,6 +680,15 @@ export const Route = createFileRoute('/api/apply-whatif')({
                 wave7Warnings.push(`a4_cutoff_beyond_horizon:${cutoffMin}_max_${horizonMaxEnd}`);
               }
 
+              // Wave 16.6 §E — explicit clock start-time on a day-anchored
+              // order has no enforcing slot in the solver (f_apply_rules.py has
+              // no release-time constraint). The day-level freeze still applies,
+              // but the time-of-day is not pinned — warn so the manager isn't
+              // misled into thinking "alle 8" was honoured. Amber, non-blocking.
+              if (hasExplicitTimeWindowStart(textForCutoff)) {
+                wave7Warnings.push('time_window_start_unsupported');
+              }
+
               const frozenPhases: FrozenPhase[] = cutoffMin !== undefined
                 ? buildFrozenPhases(input.originalSolution, cutoffMin)
                 : [];
@@ -635,6 +707,15 @@ export const Route = createFileRoute('/api/apply-whatif')({
               // than just "constraint applied".
               const datasetOverridesSummary: string[] = [];
 
+              // Wave 16.6 §A WIRING STUB — interpreter-resolver (Task #1) is
+              // building `interpretInstruction` (closed-set enum intent +
+              // shared entity resolver + deterministic gate). Once it publishes
+              // and ACKs its contract, the `parseIntent(...)` call below is
+              // replaced by `interpretInstruction(...)`. Until then we keep the
+              // shipped Haiku intent-parser path so apply-whatif stays
+              // functional. Everything else in this route (ledger merge,
+              // empty-solution guard, time-anchor flag) is independent of that
+              // swap. DO NOT wire the interpreter before the ACK.
               if (input.managerText) {
                 write('parsing_intent', { phase: 'parsing_intent', model: 'haiku-4.5' });
                 const parsed = await parseIntent(input.managerText, {
@@ -913,14 +994,31 @@ export const Route = createFileRoute('/api/apply-whatif')({
                 }
               }
 
+              // Wave 16.6 §C — fold the cumulative ledger UNDER the new
+              // scenario (NEW-WINS). priorRules carries every previously-
+              // accepted constraint (the UI built it via mergeLedgerRules);
+              // merging it here means the solver re-applies "M2 ferma il
+              // giorno 2" together with the manager's new what-if, while a
+              // conflicting newer slot beats the prior one. When no ledger was
+              // sent (Wave 4.1 / pre-16.6 callers) this is a no-op identity.
+              //
+              // Note: this only carries the dynamic `rules` slots. Strategy A's
+              // dataset_overrides are not part of the ledger contract today
+              // (the ledger stores rule payloads, not dataset mutations); when
+              // datasetOverrides is set, rulesForSolve typically holds the
+              // rules_fallback which still merges correctly.
+              const mergedRules = mergeRuleSlots(input.priorRules, rulesForSolve);
+
               // Wave 16.4 A3 — empty-dict guard. Reject underspecified rules
               // BEFORE the solver call so the manager gets a clear toast
               // instead of a silent no-op "solved" with zero delta. Skip the
               // guard when the change goes through dataset_overrides (Strategy A)
               // since the rules object can legitimately be empty in that path.
+              // Run it on the MERGED payload: a new scenario that is itself
+              // empty but rides on a non-empty ledger is still actionable.
               if (
                 !datasetOverrides
-                && !hasMeaningfulRules(rulesForSolve)
+                && !hasMeaningfulRules(mergedRules)
               ) {
                 flushCost();
                 write('aborted_unsupported', {
@@ -973,7 +1071,7 @@ export const Route = createFileRoute('/api/apply-whatif')({
                 resolveTemplate(
                   input.slug,
                   problemType,
-                  rulesForSolve,
+                  mergedRules,
                   cutoffMin,
                   frozenPhases,
                   datasetOverrides,
@@ -1033,7 +1131,7 @@ export const Route = createFileRoute('/api/apply-whatif')({
                   resolveTemplate(
                     input.slug,
                     problemType,
-                    rulesForSolve,
+                    mergedRules,
                     cutoffMin,
                     frozenPhases, // F-W8-06 Wave 9 OPT 1: full list, NOT [].
                     datasetOverrides,
@@ -1055,6 +1153,49 @@ export const Route = createFileRoute('/api/apply-whatif')({
                     ...(relaxedResult.warnings ?? []),
                   ],
                 };
+              }
+
+              // Wave 16.6 §D — empty-solution guard (Gantt-not-updating fix).
+              // The backend can report a SUCCESS status (OPTIMAL/FEASIBLE) yet
+              // return a solution map with no schedulable phases (degenerate
+              // solve, echoed `{}`, a rule that emptied the model). The KPI
+              // cards would update from newKpis while the Gantt /
+              // OperationalPlan render blank, which looks exactly like a frozen
+              // Gantt to the manager. Convert that into an explicit
+              // aborted_unsupported so the UI shows a clear "scenario non
+              // applicabile" instead of a misleading half-update.
+              //
+              // Scope is deliberately narrow:
+              //  - Only SUCCESS statuses are guarded. INFEASIBLE (incl. the
+              //    both-solves-infeasible recovery case) is a legitimate
+              //    terminal `solved` the UI renders as "infeasible" + the
+              //    relaxation warning — an empty solution there is expected,
+              //    not the bug.
+              //  - Gated on the BASELINE having had phases: a problem that was
+              //    legitimately empty to begin with is not flagged (nothing to
+              //    render either way).
+              const solveStatus = (solveResult.status ?? '').toUpperCase();
+              const isSuccessStatus = solveStatus === 'OPTIMAL' || solveStatus === 'FEASIBLE';
+              const solvedPhaseCount = countSolutionPhases(solveResult.solution);
+              const baselinePhaseCount = countSolutionPhases(input.originalSolution);
+              if (isSuccessStatus && solvedPhaseCount === 0 && baselinePhaseCount > 0) {
+                flushCost();
+                write('aborted_unsupported', {
+                  reason: 'empty_solution_after_solve',
+                  warnings: [
+                    ...wave7Warnings,
+                    ...(solveResult.warnings ?? []),
+                    'empty_solution_after_solve',
+                  ],
+                });
+                write('done', {
+                  cost_usd: lastUsage?.cost_usd ?? 0,
+                  tokens_in: lastUsage?.tokens_in ?? 0,
+                  tokens_out: lastUsage?.tokens_out ?? 0,
+                  cache_read_tokens: lastUsage?.cache_read_tokens,
+                  cache_write_tokens: lastUsage?.cache_write_tokens,
+                });
+                return;
               }
 
               const newKpis: Record<string, number> = solveResult.kpis ?? {};
@@ -1115,6 +1256,14 @@ export const Route = createFileRoute('/api/apply-whatif')({
                 skipped_rules_count: skippedRulesCount,
                 dataset_overrides_summary: datasetOverridesSummary,
                 locked_phases: lockedPhasesOut,
+                // Wave 16.6 §C — echo the NEW scenario's rule slot (pre-merge,
+                // i.e. WITHOUT priorRules, which the ledger already holds). On
+                // "Accetta" the UI appends exactly this delta so the next
+                // What-If folds it in. Strategy A (dataset_overrides) carries
+                // an empty rulesForSolve — the UI's append is a no-op for empty
+                // payloads, which is correct (dataset mutations aren't ledgered
+                // today).
+                applied_rules: rulesForSolve,
                 // Pass the raw backend envelope through for diagnostics
                 // (devil's advocate + UI can introspect skipped entries).
                 wave7: wave7Env,

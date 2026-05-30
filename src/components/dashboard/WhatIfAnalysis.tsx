@@ -27,10 +27,22 @@ interface WhatIfAnalysisProps {
   kpis: Record<string, number>;
   consultationMd?: string;
   dataSchemaMd?: string;
+  // Wave 16.6 §C — the RAW live backend solution map ({ COM-001: { fasi: [] } }),
+  // distinct from `solution` (the normalized AiInputs envelope used for display
+  // + the /api/whatif analysis call). apply-whatif must re-solve from THIS map
+  // so the solver/frozen-window builder see the real commessa→fasi shape and
+  // the applied constraints carry. Falls back to `solution` when absent.
+  liveSolutionMap?: unknown;
+  // Wave 16.6 §C — cumulative applied-rules ledger (folded new-wins by the
+  // parent). Threaded to apply-whatif as `priorRules` so prior-accepted
+  // constraints are re-applied together with the new scenario.
+  priorRules?: Record<string, unknown>;
   // Wave 16.4 A7 — when the manager clicks "Accetta" on a candidate diff
   // we synthesize a solve-template shaped result and hand it back to the
   // parent route so `setBackendResult` swaps the dashboard to the new plan.
-  onAcceptResult?: (result: unknown) => void;
+  // Wave 16.6 §C — second arg carries the accepted rules so the parent can
+  // append them to the ledger for the next What-If.
+  onAcceptResult?: (result: unknown, acceptedRules?: Record<string, unknown>) => void;
   // Wave 16.5 A3 — the full original backend envelope (status, solution,
   // kpis, time_config, maintenance, operator_config, …). The apply-whatif
   // `solved` event only returns solution+kpis; `adaptResult` needs the rest
@@ -91,6 +103,9 @@ interface ApplySolvedPayload {
   // names (commessa/operazione/macchina) and backend audit fields
   // (job_id/seq/machine_id/worker_id); we read only the UI-legacy slice.
   locked_phases?: FrozenPhase[];
+  // Wave 16.6 §C — the NEW scenario's rule slot (pre-merge), appended to the
+  // ledger on accept so the next What-If carries it.
+  applied_rules?: Record<string, unknown>;
 }
 
 interface ApplyAbortedUnsupportedPayload {
@@ -142,6 +157,8 @@ export function WhatIfAnalysis({
   kpis,
   consultationMd,
   dataSchemaMd,
+  liveSolutionMap,
+  priorRules,
   onAcceptResult,
   originalBackendResult,
 }: WhatIfAnalysisProps) {
@@ -157,6 +174,9 @@ export function WhatIfAnalysis({
   const [candidateSolution, setCandidateSolution] = useState<unknown>(null);
   const [candidateKpis, setCandidateKpis] = useState<Record<string, number> | null>(null);
   const [candidateWarnings, setCandidateWarnings] = useState<string[]>([]);
+  // Wave 16.6 §C — the NEW scenario's rule slot echoed on `solved`. Appended
+  // to the parent's ledger on "Accetta" so the next What-If carries it.
+  const [appliedRules, setAppliedRules] = useState<Record<string, unknown> | null>(null);
   const [applyCostUsd, setApplyCostUsd] = useState<number | null>(null);
 
   // Wave 7 — telemetry from BFF Wave 7 SSE contract.
@@ -234,6 +254,7 @@ export function WhatIfAnalysis({
     setCandidateSolution(null);
     setCandidateKpis(null);
     setCandidateWarnings([]);
+    setAppliedRules(null);
     setApplyCostUsd(null);
     setLockedCount(null);
     setModifiedCount(null);
@@ -370,6 +391,7 @@ export function WhatIfAnalysis({
     setCandidateSolution(null);
     setCandidateKpis(null);
     setCandidateWarnings([]);
+    setAppliedRules(null);
     setApplyCostUsd(null);
     setLockedCount(null);
     setModifiedCount(null);
@@ -391,7 +413,11 @@ export function WhatIfAnalysis({
         '/api/apply-whatif',
         {
           slug,
-          originalSolution: solution,
+          // Wave 16.6 §C — re-solve from the RAW live solution map so the
+          // applied constraints carry. `solution` (the AiInputs envelope) is
+          // the wrong shape for the solver baseline (the core bug fixed here);
+          // fall back to it only when the live map wasn't threaded.
+          originalSolution: liveSolutionMap ?? solution,
           kpis,
           whatifText: response,
           consultationMd,
@@ -402,6 +428,9 @@ export function WhatIfAnalysis({
           // Wave 7 — cutoff window for hard-lock of pre-cutoff phases.
           currentTimeMin,
           cushionMin,
+          // Wave 16.6 §C — cumulative ledger of prior-accepted constraints,
+          // merged new-wins with this scenario by the BFF before the solve.
+          ...(priorRules && Object.keys(priorRules).length > 0 ? { priorRules } : {}),
           // Wave 16.3 — GRAY_ZONE retry flags (accepted by BFF BodySchema).
           ...(flags.userConfirmedGrayZone ? { userConfirmedGrayZone: true } : {}),
           ...(flags.confirmedPayload ? { confirmedPayload: flags.confirmedPayload } : {}),
@@ -507,6 +536,10 @@ export function WhatIfAnalysis({
           setCandidateSolution(payload.newSolution ?? null);
           setCandidateKpis(payload.newKpis ?? null);
           setCandidateWarnings(Array.isArray(payload.warnings) ? payload.warnings : []);
+          // Wave 16.6 §C — the NEW scenario's rule delta to ledger on accept.
+          if (payload.applied_rules && typeof payload.applied_rules === 'object') {
+            setAppliedRules(payload.applied_rules as Record<string, unknown>);
+          }
           // Wave 7 telemetry on `solved` payload (per BFF contract: always present).
           if (typeof payload.locked_count === 'number') setLockedCount(payload.locked_count);
           if (typeof payload.modified_count === 'number') setModifiedCount(payload.modified_count);
@@ -557,7 +590,7 @@ export function WhatIfAnalysis({
       }
     }
     applyAbortRef.current = null;
-  }, [canApply, slug, planReady, solution, kpis, response, scenario, consultationMd, dataSchemaMd, computeCutoffParams, intentId, setGrayZoneConfirmation]);
+  }, [canApply, slug, planReady, solution, liveSolutionMap, priorRules, kpis, response, scenario, consultationMd, dataSchemaMd, computeCutoffParams, intentId, setGrayZoneConfirmation]);
 
   const runApplyWhatIf = useCallback(() => {
     return runApplyWhatIfWithFlags();
@@ -612,6 +645,28 @@ export function WhatIfAnalysis({
       return;
     }
 
+    // Wave 16.6 §D — defence-in-depth: never swap in a phase-less candidate.
+    // The §D empty-solution guard already converts a zero-phase solve into
+    // aborted_unsupported (so we should never reach accept with one), but a
+    // belt-and-braces check here keeps the Gantt from blanking even if a
+    // future code path bypasses the guard. Counts both the nested
+    // `{commessa:{fasi:[]}}` map and a flat top-level `fasi[]`.
+    const countPhases = (sol: unknown): number => {
+      if (!sol || typeof sol !== 'object') return 0;
+      const root = sol as Record<string, unknown>;
+      if (Array.isArray(root.fasi)) return root.fasi.length;
+      let n = 0;
+      for (const job of Object.values(root)) {
+        const fasi = job && typeof job === 'object' ? (job as { fasi?: unknown }).fasi : null;
+        if (Array.isArray(fasi)) n += fasi.length;
+      }
+      return n;
+    };
+    if (countPhases(candidateSolution) === 0) {
+      toast.error('Soluzione candidate vuota — niente da applicare.');
+      return;
+    }
+
     const base =
       originalBackendResult && typeof originalBackendResult === 'object'
         ? (originalBackendResult as Record<string, unknown>)
@@ -628,7 +683,9 @@ export function WhatIfAnalysis({
 
     // Hand the merged plan to the parent FIRST so the dashboard refreshes
     // even if the audit echo below fails (the candidate is already valid).
-    onAcceptResult?.(merged);
+    // Wave 16.6 §C — pass the NEW scenario's rule delta so the parent appends
+    // it to the ledger; the next What-If then re-applies it.
+    onAcceptResult?.(merged, appliedRules ?? undefined);
     resetApplyState();
     toast.success('Piano aggiornato con il candidate.');
 
@@ -655,6 +712,7 @@ export function WhatIfAnalysis({
     candidateSolution,
     candidateKpis,
     candidateWarnings,
+    appliedRules,
     intentId,
     strategy,
     onAcceptResult,

@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { migrateLegacyKeys } from '@/lib/storage';
+import { loadLedger, appendRule, clearLedger, mergeLedgerRules } from '@/lib/appliedRulesLedger';
 import { AnimatePresence, motion } from 'framer-motion';
 import { SetupPage, type SetupData } from '@/components/onboarding/SetupPage';
 import type { SolverMethod } from '@/components/onboarding/SolverMethodSelect';
@@ -64,6 +65,13 @@ function Index() {
   const [replanOpen, setReplanOpen] = useState(false);
   const [dataInputOpen, setDataInputOpen] = useState(false);
   const [ganttScroll, setGanttScroll] = useState(0);
+  // Wave 16.6 §C — bumping this re-reads the slug-scoped applied-rules ledger
+  // so a freshly-appended rule (after accept / reschedule) is folded into the
+  // priorRules that the next What-If sends. localStorage isn't reactive, so we
+  // drive the recompute with an explicit version counter.
+  const [ledgerVersion, setLedgerVersion] = useState(0);
+
+  const companySlug = setupData?.companySlug ?? null;
 
   useEffect(() => {
     migrateLegacyKeys();
@@ -83,6 +91,51 @@ function Index() {
 
   const aiInputs = useMemo(() => extractAiInputs(backendResult), [backendResult]);
   const solverStatus = useMemo(() => extractSolverStatus(backendResult), [backendResult]);
+
+  // Wave 16.6 §C — the RAW backend solution map ({ COM-001: { fasi: [...] } }),
+  // NOT the normalized aiInputs envelope. What-If must re-solve from THIS live
+  // map (the solver/frozen-window builder both key on commessa→fasi), so the
+  // applied constraints actually carry. Passing aiInputs.solution here was the
+  // core bug: it's `{ status, fasi[], commesse }`, a shape the solver path
+  // can't consume as a baseline, so every What-If silently re-solved a
+  // mis-shaped snapshot and lost the live plan + ledger.
+  const liveSolutionMap = useMemo(() => {
+    if (!backendResult || typeof backendResult !== 'object') return null;
+    const sol = (backendResult as Record<string, unknown>).solution;
+    return sol && typeof sol === 'object' ? sol : null;
+  }, [backendResult]);
+
+  // Wave 16.6 §C — fold the slug-scoped ledger into a single cumulative rules
+  // payload. Re-read whenever the slug changes or a rule was appended
+  // (ledgerVersion bump). This is the priorRules threaded into apply-whatif.
+  // ledgerVersion is an INTENTIONAL dependency: loadLedger reads localStorage
+  // (non-reactive), so the version counter is the only signal that a new rule
+  // landed and the fold must recompute. eslint can't see the external read.
+  const priorRules = useMemo(
+    () => mergeLedgerRules(loadLedger(companySlug)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [companySlug, ledgerVersion],
+  );
+
+  // Wave 16.6 §C — apply a candidate/reschedule result as the new live plan
+  // AND record the rules that produced it in the ledger so the NEXT What-If
+  // re-applies them. The accepted-rules slot rides on the result envelope as
+  // `rules_used` (chat reschedule) or is passed explicitly by WhatIfAnalysis.
+  const acceptResult = useCallback(
+    (result: unknown, acceptedRules?: Record<string, unknown>, source: 'whatif' | 'reschedule' = 'whatif') => {
+      setBackendResult(result);
+      const rules =
+        acceptedRules
+        ?? (result && typeof result === 'object'
+          ? ((result as Record<string, unknown>).rules_used as Record<string, unknown> | undefined)
+          : undefined);
+      if (rules && typeof rules === 'object' && Object.keys(rules).length > 0) {
+        appendRule(companySlug, { source, rules });
+        setLedgerVersion((v) => v + 1);
+      }
+    },
+    [companySlug],
+  );
 
   return (
     <>
@@ -130,7 +183,16 @@ function Index() {
                   // Wave 12: reset riporta a 'setup' ma mantiene
                   // ``solverMethod`` su DEFAULT_SOLVER_METHOD (non null)
                   // per coerenza col nuovo flow lineare.
-                  onReset={() => { setPhase('setup'); setBackendResult(null); setSolverMethod(DEFAULT_SOLVER_METHOD); }}
+                  onReset={() => {
+                    // Wave 16.6 §C — a full reset abandons the live plan, so the
+                    // accumulated applied-rules ledger must go with it: the next
+                    // plan starts from a clean constraint slate.
+                    clearLedger(companySlug);
+                    setLedgerVersion((v) => v + 1);
+                    setPhase('setup');
+                    setBackendResult(null);
+                    setSolverMethod(DEFAULT_SOLVER_METHOD);
+                  }}
                   companySlug={setupData?.companySlug ?? null}
                   companyName={setupData?.companyName ?? null}
                   solverStatus={solverStatus}
@@ -176,7 +238,12 @@ function Index() {
                   slug={setupData?.companySlug ?? null}
                   solution={aiInputs.solution}
                   kpis={aiInputs.kpis}
-                  onAcceptResult={(result) => setBackendResult(result)}
+                  // Wave 16.6 §C — the RAW live solution map + cumulative ledger
+                  // so What-If re-solves from the current plan and carries every
+                  // previously-accepted constraint.
+                  liveSolutionMap={liveSolutionMap}
+                  priorRules={priorRules}
+                  onAcceptResult={(result, acceptedRules) => acceptResult(result, acceptedRules, 'whatif')}
                   originalBackendResult={backendResult}
                 />
                 <SplitSuggestion
@@ -201,7 +268,7 @@ function Index() {
                 companySlug={setupData?.companySlug ?? null}
                 originalSolution={backendResult ?? dashboardData}
                 solverMethod={solverMethod}
-                onResult={(result) => setBackendResult(result)}
+                onResult={(result, acceptedRules) => acceptResult(result, acceptedRules, 'reschedule')}
               />
               <DataInputModal
                 open={dataInputOpen}

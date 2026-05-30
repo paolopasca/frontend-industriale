@@ -278,7 +278,7 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
       .mockResolvedValueOnce(jsonResponse({
         status: 'OPTIMAL',
         method: 'cp-sat',
-        solution: {},
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
         kpis: { makespan_min: 2900 },
         objective_value: 2900,
         warnings: [],
@@ -353,7 +353,7 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
       status: 'OPTIMAL',
       method: 'cp-sat',
-      solution: { 'COM-001': { fasi: [] } },
+      solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
       kpis: { makespan_min: 2700 },
       objective_value: 2700,
       warnings: [],
@@ -673,7 +673,7 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
       // Resolve retry as OPTIMAL.
       retryResolve!(new Response(JSON.stringify({
         status: 'OPTIMAL', method: 'cp-sat',
-        solution: {}, kpis: { makespan_min: 2900 },
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: { makespan_min: 2900 },
         objective_value: 2900, warnings: [], cost_usd: 0,
       }), { status: 200, headers: { 'content-type': 'application/json' } }));
 
@@ -925,7 +925,7 @@ describe('B-W8-S-04 — Haiku unknown+high short-circuits Opus cascade', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
       status: 'OPTIMAL',
       method: 'cp-sat',
-      solution: { 'COM-001': { fasi: [] } },
+      solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
       kpis: { makespan_min: 2700 },
       objective_value: 2700,
       warnings: [],

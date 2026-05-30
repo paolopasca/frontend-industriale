@@ -97,7 +97,10 @@ export function ReplanModal({
   // they never emit, TD-022 → "Run not found"), so they go straight to the
   // fresh-solve route. Only codegen-pipeline keeps the warm-start chat path.
   solverMethod?: SolverMethod | null;
-  onResult?: (result: unknown) => void;
+  // Wave 16.6 §C — second arg carries the rule slot that produced the result
+  // (chat reschedule `rules_used`, or fresh-solve `applied_rules`) so the
+  // parent appends it to the cumulative ledger for the next What-If.
+  onResult?: (result: unknown, acceptedRules?: Record<string, unknown>) => void;
 }) {
   const [messages, setMessages] = useState<Message[]>(() => loadStored(companySlug));
   const [input, setInput] = useState('');
@@ -232,7 +235,9 @@ export function ReplanModal({
           shift_types: res.shift_types,
           cp_sat_stats: res.cp_sat_stats,
           warm_start: res.warm_start,
-        });
+        },
+        // Wave 16.6 §C — carry the applied rule slot to the ledger.
+        (res.rules_used as Record<string, unknown> | undefined) ?? undefined);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Errore di rete';
@@ -296,6 +301,8 @@ export function ReplanModal({
         cutoff_min?: number | null;
         day_anchor?: number | null;
         frozen_count?: number;
+        // Wave 16.6 §C — the extracted rule slot that produced the plan.
+        applied_rules?: Record<string, unknown>;
         result?: {
           status: string;
           method: string;
@@ -377,7 +384,9 @@ export function ReplanModal({
           objective_value: r.objective_value,
           warnings: r.warnings,
           cost_usd: r.cost_usd,
-        });
+        },
+        // Wave 16.6 §C — append the extracted rules to the ledger.
+        payload.applied_rules ?? undefined);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Errore di rete';

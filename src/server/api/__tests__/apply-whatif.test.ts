@@ -169,7 +169,13 @@ describe('POST /api/apply-whatif', () => {
         JSON.stringify({
           status: 'OPTIMAL',
           method: 'cp-sat',
-          solution: { status: 'OPTIMAL', fasi: [] },
+          // Non-empty solution so the Wave 16.6 §D empty-solution guard does
+          // not (correctly) demote this to aborted_unsupported — this test
+          // exercises the solved path.
+          solution: {
+            'COM-001': { fasi: [{ macchina: 'M-1', operatore: 'OP-1', start_min: 0, end_min: 60 }] },
+            'COM-007': { fasi: [{ macchina: 'M-3', operatore: 'OP-2', start_min: 1080, end_min: 1140 }] },
+          },
           kpis: { makespan_min: 3120, on_time_rate: 0.78, ritardo_totale_min: 180 },
           objective_value: 3120,
           warnings: ['M-3 fermo: makespan peggiorato di 240 min'],
@@ -565,7 +571,9 @@ describe('POST /api/apply-whatif', () => {
         JSON.stringify({
           status: 'OPTIMAL',
           method: 'cp-sat',
-          solution: {},
+          // Non-empty so the §D empty-solution guard does not fire; this test
+          // is about KPI delta semantics, not the guard.
+          solution: { 'COM-007': { fasi: [{ macchina: 'M-3', start_min: 0, end_min: 60 }] } },
           kpis: { makespan_min: 3000, n_in_ritardo: 0 },
           objective_value: 3000,
           warnings: [],

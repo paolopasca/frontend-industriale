@@ -187,7 +187,7 @@ describe('F-W9-08 — BFF retry payload contract (e2e test 5 companion)', () => 
       .mockResolvedValueOnce(jsonResponse({
         status: 'OPTIMAL',
         method: 'cp-sat',
-        solution: { 'COM-001': { fasi: [] } },
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
         kpis: { makespan_min: 2970 },
         objective_value: 2970,
         warnings: [],
@@ -287,7 +287,7 @@ describe('F-W9-08 — BFF retry payload contract (e2e test 5 companion)', () => 
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
       status: 'OPTIMAL',
       method: 'cp-sat',
-      solution: { 'COM-001': { fasi: [] } },
+      solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
       kpis: { makespan_min: 2700 },
       objective_value: 2700,
       warnings: [],
