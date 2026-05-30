@@ -67,13 +67,26 @@ export function DashboardHeader({
       return;
     }
     const url = `/print/${encodeURIComponent(slug)}`;
-    setTimeout(() => {
-      const win = window.open(url, '_blank', 'noopener,noreferrer');
-      if (!win) {
-        removeSlugScoped(PRINT_SNAPSHOT_KEY, slug);
-        toast.error('Il browser ha bloccato la nuova finestra. Consenti i popup per esportare il PDF.');
-      }
-    }, 0);
+    // Open the print tab SYNCHRONOUSLY inside the click handler. The snapshot
+    // above is written with a synchronous setSlugScoped, and the new tab only
+    // runs its read on a later tick (after this call stack unwinds), so there
+    // is no read/write race to defer for. Deferring window.open via setTimeout
+    // (the previous Wave 16.4 approach) loses the user-gesture context, so the
+    // browser popup-blocker kills the window — producing a false "il browser ha
+    // bloccato la nuova finestra" toast on every click. Keeping it synchronous
+    // makes the open a trusted user action and stops the popup from being blocked.
+    const win = window.open(url, '_blank');
+    if (win) {
+      // Sever the opener link for security (reverse-tabnabbing) by hand rather
+      // than via the 'noopener' window feature: that feature makes window.open
+      // return null even on SUCCESS, which would make the block-check below fire
+      // a false "popup blocked" error on every click. Setting opener=null keeps
+      // the security benefit while preserving a usable return value.
+      try { win.opener = null; } catch { /* same-origin only; ignore */ }
+    } else {
+      removeSlugScoped(PRINT_SNAPSHOT_KEY, slug);
+      toast.error('Il browser ha bloccato la nuova finestra. Consenti i popup per esportare il PDF.');
+    }
   };
   const handleReset = () => {
     if (companySlug) clearSlugScoped(companySlug);
