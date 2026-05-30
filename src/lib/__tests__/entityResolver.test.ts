@@ -116,6 +116,30 @@ describe('resolveMachineAlias', () => {
     expect(canonicaliseId('m-1', collide)).toBe('M1'); // alnum→"M1", exact member
     expect(canonicaliseId('m2', collide)).toBe('M02'); // sole derived match
   });
+
+  it('M-3 residual (CONSCIOUS CHOICE): "m-1" → M1 by exact tier, NOT null', () => {
+    // devil-advocate Wave 16.6 M-3 residual: with known={M1,M-001}, "m-1"
+    // resolves to M1 even though buildMachineAliases drops "m-1" as a collision
+    // and "linea 1" → null for the same set. This is INTENTIONAL, not an
+    // unexamined edge:
+    //   - TIER 1 (exact) means "the manager typed a real id, modulo case + a
+    //     stray separator". "m-1" de-punctuated/upper-cased is the LITERAL
+    //     member "M1" — so it is an exact hit, not a width/separator guess.
+    //   - TIER 2 (derived) is where width/separator are GUESSED; that is the
+    //     only tier that can map one token onto two siblings, so that is the
+    //     only tier that needs the ambiguous→null refusal (M-3 fix).
+    //   - Weakening TIER 1 to also refuse here would regress a legitimate
+    //     high-confidence exact match to chase a symmetry that does not hold:
+    //     a manager who writes "m-1" means M1, not the zero-padded M-001.
+    // Pinning so the choice is conscious (devil option b).
+    const collide = new Set(['M1', 'M-001']);
+    expect(canonicaliseId('m-1', collide)).toBe('M1'); // exact hit on the literal "M1"
+    // Proof TIER 1 only wins on a LITERAL hit: drop M1 from the set and the
+    // same token now derives M-001 uniquely via TIER 2 (no literal M1 to grab).
+    expect(canonicaliseId('m-1', new Set(['M-001']))).toBe('M-001');
+    // "linea 1" has NO literal id form → stays ambiguous→null for the collision set.
+    expect(resolveMachineAlias('linea 1', ctxOf({ machines: ['M1', 'M-001'] }))).toBeNull();
+  });
 });
 
 describe('resolveOrderAlias', () => {
