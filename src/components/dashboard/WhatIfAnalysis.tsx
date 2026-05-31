@@ -171,6 +171,11 @@ export function WhatIfAnalysis({
   // Apply-whatif state (SSE /api/apply-whatif).
   const [applying, setApplying] = useState<ApplyingState>('idle');
   const [translatorChange, setTranslatorChange] = useState<ConstraintChange | null>(null);
+  // Wave 16.6 — reason surfaced when the interpreter REJECTS the scenario (entity
+  // off the plan's closed set / non-catalog). That path emits aborted_unsupported
+  // with NO 'translated' event, so translatorChange stays null; we render this so
+  // the manager sees WHY instead of a vanishing toast.
+  const [unsupportedReason, setUnsupportedReason] = useState<string | null>(null);
   const [candidateSolution, setCandidateSolution] = useState<unknown>(null);
   const [candidateKpis, setCandidateKpis] = useState<Record<string, number> | null>(null);
   const [candidateWarnings, setCandidateWarnings] = useState<string[]>([]);
@@ -251,6 +256,7 @@ export function WhatIfAnalysis({
   const resetApplyState = useCallback(() => {
     setApplying('idle');
     setTranslatorChange(null);
+    setUnsupportedReason(null);
     setCandidateSolution(null);
     setCandidateKpis(null);
     setCandidateWarnings([]);
@@ -388,6 +394,7 @@ export function WhatIfAnalysis({
 
     setApplying('translating');
     setTranslatorChange(null);
+    setUnsupportedReason(null);
     setCandidateSolution(null);
     setCandidateKpis(null);
     setCandidateWarnings([]);
@@ -489,6 +496,7 @@ export function WhatIfAnalysis({
         } else if (event === 'aborted_unsupported') {
           const payload = data as ApplyAbortedUnsupportedPayload;
           setApplying('unsupported');
+          setUnsupportedReason(payload.reason ?? null);
           toast.warning(`Scenario non applicabile: ${humanizeUnsupportedReason(payload.reason)}`);
           // 'done' is still expected after this, but we do not transition out of 'unsupported'.
         } else if (event === 'solving') {
@@ -999,12 +1007,13 @@ export function WhatIfAnalysis({
               aria-valuemax={100}
               aria-label={applyLabel || 'Stato esecuzione what-if'}
             />
-            {applying === 'unsupported' && translatorChange?.unsupportedReason && (
+            {applying === 'unsupported' && (translatorChange?.unsupportedReason ?? unsupportedReason) && (
               <div
                 className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs text-amber-900 dark:text-amber-200"
                 data-testid="whatif-apply-unsupported-reason"
               >
-                <strong>Motivo:</strong> {translatorChange.unsupportedReason}
+                <strong>Motivo:</strong>{' '}
+                {humanizeUnsupportedReason(translatorChange?.unsupportedReason ?? unsupportedReason ?? '')}
               </div>
             )}
             {applyCostUsd != null && applying !== 'translating' && applying !== 'solving' && (

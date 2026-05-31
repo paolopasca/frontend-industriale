@@ -123,7 +123,20 @@ function Index() {
   // `rules_used` (chat reschedule) or is passed explicitly by WhatIfAnalysis.
   const acceptResult = useCallback(
     (result: unknown, acceptedRules?: Record<string, unknown>, source: 'whatif' | 'reschedule' = 'whatif') => {
-      setBackendResult(result);
+      // Wave 16.6 fix — MERGE the new plan over the previous full envelope instead
+      // of replacing it. The fresh-solve reschedule result is a slim object that
+      // drops time_config / maintenance / operator_config; replacing the envelope
+      // made the operational plan lose wall-clock times + maintenance shading +
+      // operator shifts. Merging keeps those stable metadata fields while swapping
+      // in the new solution + kpis. Idempotent for the What-If "Accetta" path (its
+      // result already spreads originalBackendResult, so the merge is a no-op there
+      // and cannot regress it). KPI cards / Gantt are untouched — they derive from
+      // solution + kpis, both present in every result.
+      setBackendResult((prev: unknown) =>
+        prev && typeof prev === 'object' && result && typeof result === 'object'
+          ? { ...(prev as Record<string, unknown>), ...(result as Record<string, unknown>) }
+          : result,
+      );
       const rules =
         acceptedRules
         ?? (result && typeof result === 'object'
