@@ -5,6 +5,7 @@ import {
   loadLedger,
   appendRule,
   clearLedger,
+  describeLedgerRules,
   type AppliedRule,
 } from '../appliedRulesLedger';
 
@@ -227,5 +228,52 @@ describe('appliedRulesLedger — slug-scoped persistence', () => {
     appendRule(SLUG, { source: 'whatif', rules: { priority_orders: ['COM-001'] } });
     appendRule(SLUG, { source: 'whatif', rules: { priority_orders: ['COM-002'] } });
     expect(mergeLedgerRules(SLUG)).toEqual({ priority_orders: ['COM-001', 'COM-002'] });
+  });
+});
+
+describe('describeLedgerRules — human summary of carried constraints (Option A)', () => {
+  it('summarizes the EXACT merged priorRules that caused the "tutto a G2" bug', () => {
+    // The real folded ledger captured live from Paolo's browser: a stale
+    // M01-down-day1 + M02-down-day2 + COM-012 priority, silently merged into
+    // "anticipo COM-007". The panel must spell each one out (day_anchor is
+    // meta → ignored).
+    const rules = {
+      unavailable_machines: {
+        M02: [{ start_min: 1440, end_min: 2880 }],
+        M01: [{ start_min: 0, end_min: 960, date: '2026-04-01' }],
+      },
+      day_anchor: 1,
+      priority_orders: ['COM-012', 'COM-007'],
+    };
+    expect(describeLedgerRules(rules)).toEqual([
+      'M01 ferma (giorno 1)',
+      'M02 ferma (giorno 2)',
+      'COM-012 prioritaria',
+      'COM-007 prioritaria',
+    ]);
+  });
+
+  it('returns [] for empty / null / meta-only input', () => {
+    expect(describeLedgerRules({})).toEqual([]);
+    expect(describeLedgerRules(null)).toEqual([]);
+    expect(describeLedgerRules(undefined)).toEqual([]);
+    expect(describeLedgerRules({ day_anchor: 2, status: 'ok' })).toEqual([]);
+  });
+
+  it('renders a multi-day window as a range and falls back to date when no numeric bounds', () => {
+    expect(
+      describeLedgerRules({ unavailable_machines: { M03: [{ start_min: 0, end_min: 2880 }] } }),
+    ).toEqual(['M03 ferma (giorno 1-2)']);
+    expect(
+      describeLedgerRules({ unavailable_machines: { M04: [{ date: '2026-04-05' }] } }),
+    ).toEqual(['M04 ferma (2026-04-05)']);
+  });
+
+  it('summarizes deadline_changes per order and other slots generically', () => {
+    expect(
+      describeLedgerRules({ deadline_changes: { 'COM-001': { new_deadline_min: 100 } } }),
+    ).toEqual(['scadenza COM-001 modificata']);
+    expect(describeLedgerRules({ shift_changes: [{ x: 1 }] })).toEqual(['turni modificati']);
+    expect(describeLedgerRules({ extra_capacity: [{ y: 2 }] })).toEqual(['capacità extra']);
   });
 });

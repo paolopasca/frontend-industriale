@@ -310,3 +310,83 @@ export function mergeLedgerRules(
   }
   return acc;
 }
+
+// ── presentation ────────────────────────────────────────────────────
+// Wave 16.6 (Option A) — a human-readable summary of the cumulative
+// priorRules carried into the next What-If, so the manager SEES which
+// previously-accepted constraints are still being re-applied. This is the
+// fix for the "everything slid to the next day" surprise: a stale
+// "M01 ferma giorno 1" + "COM-012 prioritaria" from earlier experiments
+// were folded into "anticipo COM-007" invisibly, which (M01 down all day 1
+// + COM-012 forced first) pushed every other order to day 2. The carry is
+// intentional (sequential replanning); making it visible removes the
+// surprise. Pure + presentation-only — the solver never reads this.
+
+const DAY_MIN = 1440;
+
+// Minute 0 == day 1 (plan origin, 06:00). 1-based to match the "giorno N"
+// vocabulary used across the extractor/UI.
+function dayOfMinute(min: number): number {
+  return Math.floor(min / DAY_MIN) + 1;
+}
+
+function describeWindow(w: unknown): string | null {
+  const b = winBounds(w);
+  if (b) {
+    const startDay = dayOfMinute(b.s);
+    // end_min is exclusive: [1440,2880) reads "giorno 2", not "2-3".
+    const endDay = dayOfMinute(Math.max(b.s, b.e - 1));
+    return startDay === endDay ? `giorno ${startDay}` : `giorno ${startDay}-${endDay}`;
+  }
+  // No numeric bounds: fall back to an explicit `date` field if present.
+  if (isObject(w) && typeof w.date === 'string' && w.date.trim()) return w.date.trim();
+  return null;
+}
+
+function slotHasContent(v: unknown): boolean {
+  if (Array.isArray(v)) return v.length > 0;
+  if (isObject(v)) return Object.keys(v).length > 0;
+  return false;
+}
+
+/**
+ * Turn a folded `rules` payload into short Italian labels for display
+ * (e.g. "M02 ferma (giorno 2)", "COM-007 prioritaria"). Returns [] when
+ * there is nothing meaningful to show. Non-rule/meta keys (day_anchor,
+ * status, …) are ignored so the panel only lists real constraints.
+ */
+export function describeLedgerRules(
+  rules: Record<string, unknown> | null | undefined,
+): string[] {
+  if (!isObject(rules)) return [];
+  const out: string[] = [];
+
+  const um = rules.unavailable_machines;
+  if (isObject(um)) {
+    for (const machine of Object.keys(um).sort()) {
+      const wins = um[machine];
+      const labels = Array.isArray(wins)
+        ? wins.map(describeWindow).filter((x): x is string => x !== null)
+        : [];
+      out.push(labels.length > 0 ? `${machine} ferma (${labels.join(', ')})` : `${machine} ferma`);
+    }
+  }
+
+  const po = rules.priority_orders;
+  if (Array.isArray(po)) {
+    for (const id of po) {
+      if (typeof id === 'string' && id.trim()) out.push(`${id} prioritaria`);
+    }
+  }
+
+  const dc = rules.deadline_changes;
+  if (isObject(dc)) {
+    for (const id of Object.keys(dc)) out.push(`scadenza ${id} modificata`);
+  }
+
+  if (slotHasContent(rules.shift_changes)) out.push('turni modificati');
+  if (slotHasContent(rules.extra_capacity)) out.push('capacità extra');
+  if (slotHasContent(rules.operator_unavailability)) out.push('operatore non disponibile');
+
+  return out;
+}

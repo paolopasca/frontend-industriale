@@ -258,6 +258,13 @@ function Index() {
                   priorRules={priorRules}
                   onAcceptResult={(result, acceptedRules) => acceptResult(result, acceptedRules, 'whatif')}
                   originalBackendResult={backendResult}
+                  // Wave 16.6 (Option A) — drop the cumulative ledger so the next
+                  // What-If starts clean. Mirrors the reset path's ledger wipe but
+                  // keeps the current live plan on screen (no phase change).
+                  onClearPriorRules={() => {
+                    clearLedger(companySlug);
+                    setLedgerVersion((v) => v + 1);
+                  }}
                 />
                 <SplitSuggestion
                   slug={setupData?.companySlug ?? null}

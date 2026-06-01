@@ -10,6 +10,7 @@ import {
   Wand2,
   X as XIcon,
   Clock,
+  Layers,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -20,6 +21,7 @@ import { sseStream, friendlyErrorMessage } from '@/lib/streamingFetch';
 import { SolutionDiff, type FrozenPhase } from './SolutionDiff';
 import { humanizeUnsupportedReason } from './unsupported-reason-labels';
 import { WhatIfConfirmationModal } from './WhatIfConfirmationModal';
+import { describeLedgerRules } from '@/lib/appliedRulesLedger';
 
 interface WhatIfAnalysisProps {
   slug: string | null;
@@ -50,6 +52,12 @@ interface WhatIfAnalysisProps {
   // shifts) to render the Gantt/KPI/OperationalPlan. On accept we merge the
   // candidate's solution+kpis over this so the dashboard refreshes fully.
   originalBackendResult?: unknown;
+  // Wave 16.6 (Option A) — clear the cumulative applied-rules ledger so the
+  // NEXT What-If/Ripianifica starts from a clean constraint slate. The parent
+  // owns the ledger (clearLedger + ledgerVersion bump) so priorRules recomputes
+  // to {} and the inherited-constraints panel disappears. The live plan on the
+  // dashboard is left untouched — only the carry is dropped.
+  onClearPriorRules?: () => void;
 }
 
 interface ChunkPayload { text: string }
@@ -161,6 +169,7 @@ export function WhatIfAnalysis({
   priorRules,
   onAcceptResult,
   originalBackendResult,
+  onClearPriorRules,
 }: WhatIfAnalysisProps) {
   const [scenario, setScenario] = useState('');
   const [response, setResponse] = useState('');
@@ -763,6 +772,12 @@ export function WhatIfAnalysis({
   const showLowConfidenceBanner =
     confidence !== null && confidence !== 'high' && showCandidateDiff;
 
+  // Wave 16.6 (Option A) — the constraints carried in from prior accepted
+  // reschedules/what-ifs (the ledger). Surfacing them removes the "why did
+  // everything slide to the next day?" surprise: the manager sees exactly
+  // which previously-accepted rules are re-applied on top of this scenario.
+  const inheritedConstraints = useMemo(() => describeLedgerRules(priorRules), [priorRules]);
+
   return (
     <Card className="overflow-hidden">
       <CardHeader className="pb-3">
@@ -775,6 +790,46 @@ export function WhatIfAnalysis({
         </p>
       </CardHeader>
       <CardContent className="space-y-3">
+        {inheritedConstraints.length > 0 && (
+          <div
+            role="region"
+            aria-label="Vincoli ereditati dal piano corrente"
+            data-testid="whatif-inherited-constraints"
+            className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 space-y-2"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+                <Layers className="h-3.5 w-3.5" aria-hidden />
+                Vincoli ereditati dal piano corrente ({inheritedConstraints.length})
+              </div>
+              {onClearPriorRules && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  data-testid="whatif-clear-inherited"
+                  onClick={onClearPriorRules}
+                  disabled={applyInFlight}
+                >
+                  Azzera
+                </Button>
+              )}
+            </div>
+            <ul className="flex flex-wrap gap-1.5" aria-label="Elenco vincoli ereditati">
+              {inheritedConstraints.map((c) => (
+                <li
+                  key={c}
+                  className="rounded border bg-background/70 px-1.5 py-0.5 text-[11px] text-foreground"
+                >
+                  {c}
+                </li>
+              ))}
+            </ul>
+            <p className="text-[10px] text-muted-foreground leading-snug">
+              Questi vincoli, gia accettati in precedenza, vengono ri-applicati a questo scenario. Azzera per esplorare dal piano pulito.
+            </p>
+          </div>
+        )}
         <div
           role="region"
           aria-label="Cutoff temporale per il ricalcolo"
