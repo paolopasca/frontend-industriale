@@ -410,6 +410,39 @@ describe('describeLedgerRules — per-constraint labels (Option A / Wave 16.7)',
         ),
       ).toEqual(['M02 ferma (giorno 1)']);
     });
+
+    // Devil-advocate F-2 — pin the two correct-but-untested behaviours.
+    it('a multi-day PARTIAL window suppresses the clock (one HH:MM range cannot span days)', () => {
+      // {120,1080} on demo spans day 1 (from 08:00) into day 2 → startDay≠endDay.
+      // Even with company_start_hour known, fall back to the day-range label.
+      expect(
+        labelsOf(
+          { unavailable_machines: { M03: [{ start_min: 120, end_min: 1080 }] } },
+          { dayLengthMin: 960, companyStartHour: 6 },
+        ),
+      ).toEqual(['M03 ferma (giorno 1-2)']);
+    });
+
+    it('a negative/invalid company_start_hour is ignored (day-only fallback, no wrong clock)', () => {
+      expect(
+        labelsOf(
+          { unavailable_machines: { M02: [{ start_min: 0, end_min: 240 }] } },
+          { dayLengthMin: 960, companyStartHour: -1 },
+        ),
+      ).toEqual(['M02 ferma (giorno 1)']);
+    });
+
+    // Devil-advocate F-1 — clock wrap for a midnight-crossing (night-shift) plant.
+    it('scales to a night-shift plant crossing midnight (clock wraps, no "27:00")', () => {
+      // 22:00-start plant (company_start_hour=22), window 0..300 = first 5h →
+      // 22:00→03:00, NOT "22:00–27:00". Latent today but the label stays correct.
+      expect(
+        labelsOf(
+          { unavailable_machines: { M01: [{ start_min: 0, end_min: 300 }] } },
+          { dayLengthMin: 480, companyStartHour: 22 },
+        ),
+      ).toEqual(['M01 ferma (giorno 1 · 22:00–03:00)']);
+    });
   });
 });
 

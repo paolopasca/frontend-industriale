@@ -388,9 +388,16 @@ export interface LedgerConstraintLabel {
 }
 
 // Format minutes-since-midnight as HH:MM (e.g. 600 → "10:00", 1320 → "22:00").
+// The input is wrapped into [0,1440) so a clock that overflows 24h stays correct
+// on a hypothetical night-shift plant whose working day crosses midnight (start
+// 22:00, +5h → "03:00", not "27:00"). Unreachable with today's data model
+// (company_end ≤ 1439, so company_start_hour*60 + day_length_min < 1440) but the
+// wrap costs nothing and keeps the label honest if such a plant is onboarded
+// (devil-advocate F-1; aligns with the scale-to-any-plant requirement).
 function fmtClock(minFromMidnight: number): string {
-  const hh = Math.floor(minFromMidnight / 60);
-  const mm = minFromMidnight % 60;
+  const m = ((minFromMidnight % 1440) + 1440) % 1440;
+  const hh = Math.floor(m / 60);
+  const mm = m % 60;
   return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
 
