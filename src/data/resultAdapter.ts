@@ -86,6 +86,17 @@ export function formatModelMinute(min: number, tc?: TimeConfig): string {
   return `g${dayIdx} ${wd} ${String(hour).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
 
+// Wave 16.8 — convert a makespan in HOURS to WORKING DAYS using the company's
+// REAL working-day length (time_config.day_length_min). Scalable to ANY plant
+// (8h, 10h, 16h, 24h…): NO hardcoded day length. The old `/8` assumed an 8h day
+// and doubled the count on a 16h plant (KPI 7.5gg vs Gantt ~4gg). The Gantt
+// already uses day_length_min, so this keeps the makespan KPI consistent with it.
+// Falls back to 8h only when time_config is absent (mock / LLM-only path).
+export function makespanToWorkingDays(makespanHours: number, tc?: TimeConfig): number {
+  const hoursPerDay = tc && tc.day_length_min > 0 ? tc.day_length_min / 60 : 8;
+  return Math.round((makespanHours / hoursPerDay) * 10) / 10;
+}
+
 // ── FJSP Template result (apex-toy, demo-commesse) ──────────────────
 
 function adaptFJSP(raw: Record<string, unknown>): DashboardData {
@@ -246,7 +257,7 @@ function adaptFJSP(raw: Record<string, unknown>): DashboardData {
     keyDecisions: [],
     kpis: {
       makespan: Math.round(makespan * 10) / 10,
-      makespanDays: Math.round((makespan / 8) * 10) / 10,
+      makespanDays: makespanToWorkingDays(makespan, timeConfig),
       totalTardiness: rawKpis.tardiness_totale_min ?? rawKpis.total_tardiness ?? orders.reduce((s, o) => s + Math.max(0, o.completionMinute - o.deadlineMinute), 0),
       highPriorityOnTime,
       peakUtilization: Math.round(peakUtil * 10) / 10,
@@ -278,6 +289,9 @@ function adaptLLMOnly(raw: Record<string, unknown>): DashboardData {
   }>;
   const rawKpis = (result.kpi ?? {}) as Record<string, number>;
   const narrative = (result.narrative ?? '') as string;
+  // Wave 16.8 — real working-day length for the scalable makespan→days KPI
+  // (absent on most LLM-only plans → helper falls back to 8h).
+  const timeConfig = ((result.time_config ?? raw.time_config) as TimeConfig | undefined) ?? undefined;
 
   const machineSet = new Map<string, Machine>();
   const operatorSet = new Map<string, Operator>();
@@ -371,7 +385,7 @@ function adaptLLMOnly(raw: Record<string, unknown>): DashboardData {
     keyDecisions: [],
     kpis: {
       makespan: rawKpis.makespan_ore ?? Math.round((maxEnd / 60) * 10) / 10,
-      makespanDays: Math.round(((rawKpis.makespan_ore ?? maxEnd / 60) / 8) * 10) / 10,
+      makespanDays: makespanToWorkingDays(rawKpis.makespan_ore ?? maxEnd / 60, timeConfig),
       totalTardiness: rawKpis.ritardi ?? 0,
       highPriorityOnTime: 100,
       peakUtilization: rawKpis.utilizzo_macchine_pct ?? 0,
