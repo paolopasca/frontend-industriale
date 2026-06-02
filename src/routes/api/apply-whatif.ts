@@ -1137,27 +1137,38 @@ export const Route = createFileRoute('/api/apply-whatif')({
               // aborted_unsupported so the UI shows a clear "scenario non
               // applicabile" instead of a misleading half-update.
               //
-              // Scope is deliberately narrow:
-              //  - Only SUCCESS statuses are guarded. INFEASIBLE (incl. the
-              //    both-solves-infeasible recovery case) is a legitimate
-              //    terminal `solved` the UI renders as "infeasible" + the
-              //    relaxation warning — an empty solution there is expected,
-              //    not the bug.
+              // Scope (Wave 16.7 — supersedes the original "INFEASIBLE is a
+              // legitimate empty `solved`" rule):
+              //  - BOTH success-but-empty AND INFEASIBLE-but-empty are guarded.
+              //    An INFEASIBLE solve returns solution={}; previously it fell
+              //    through to a `solved` event that rendered a misleading
+              //    "Vincolo applicato" diff with empty KPIs (the manager only
+              //    discovered it at "Accetta"). See the Wave 16.7 note below.
               //  - Gated on the BASELINE having had phases: a problem that was
               //    legitimately empty to begin with is not flagged (nothing to
               //    render either way).
               const solveStatus = (solveResult.status ?? '').toUpperCase();
               const isSuccessStatus = solveStatus === 'OPTIMAL' || solveStatus === 'FEASIBLE';
+              const isInfeasibleStatus = solveStatus === 'INFEASIBLE';
               const solvedPhaseCount = countSolutionPhases(solveResult.solution);
               const baselinePhaseCount = countSolutionPhases(input.originalSolution);
-              if (isSuccessStatus && solvedPhaseCount === 0 && baselinePhaseCount > 0) {
+              // Wave 16.7 — also guard INFEASIBLE-with-empty-solution. An
+              // INFEASIBLE solve with no frozen-window relaxation available (or
+              // relaxation still infeasible) otherwise falls through to `solved`
+              // with an empty solution → the UI renders a misleading "Vincolo
+              // applicato" diff with empty KPIs (only caught at "Accetta").
+              // Convert it to an explicit reject so the manager learns WHY.
+              if (solvedPhaseCount === 0 && baselinePhaseCount > 0 && (isSuccessStatus || isInfeasibleStatus)) {
                 flushCost();
+                const emptyReason = isInfeasibleStatus
+                  ? 'infeasible_constraints'
+                  : 'empty_solution_after_solve';
                 write('aborted_unsupported', {
-                  reason: 'empty_solution_after_solve',
+                  reason: emptyReason,
                   warnings: [
                     ...wave7Warnings,
                     ...(solveResult.warnings ?? []),
-                    'empty_solution_after_solve',
+                    emptyReason,
                   ],
                 });
                 write('done', {

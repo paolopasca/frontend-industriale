@@ -291,6 +291,57 @@ export function clearLedger(slug: string | null): void {
   removeSlugScoped(LEDGER_KEY, slug);
 }
 
+const META_KEYS = new Set(['day_anchor', 'status']);
+
+/**
+ * Wave 16.7 — remove ONE carried constraint from the ledger, rewriting every
+ * entry. Powers the What-If panel's per-chip "×" so the manager can drop a
+ * single stale constraint (e.g. an "M03 ferma" they didn't mean to keep)
+ * WITHOUT clearing everything (that is what `clearLedger` is for).
+ *
+ *   - keyed slots (`unavailable_machines`, `deadline_changes`): drop `key`.
+ *   - `priority_orders`: drop the order id `key` from the array.
+ *   - any other slot (panel passes `key === '*'`): drop the whole slot.
+ *
+ * Entries left with only meta keys (day_anchor/status) or nothing are pruned.
+ */
+export function removeConstraintFromLedger(
+  slug: string | null,
+  slot: string,
+  key: string,
+): void {
+  if (!slug) return;
+  const entries = loadLedger(slug);
+  if (entries.length === 0) return;
+  const next: AppliedRule[] = [];
+  for (const entry of entries) {
+    const rules: Record<string, unknown> = isObject(entry.rules) ? { ...entry.rules } : {};
+    const slotVal = rules[slot];
+    if (slot === 'priority_orders') {
+      if (Array.isArray(slotVal)) {
+        const filtered = slotVal.filter((v) => v !== key);
+        if (filtered.length > 0) rules[slot] = filtered;
+        else delete rules[slot];
+      }
+    } else if (slot === 'unavailable_machines' || slot === 'deadline_changes') {
+      if (isObject(slotVal)) {
+        const copy = { ...slotVal };
+        delete copy[key];
+        if (Object.keys(copy).length > 0) rules[slot] = copy;
+        else delete rules[slot];
+      }
+    } else {
+      // Non-keyed slot (panel passes key='*') → drop the whole slot.
+      delete rules[slot];
+    }
+    // Keep the entry only if it still carries a real (non-meta) rule slot.
+    const meaningful = Object.keys(rules).filter((k) => !META_KEYS.has(k));
+    if (meaningful.length > 0) next.push({ ...entry, rules });
+  }
+  if (next.length > 0) writeLedger(slug, next);
+  else clearLedger(slug);
+}
+
 /**
  * Fold the ledger (or an explicit entry list) into a single cumulative
  * `rules` payload, applying each entry in chronological order with
@@ -322,20 +373,31 @@ export function mergeLedgerRules(
 // intentional (sequential replanning); making it visible removes the
 // surprise. Pure + presentation-only — the solver never reads this.
 
+// Legacy fallback when the real working-day length is unknown (a calendar
+// day). The actual day length is data-dependent (demo-commesse uses 960, a
+// 06:00–22:00 working day) and passed in via opts.dayLengthMin.
 const DAY_MIN = 1440;
 
-// Minute 0 == day 1 (plan origin, 06:00). 1-based to match the "giorno N"
-// vocabulary used across the extractor/UI.
-function dayOfMinute(min: number): number {
-  return Math.floor(min / DAY_MIN) + 1;
+/** One carried constraint for the panel: human label + the (slot,key) needed
+ *  to remove just this one via removeConstraintFromLedger. */
+export interface LedgerConstraintLabel {
+  label: string;
+  slot: string;
+  /** machine/order id for keyed slots, or '*' for whole-slot constraints. */
+  key: string;
 }
 
-function describeWindow(w: unknown): string | null {
+// "giorno N" from a window. Uses the REAL working-day length when known
+// (dayLengthMin) — the hard-coded 1440 mislabelled demo windows (day=960) as
+// "giorno 1-2" instead of "giorno 2". Falls back to an explicit `date` field,
+// then to the calendar-day guess.
+function describeWindow(w: unknown, dayLengthMin?: number): string | null {
   const b = winBounds(w);
   if (b) {
-    const startDay = dayOfMinute(b.s);
-    // end_min is exclusive: [1440,2880) reads "giorno 2", not "2-3".
-    const endDay = dayOfMinute(Math.max(b.s, b.e - 1));
+    const L = typeof dayLengthMin === 'number' && dayLengthMin > 0 ? dayLengthMin : DAY_MIN;
+    const startDay = Math.floor(b.s / L) + 1;
+    // end is exclusive: [960,1920) with L=960 reads "giorno 2", not "2-3".
+    const endDay = Math.floor(Math.max(b.s, b.e - 1) / L) + 1;
     return startDay === endDay ? `giorno ${startDay}` : `giorno ${startDay}-${endDay}`;
   }
   // No numeric bounds: fall back to an explicit `date` field if present.
@@ -350,43 +412,62 @@ function slotHasContent(v: unknown): boolean {
 }
 
 /**
- * Turn a folded `rules` payload into short Italian labels for display
- * (e.g. "M02 ferma (giorno 2)", "COM-007 prioritaria"). Returns [] when
- * there is nothing meaningful to show. Non-rule/meta keys (day_anchor,
- * status, …) are ignored so the panel only lists real constraints.
+ * Turn a folded `rules` payload into per-constraint labels for display, each
+ * tagged with the (slot,key) needed to remove it individually. Returns [] when
+ * there is nothing meaningful to show. Non-rule/meta keys (day_anchor, status,
+ * …) are ignored so the panel only lists real constraints.
+ *
+ * `opts.dayLengthMin` (from time_config.day_length_min) makes the "giorno N"
+ * label correct for the company's working-day length.
  */
 export function describeLedgerRules(
   rules: Record<string, unknown> | null | undefined,
-): string[] {
+  opts?: { dayLengthMin?: number },
+): LedgerConstraintLabel[] {
   if (!isObject(rules)) return [];
-  const out: string[] = [];
+  const dayLengthMin = opts?.dayLengthMin;
+  const out: LedgerConstraintLabel[] = [];
 
   const um = rules.unavailable_machines;
   if (isObject(um)) {
     for (const machine of Object.keys(um).sort()) {
       const wins = um[machine];
       const labels = Array.isArray(wins)
-        ? wins.map(describeWindow).filter((x): x is string => x !== null)
+        ? wins.map((w) => describeWindow(w, dayLengthMin)).filter((x): x is string => x !== null)
         : [];
-      out.push(labels.length > 0 ? `${machine} ferma (${labels.join(', ')})` : `${machine} ferma`);
+      out.push({
+        label: labels.length > 0 ? `${machine} ferma (${labels.join(', ')})` : `${machine} ferma`,
+        slot: 'unavailable_machines',
+        key: machine,
+      });
     }
   }
 
   const po = rules.priority_orders;
   if (Array.isArray(po)) {
     for (const id of po) {
-      if (typeof id === 'string' && id.trim()) out.push(`${id} prioritaria`);
+      if (typeof id === 'string' && id.trim()) {
+        out.push({ label: `${id} prioritaria`, slot: 'priority_orders', key: id });
+      }
     }
   }
 
   const dc = rules.deadline_changes;
   if (isObject(dc)) {
-    for (const id of Object.keys(dc)) out.push(`scadenza ${id} modificata`);
+    for (const id of Object.keys(dc)) {
+      out.push({ label: `scadenza ${id} modificata`, slot: 'deadline_changes', key: id });
+    }
   }
 
-  if (slotHasContent(rules.shift_changes)) out.push('turni modificati');
-  if (slotHasContent(rules.extra_capacity)) out.push('capacità extra');
-  if (slotHasContent(rules.operator_unavailability)) out.push('operatore non disponibile');
+  if (slotHasContent(rules.shift_changes)) {
+    out.push({ label: 'turni modificati', slot: 'shift_changes', key: '*' });
+  }
+  if (slotHasContent(rules.extra_capacity)) {
+    out.push({ label: 'capacità extra', slot: 'extra_capacity', key: '*' });
+  }
+  if (slotHasContent(rules.operator_unavailability)) {
+    out.push({ label: 'operatore non disponibile', slot: 'operator_unavailability', key: '*' });
+  }
 
   return out;
 }

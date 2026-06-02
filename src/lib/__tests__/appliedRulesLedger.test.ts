@@ -6,6 +6,7 @@ import {
   appendRule,
   clearLedger,
   describeLedgerRules,
+  removeConstraintFromLedger,
   type AppliedRule,
 } from '../appliedRulesLedger';
 
@@ -231,12 +232,17 @@ describe('appliedRulesLedger — slug-scoped persistence', () => {
   });
 });
 
-describe('describeLedgerRules — human summary of carried constraints (Option A)', () => {
+describe('describeLedgerRules — per-constraint labels (Option A / Wave 16.7)', () => {
+  const labelsOf = (
+    rules: Record<string, unknown> | null | undefined,
+    opts?: { dayLengthMin?: number },
+  ) => describeLedgerRules(rules, opts).map((x) => x.label);
+
   it('summarizes the EXACT merged priorRules that caused the "tutto a G2" bug', () => {
     // The real folded ledger captured live from Paolo's browser: a stale
     // M01-down-day1 + M02-down-day2 + COM-012 priority, silently merged into
     // "anticipo COM-007". The panel must spell each one out (day_anchor is
-    // meta → ignored).
+    // meta → ignored). No dayLengthMin → calendar-day (1440) fallback.
     const rules = {
       unavailable_machines: {
         M02: [{ start_min: 1440, end_min: 2880 }],
@@ -245,12 +251,36 @@ describe('describeLedgerRules — human summary of carried constraints (Option A
       day_anchor: 1,
       priority_orders: ['COM-012', 'COM-007'],
     };
-    expect(describeLedgerRules(rules)).toEqual([
+    expect(labelsOf(rules)).toEqual([
       'M01 ferma (giorno 1)',
       'M02 ferma (giorno 2)',
       'COM-012 prioritaria',
       'COM-007 prioritaria',
     ]);
+  });
+
+  it('uses the real working-day length so "giorno N" is correct (the "giorno 1-2" bug)', () => {
+    // demo-commesse day_length_min = 960; window [960,1920] IS day 2 (not 1-2).
+    expect(
+      labelsOf({ unavailable_machines: { M03: [{ start_min: 960, end_min: 1920 }] } }, { dayLengthMin: 960 }),
+    ).toEqual(['M03 ferma (giorno 2)']);
+    // Without the real day length, the same window mislabels as "giorno 1-2".
+    expect(
+      labelsOf({ unavailable_machines: { M03: [{ start_min: 960, end_min: 1920 }] } }),
+    ).toEqual(['M03 ferma (giorno 1-2)']);
+  });
+
+  it('tags each label with the (slot,key) needed to remove it individually', () => {
+    const out = describeLedgerRules({
+      unavailable_machines: { M03: [{ start_min: 960, end_min: 1920 }] },
+      priority_orders: ['COM-007'],
+      deadline_changes: { 'COM-001': { new_deadline_min: 100 } },
+      shift_changes: [{ x: 1 }],
+    });
+    expect(out).toContainEqual(expect.objectContaining({ slot: 'unavailable_machines', key: 'M03' }));
+    expect(out).toContainEqual(expect.objectContaining({ slot: 'priority_orders', key: 'COM-007' }));
+    expect(out).toContainEqual(expect.objectContaining({ slot: 'deadline_changes', key: 'COM-001' }));
+    expect(out).toContainEqual(expect.objectContaining({ slot: 'shift_changes', key: '*' }));
   });
 
   it('returns [] for empty / null / meta-only input', () => {
@@ -260,20 +290,53 @@ describe('describeLedgerRules — human summary of carried constraints (Option A
     expect(describeLedgerRules({ day_anchor: 2, status: 'ok' })).toEqual([]);
   });
 
-  it('renders a multi-day window as a range and falls back to date when no numeric bounds', () => {
+  it('falls back to the date field when a window has no numeric bounds', () => {
     expect(
-      describeLedgerRules({ unavailable_machines: { M03: [{ start_min: 0, end_min: 2880 }] } }),
-    ).toEqual(['M03 ferma (giorno 1-2)']);
-    expect(
-      describeLedgerRules({ unavailable_machines: { M04: [{ date: '2026-04-05' }] } }),
+      labelsOf({ unavailable_machines: { M04: [{ date: '2026-04-05' }] } }),
     ).toEqual(['M04 ferma (2026-04-05)']);
   });
 
   it('summarizes deadline_changes per order and other slots generically', () => {
-    expect(
-      describeLedgerRules({ deadline_changes: { 'COM-001': { new_deadline_min: 100 } } }),
-    ).toEqual(['scadenza COM-001 modificata']);
-    expect(describeLedgerRules({ shift_changes: [{ x: 1 }] })).toEqual(['turni modificati']);
-    expect(describeLedgerRules({ extra_capacity: [{ y: 2 }] })).toEqual(['capacità extra']);
+    expect(labelsOf({ deadline_changes: { 'COM-001': { new_deadline_min: 100 } } }))
+      .toEqual(['scadenza COM-001 modificata']);
+    expect(labelsOf({ shift_changes: [{ x: 1 }] })).toEqual(['turni modificati']);
+    expect(labelsOf({ extra_capacity: [{ y: 2 }] })).toEqual(['capacità extra']);
+  });
+});
+
+describe('removeConstraintFromLedger — per-chip × (Wave 16.7)', () => {
+  const SLUG2 = 'acme-spa';
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('removes only the targeted machine, keeping the others', () => {
+    appendRule(SLUG2, { source: 'reschedule', rules: { unavailable_machines: { M03: [{ start_min: 960, end_min: 1920 }] } } });
+    appendRule(SLUG2, { source: 'reschedule', rules: { unavailable_machines: { M02: [{ start_min: 960, end_min: 1920 }] } } });
+    removeConstraintFromLedger(SLUG2, 'unavailable_machines', 'M03');
+    const merged = mergeLedgerRules(SLUG2) as { unavailable_machines: Record<string, unknown> };
+    expect(merged.unavailable_machines.M02).toBeDefined();
+    expect(merged.unavailable_machines.M03).toBeUndefined();
+  });
+
+  it('removes a single priority order from the array', () => {
+    appendRule(SLUG2, { source: 'whatif', rules: { priority_orders: ['COM-012'] } });
+    appendRule(SLUG2, { source: 'whatif', rules: { priority_orders: ['COM-007'] } });
+    removeConstraintFromLedger(SLUG2, 'priority_orders', 'COM-012');
+    expect(mergeLedgerRules(SLUG2)).toEqual({ priority_orders: ['COM-007'] });
+  });
+
+  it('prunes an entry left with only meta keys after removal', () => {
+    appendRule(SLUG2, {
+      source: 'reschedule',
+      rules: { unavailable_machines: { M03: [{ start_min: 0, end_min: 960 }] }, day_anchor: 2 },
+    });
+    removeConstraintFromLedger(SLUG2, 'unavailable_machines', 'M03');
+    expect(loadLedger(SLUG2)).toEqual([]);
+  });
+
+  it('is a no-op for null slug / empty ledger and never throws', () => {
+    expect(() => removeConstraintFromLedger(null, 'unavailable_machines', 'M03')).not.toThrow();
+    expect(() => removeConstraintFromLedger('empty-co', 'priority_orders', 'X')).not.toThrow();
   });
 });

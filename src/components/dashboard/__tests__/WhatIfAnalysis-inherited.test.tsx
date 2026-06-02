@@ -95,6 +95,45 @@ describe('WhatIfAnalysis — inherited-constraints panel (Wave 16.6 Option A)', 
     expect(clearMock).toHaveBeenCalledTimes(1);
   });
 
+  it('the per-chip "×" calls onRemoveConstraint with the right (slot, key) (Wave 16.7)', async () => {
+    const user = userEvent.setup();
+    const removeMock = vi.fn();
+    render(
+      <WhatIfAnalysis
+        slug="acme-spa"
+        solution={SOLUTION_PROP}
+        kpis={KPIS_PROP}
+        onAcceptResult={vi.fn()}
+        originalBackendResult={{ status: 'OPTIMAL', solution: {}, kpis: {} }}
+        priorRules={PRIOR_RULES}
+        onClearPriorRules={vi.fn()}
+        onRemoveConstraint={removeMock}
+      />,
+    );
+    // Remove ONLY the M01 machine constraint, keeping the rest.
+    await user.click(screen.getByTestId('whatif-remove-unavailable_machines-M01'));
+    expect(removeMock).toHaveBeenCalledTimes(1);
+    expect(removeMock).toHaveBeenCalledWith('unavailable_machines', 'M01');
+  });
+
+  it('labels days with the real working-day length (giorno 2, not 1-2) (Wave 16.7)', () => {
+    render(
+      <WhatIfAnalysis
+        slug="acme-spa"
+        solution={SOLUTION_PROP}
+        kpis={KPIS_PROP}
+        onAcceptResult={vi.fn()}
+        originalBackendResult={{ status: 'OPTIMAL', solution: {}, kpis: {} }}
+        priorRules={{ unavailable_machines: { M03: [{ start_min: 960, end_min: 1920 }] } }}
+        onClearPriorRules={vi.fn()}
+        dayLengthMin={960}
+      />,
+    );
+    const text = screen.getByTestId('whatif-inherited-constraints').textContent ?? '';
+    expect(text).toContain('M03 ferma (giorno 2)');
+    expect(text).not.toContain('giorno 1-2');
+  });
+
   it('does NOT render the panel when there are no inherited constraints', () => {
     render(
       <WhatIfAnalysis

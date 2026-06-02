@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { migrateLegacyKeys } from '@/lib/storage';
-import { loadLedger, appendRule, clearLedger, mergeLedgerRules } from '@/lib/appliedRulesLedger';
+import { loadLedger, appendRule, clearLedger, mergeLedgerRules, removeConstraintFromLedger } from '@/lib/appliedRulesLedger';
 import { AnimatePresence, motion } from 'framer-motion';
 import { SetupPage, type SetupData } from '@/components/onboarding/SetupPage';
 import type { SolverMethod } from '@/components/onboarding/SolverMethodSelect';
@@ -103,6 +103,18 @@ function Index() {
     if (!backendResult || typeof backendResult !== 'object') return null;
     const sol = (backendResult as Record<string, unknown>).solution;
     return sol && typeof sol === 'object' ? sol : null;
+  }, [backendResult]);
+
+  // Wave 16.7 — the company's working-day length (time_config.day_length_min),
+  // so the inherited-constraints panel labels days correctly ("giorno 2", not
+  // the calendar-1440-guess "giorno 1-2").
+  const dayLengthMin = useMemo(() => {
+    if (!backendResult || typeof backendResult !== 'object') return undefined;
+    const tc = (backendResult as Record<string, unknown>).time_config;
+    const dl = tc && typeof tc === 'object'
+      ? (tc as Record<string, unknown>).day_length_min
+      : undefined;
+    return typeof dl === 'number' && dl > 0 ? dl : undefined;
   }, [backendResult]);
 
   // Wave 16.6 §C — fold the slug-scoped ledger into a single cumulative rules
@@ -265,6 +277,14 @@ function Index() {
                     clearLedger(companySlug);
                     setLedgerVersion((v) => v + 1);
                   }}
+                  // Wave 16.7 — per-chip × drops ONE inherited constraint (e.g.
+                  // a stale "M03 ferma") without clearing the rest; dayLengthMin
+                  // makes the "giorno N" labels correct.
+                  onRemoveConstraint={(slot, key) => {
+                    removeConstraintFromLedger(companySlug, slot, key);
+                    setLedgerVersion((v) => v + 1);
+                  }}
+                  dayLengthMin={dayLengthMin}
                 />
                 <SplitSuggestion
                   slug={setupData?.companySlug ?? null}

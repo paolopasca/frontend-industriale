@@ -7,9 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * `apply-whatif-wave7.test.ts`. This file pins down the edge cases the
  * Wave 8 audit flagged as un-tested:
  *
- *   1. Both first solve AND retry come back INFEASIBLE → BFF still emits
- *      a `solved` event so the UI never hangs; status stays INFEASIBLE
- *      and the warning marks the failed relaxation.
+ *   1. Both first solve AND retry come back INFEASIBLE → Wave 16.7: the BFF
+ *      emits an explicit `aborted_unsupported(infeasible_constraints)` (NOT a
+ *      misleading empty `solved` diff that rendered a fake "Vincolo applicato"
+ *      card), still carrying the relaxation warnings for diagnostics.
  *   2. OPTIMAL on the first call → NO retry, NO `lock_relaxing` event
  *      (regression guard against firing the relax path unnecessarily).
  *   3. Backend timeout during the retry → graceful `error` event with
@@ -172,7 +173,7 @@ afterEach(() => {
 });
 
 describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
-  it('Case 2: both first solve AND retry INFEASIBLE → solved event with INFEASIBLE + lock_relaxed_to_soft warning', async () => {
+  it('Case 2: both first solve AND retry INFEASIBLE (empty) → aborted_unsupported(infeasible_constraints) + relaxation warnings (Wave 16.7)', async () => {
     anthropicCreate.mockResolvedValueOnce(
       fakeInterpreterReply({
         intent_id: 'order_priority',
@@ -221,27 +222,27 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
     const chunks = parseSse(await streamToString(res.body!));
     const events = chunks.map((c) => c.event);
 
-    // Stream must complete normally — solved + done, no `error`.
+    // Stream must complete normally — no `error`.
     expect(events).toContain('lock_relaxing');
-    expect(events).toContain('solved');
     expect(events).toContain('done');
     expect(events).not.toContain('error');
 
-    const solved = chunks.find((c) => c.event === 'solved')!.data as {
-      status: string;
+    // Wave 16.7: an INFEASIBLE-after-relaxation result with an EMPTY solution is
+    // no longer emitted as a misleading `solved` (which rendered an empty
+    // "Vincolo applicato" diff the manager only discovered at "Accetta"). It is
+    // now an explicit aborted_unsupported(infeasible_constraints) — while still
+    // carrying the relaxation markers + the backend's own warning.
+    expect(events).toContain('aborted_unsupported');
+    expect(events).not.toContain('solved');
+
+    const aborted = chunks.find((c) => c.event === 'aborted_unsupported')!.data as {
+      reason: string;
       warnings: string[];
     };
-    // Status reflects what the relaxed retry returned (still INFEASIBLE).
-    expect(solved.status).toBe('INFEASIBLE');
-    // The lock_relaxed_to_soft marker is prepended so the UI knows the
-    // BFF tried the fallback path; the backend's own warnings come after.
-    expect(solved.warnings[0]).toBe('lock_relaxed_to_soft');
-    expect(solved.warnings).toContain('cpsat:infeasible_after_relax');
-    // F-W8-06 Wave 9 OPT 1: the louder marker for "consolidated preserved
-    // as hint" travels alongside the legacy marker. The earlier
-    // `__plan_recomputed_from_scratch` marker is replaced now that the
-    // backend supports the hint mode (w9-backend-lock-mode 2026-05-23).
-    expect(solved.warnings).toContain('lock_relaxed_to_soft__consolidated_preserved_as_hint');
+    expect(aborted.reason).toBe('infeasible_constraints');
+    expect(aborted.warnings).toContain('lock_relaxed_to_soft');
+    expect(aborted.warnings).toContain('cpsat:infeasible_after_relax');
+    expect(aborted.warnings).toContain('lock_relaxed_to_soft__consolidated_preserved_as_hint');
 
     // Backend called exactly twice — original + 1 relaxed retry.
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -537,16 +538,21 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
 
     // No retry → no lock_relaxing.
     expect(events).not.toContain('lock_relaxing');
-    expect(events).toContain('solved');
     expect(events).not.toContain('error');
 
-    const solved = chunks.find((c) => c.event === 'solved')!.data as {
-      status: string;
+    // Wave 16.7: INFEASIBLE with no frozen-window (so no retry) + an empty
+    // solution → explicit aborted_unsupported(infeasible_constraints), not a
+    // misleading empty `solved` diff.
+    expect(events).toContain('aborted_unsupported');
+    expect(events).not.toContain('solved');
+
+    const aborted = chunks.find((c) => c.event === 'aborted_unsupported')!.data as {
+      reason: string;
       warnings: string[];
     };
-    // INFEASIBLE passes through unchanged — no spurious relax marker.
-    expect(solved.status).toBe('INFEASIBLE');
-    expect(solved.warnings).not.toContain('lock_relaxed_to_soft');
+    expect(aborted.reason).toBe('infeasible_constraints');
+    // No relaxation happened (frozenPhases empty) → no relax marker.
+    expect(aborted.warnings).not.toContain('lock_relaxed_to_soft');
 
     // Exactly one backend call (no retry).
     expect(fetchMock).toHaveBeenCalledTimes(1);

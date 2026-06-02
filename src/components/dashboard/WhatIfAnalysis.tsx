@@ -58,6 +58,12 @@ interface WhatIfAnalysisProps {
   // to {} and the inherited-constraints panel disappears. The live plan on the
   // dashboard is left untouched — only the carry is dropped.
   onClearPriorRules?: () => void;
+  // Wave 16.7 — remove ONE inherited constraint (per-chip ×). Parent calls
+  // removeConstraintFromLedger(slug, slot, key) + bumps ledgerVersion.
+  onRemoveConstraint?: (slot: string, key: string) => void;
+  // Working-day length (time_config.day_length_min) so inherited-constraint
+  // day labels read correctly ("giorno 2", not the 1440-guess "giorno 1-2").
+  dayLengthMin?: number;
 }
 
 interface ChunkPayload { text: string }
@@ -170,6 +176,8 @@ export function WhatIfAnalysis({
   onAcceptResult,
   originalBackendResult,
   onClearPriorRules,
+  onRemoveConstraint,
+  dayLengthMin,
 }: WhatIfAnalysisProps) {
   const [scenario, setScenario] = useState('');
   const [response, setResponse] = useState('');
@@ -776,7 +784,10 @@ export function WhatIfAnalysis({
   // reschedules/what-ifs (the ledger). Surfacing them removes the "why did
   // everything slide to the next day?" surprise: the manager sees exactly
   // which previously-accepted rules are re-applied on top of this scenario.
-  const inheritedConstraints = useMemo(() => describeLedgerRules(priorRules), [priorRules]);
+  const inheritedConstraints = useMemo(
+    () => describeLedgerRules(priorRules, { dayLengthMin }),
+    [priorRules, dayLengthMin],
+  );
 
   return (
     <Card className="overflow-hidden">
@@ -818,10 +829,22 @@ export function WhatIfAnalysis({
             <ul className="flex flex-wrap gap-1.5" aria-label="Elenco vincoli ereditati">
               {inheritedConstraints.map((c) => (
                 <li
-                  key={c}
-                  className="rounded border bg-background/70 px-1.5 py-0.5 text-[11px] text-foreground"
+                  key={`${c.slot}:${c.key}`}
+                  className="flex items-center gap-1 rounded border bg-background/70 pl-1.5 pr-1 py-0.5 text-[11px] text-foreground"
                 >
-                  {c}
+                  <span>{c.label}</span>
+                  {onRemoveConstraint && (
+                    <button
+                      type="button"
+                      aria-label={`Rimuovi vincolo: ${c.label}`}
+                      data-testid={`whatif-remove-${c.slot}-${c.key}`}
+                      className="rounded text-muted-foreground hover:text-destructive disabled:opacity-50"
+                      onClick={() => onRemoveConstraint(c.slot, c.key)}
+                      disabled={applyInFlight}
+                    >
+                      <XIcon className="h-3 w-3" aria-hidden />
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>

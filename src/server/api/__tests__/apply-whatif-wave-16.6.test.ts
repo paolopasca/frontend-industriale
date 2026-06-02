@@ -331,9 +331,13 @@ describe('Wave 16.6 §D — empty-solution guard (Gantt-not-updating fix)', () =
     expect(events).not.toContain('solved');
   });
 
-  it('INFEASIBLE with empty solution is NOT guarded (legitimate terminal solved)', async () => {
-    // Both first solve AND retry INFEASIBLE → the UI must still get `solved`
-    // with status INFEASIBLE so it can render "scenario impossibile".
+  it('INFEASIBLE with empty solution IS guarded → aborted_unsupported(infeasible_constraints) (Wave 16.7)', async () => {
+    // Wave 16.7 (supersedes the Wave 16.6 "legitimate terminal solved" rule):
+    // an INFEASIBLE solve with an EMPTY solution is no longer emitted as a
+    // misleading `solved` (which rendered a fake "Vincolo applicato" diff with
+    // empty KPIs that the manager only discovered at "Accetta"). It is now an
+    // explicit aborted_unsupported(infeasible_constraints) — a clear
+    // "no feasible solution" message.
     anthropicCreate.mockResolvedValueOnce(
       fakeInterpreterReply({ intent_id: 'order_priority', order_ids: ['COM-001'], confidence: 'high' }),
     );
@@ -352,10 +356,10 @@ describe('Wave 16.6 §D — empty-solution guard (Gantt-not-updating fix)', () =
     }, '10.0.166.12'));
     const chunks = parseSse(await streamToString(res.body!));
     const events = chunks.map((c) => c.event);
-    expect(events).toContain('solved');
-    expect(events).not.toContain('aborted_unsupported');
-    const solved = chunks.find((c) => c.event === 'solved')!.data as { status: string };
-    expect(solved.status).toBe('INFEASIBLE');
+    expect(events).toContain('aborted_unsupported');
+    expect(events).not.toContain('solved');
+    const aborted = chunks.find((c) => c.event === 'aborted_unsupported')!.data as { reason: string };
+    expect(aborted.reason).toBe('infeasible_constraints');
   });
 
   it('non-empty solution passes the guard (normal solved)', async () => {

@@ -26,6 +26,13 @@ export const UNSUPPORTED_REASON_LABELS: Record<string, string> = {
     'Vincolo non ancora supportato. Prova un comando del catalogo (blocco macchina, priorita, deadline, capacita, turno).',
   no_strategy_available:
     'Non riesco ad applicare questo vincolo con le strategie disponibili.',
+  // Wave 16.7 — the merged constraints have no feasible schedule (e.g. too many
+  // machines/operators blocked at once). Tell the manager WHY + how to recover.
+  infeasible_constraints:
+    'I vincoli combinati non hanno una soluzione fattibile. Rimuovi un vincolo (es. una macchina ferma) e riprova.',
+  // A degenerate solve returned an empty plan — was previously surfaced raw.
+  empty_solution_after_solve:
+    'Lo scenario non produce una pianificazione applicabile. Prova ad ammorbidire o rimuovere un vincolo.',
   unsupported: 'Scenario non applicabile.',
 };
 
