@@ -235,7 +235,7 @@ describe('appliedRulesLedger — slug-scoped persistence', () => {
 describe('describeLedgerRules — per-constraint labels (Option A / Wave 16.7)', () => {
   const labelsOf = (
     rules: Record<string, unknown> | null | undefined,
-    opts?: { dayLengthMin?: number },
+    opts?: { dayLengthMin?: number; companyStartHour?: number },
   ) => describeLedgerRules(rules, opts).map((x) => x.label);
 
   it('summarizes the EXACT merged priorRules that caused the "tutto a G2" bug', () => {
@@ -339,6 +339,76 @@ describe('describeLedgerRules — per-constraint labels (Option A / Wave 16.7)',
     it('non-positive dayLengthMin is ignored → 1440 last-resort fallback', () => {
       expect(labelsOf(W, { dayLengthMin: 0 })).toEqual(['M03 ferma (giorno 1-2)']);
       expect(labelsOf(W, { dayLengthMin: -100 })).toEqual(['M03 ferma (giorno 1-2)']);
+    });
+  });
+
+  // Wave 16.9 — a PARTIAL-day downtime ("M2 ferma il giorno 1 dalle 6 alle 10")
+  // is stored as {start_min,end_min} but the chip only said "giorno 1", which a
+  // manager reads as the WHOLE day. The label must spell out the clock so the
+  // inherited-constraints panel is truthful. Requires company_start_hour to map
+  // absolute solver minutes back to wall-clock; without it we keep the day-only
+  // label (no wrong clock). Whole-day windows stay "giorno N" (no redundant
+  // 06:00–22:00). Scales to any plant (start hour + day length).
+  describe('Wave 16.9 — clock shown for partial-day windows (manager clarity)', () => {
+    it('the live M02 6-10 case: {0,240} on demo → "giorno 1 · 06:00–10:00"', () => {
+      // demo-commesse: day_length 960, start 06:00. minute 0 = 06:00, 240 = 10:00.
+      expect(
+        labelsOf(
+          { unavailable_machines: { M02: [{ start_min: 0, end_min: 240 }] } },
+          { dayLengthMin: 960, companyStartHour: 6 },
+        ),
+      ).toEqual(['M02 ferma (giorno 1 · 06:00–10:00)']);
+    });
+
+    it('a WHOLE working day stays "giorno N" (no redundant clock)', () => {
+      expect(
+        labelsOf(
+          { unavailable_machines: { M03: [{ start_min: 960, end_min: 1920 }] } },
+          { dayLengthMin: 960, companyStartHour: 6 },
+        ),
+      ).toEqual(['M03 ferma (giorno 2)']);
+    });
+
+    it('a partial window ending at end-of-day shows the closing time, not 06:00', () => {
+      // {120,960}: 08:00 → end of the 06:00–22:00 day. end_min%L==0 must read as
+      // 22:00 (end of day), NOT wrap to 06:00.
+      expect(
+        labelsOf(
+          { unavailable_machines: { M05: [{ start_min: 120, end_min: 960 }] } },
+          { dayLengthMin: 960, companyStartHour: 6 },
+        ),
+      ).toEqual(['M05 ferma (giorno 1 · 08:00–22:00)']);
+    });
+
+    it('scales to a midnight-start (24h) plant: company_start_hour = 0', () => {
+      expect(
+        labelsOf(
+          { unavailable_machines: { M01: [{ start_min: 0, end_min: 240 }] } },
+          { dayLengthMin: 1440, companyStartHour: 0 },
+        ),
+      ).toEqual(['M01 ferma (giorno 1 · 00:00–04:00)']);
+    });
+
+    it('scales to an 08:00 plant on day 2 (offset + day arithmetic together)', () => {
+      // Plant B: day_length 720 (08:00–20:00). Day 2 starts at abs 720;
+      // 14:00 = 720 + 360 = 1080; 16:00 = 720 + 480 = 1200.
+      expect(
+        labelsOf(
+          { unavailable_machines: { M02: [{ start_min: 1080, end_min: 1200 }] } },
+          { dayLengthMin: 720, companyStartHour: 8 },
+        ),
+      ).toEqual(['M02 ferma (giorno 2 · 14:00–16:00)']);
+    });
+
+    it('without company_start_hour, a partial window falls back to the day label', () => {
+      // Backward compatible: callers that pass only dayLengthMin keep the
+      // day-only label rather than rendering an unknown-offset (wrong) clock.
+      expect(
+        labelsOf(
+          { unavailable_machines: { M02: [{ start_min: 0, end_min: 240 }] } },
+          { dayLengthMin: 960 },
+        ),
+      ).toEqual(['M02 ferma (giorno 1)']);
     });
   });
 });

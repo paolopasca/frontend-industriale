@@ -64,6 +64,10 @@ interface WhatIfAnalysisProps {
   // Working-day length (time_config.day_length_min) so inherited-constraint
   // day labels read correctly ("giorno 2", not the 1440-guess "giorno 1-2").
   dayLengthMin?: number;
+  // Plant start hour (time_config.company_start_hour) so a partial-day inherited
+  // constraint shows the clock ("giorno 1 · 06:00–10:00"), not an all-day-looking
+  // "giorno 1". Wave 16.9.
+  companyStartHour?: number;
 }
 
 interface ChunkPayload { text: string }
@@ -178,6 +182,7 @@ export function WhatIfAnalysis({
   onClearPriorRules,
   onRemoveConstraint,
   dayLengthMin,
+  companyStartHour,
 }: WhatIfAnalysisProps) {
   const [scenario, setScenario] = useState('');
   const [response, setResponse] = useState('');
@@ -785,8 +790,8 @@ export function WhatIfAnalysis({
   // everything slide to the next day?" surprise: the manager sees exactly
   // which previously-accepted rules are re-applied on top of this scenario.
   const inheritedConstraints = useMemo(
-    () => describeLedgerRules(priorRules, { dayLengthMin }),
-    [priorRules, dayLengthMin],
+    () => describeLedgerRules(priorRules, { dayLengthMin, companyStartHour }),
+    [priorRules, dayLengthMin, companyStartHour],
   );
 
   return (

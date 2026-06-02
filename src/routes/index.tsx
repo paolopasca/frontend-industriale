@@ -117,6 +117,18 @@ function Index() {
     return typeof dl === 'number' && dl > 0 ? dl : undefined;
   }, [backendResult]);
 
+  // Wave 16.9 — the plant's start hour (time_config.company_start_hour), so a
+  // partial-day inherited constraint shows the wall-clock ("giorno 1 ·
+  // 06:00–10:00") instead of an all-day-looking "giorno 1".
+  const companyStartHour = useMemo(() => {
+    if (!backendResult || typeof backendResult !== 'object') return undefined;
+    const tc = (backendResult as Record<string, unknown>).time_config;
+    const csh = tc && typeof tc === 'object'
+      ? (tc as Record<string, unknown>).company_start_hour
+      : undefined;
+    return typeof csh === 'number' && csh >= 0 ? csh : undefined;
+  }, [backendResult]);
+
   // Wave 16.6 §C — fold the slug-scoped ledger into a single cumulative rules
   // payload. Re-read whenever the slug changes or a rule was appended
   // (ledgerVersion bump). This is the priorRules threaded into apply-whatif.
@@ -285,6 +297,7 @@ function Index() {
                     setLedgerVersion((v) => v + 1);
                   }}
                   dayLengthMin={dayLengthMin}
+                  companyStartHour={companyStartHour}
                 />
                 <SplitSuggestion
                   slug={setupData?.companySlug ?? null}

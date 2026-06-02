@@ -387,18 +387,53 @@ export interface LedgerConstraintLabel {
   key: string;
 }
 
+// Format minutes-since-midnight as HH:MM (e.g. 600 → "10:00", 1320 → "22:00").
+function fmtClock(minFromMidnight: number): string {
+  const hh = Math.floor(minFromMidnight / 60);
+  const mm = minFromMidnight % 60;
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
 // "giorno N" from a window. Uses the REAL working-day length when known
 // (dayLengthMin) — the hard-coded 1440 mislabelled demo windows (day=960) as
 // "giorno 1-2" instead of "giorno 2". Falls back to an explicit `date` field,
 // then to the calendar-day guess.
-function describeWindow(w: unknown, dayLengthMin?: number): string | null {
+//
+// Wave 16.9 — a PARTIAL-day window (not aligned to day boundaries) additionally
+// shows the wall-clock ("giorno 1 · 06:00–10:00") so the manager sees it is NOT
+// a whole-day stop. The clock needs `companyStartHour` to map solver minutes
+// (minute 0 = day 1 at company_start) back to the clock; without it we keep the
+// day-only label rather than render a wrong time. Whole-day windows stay
+// "giorno N" (no redundant 06:00–22:00).
+function describeWindow(
+  w: unknown,
+  dayLengthMin?: number,
+  companyStartHour?: number,
+): string | null {
   const b = winBounds(w);
   if (b) {
     const L = typeof dayLengthMin === 'number' && dayLengthMin > 0 ? dayLengthMin : DAY_MIN;
     const startDay = Math.floor(b.s / L) + 1;
     // end is exclusive: [960,1920) with L=960 reads "giorno 2", not "2-3".
     const endDay = Math.floor(Math.max(b.s, b.e - 1) / L) + 1;
-    return startDay === endDay ? `giorno ${startDay}` : `giorno ${startDay}-${endDay}`;
+    const dayLabel = startDay === endDay ? `giorno ${startDay}` : `giorno ${startDay}-${endDay}`;
+
+    // Whole-day(s) block (both bounds land on a day boundary) → day label only.
+    // Otherwise it is a partial window: when it sits within a single day AND we
+    // know the plant's start hour, append the clock.
+    const isWholeDays = b.s % L === 0 && b.e % L === 0;
+    const csh =
+      typeof companyStartHour === 'number' && companyStartHour >= 0 ? companyStartHour : null;
+    if (!isWholeDays && startDay === endDay && csh !== null) {
+      const startWithin = b.s % L;
+      // end is exclusive: end_min on a day boundary means "end of day", not the
+      // next day's open — map 0 back to L so {120,960} reads 08:00–22:00.
+      const endWithin = b.e % L === 0 ? L : b.e % L;
+      const clockStart = fmtClock(csh * 60 + startWithin);
+      const clockEnd = fmtClock(csh * 60 + endWithin);
+      return `${dayLabel} · ${clockStart}–${clockEnd}`;
+    }
+    return dayLabel;
   }
   // No numeric bounds: fall back to an explicit `date` field if present.
   if (isObject(w) && typeof w.date === 'string' && w.date.trim()) return w.date.trim();
@@ -418,14 +453,17 @@ function slotHasContent(v: unknown): boolean {
  * …) are ignored so the panel only lists real constraints.
  *
  * `opts.dayLengthMin` (from time_config.day_length_min) makes the "giorno N"
- * label correct for the company's working-day length.
+ * label correct for the company's working-day length. `opts.companyStartHour`
+ * (time_config.company_start_hour) lets partial-day windows show the wall-clock
+ * ("giorno 1 · 06:00–10:00") instead of an all-day-looking "giorno 1".
  */
 export function describeLedgerRules(
   rules: Record<string, unknown> | null | undefined,
-  opts?: { dayLengthMin?: number },
+  opts?: { dayLengthMin?: number; companyStartHour?: number },
 ): LedgerConstraintLabel[] {
   if (!isObject(rules)) return [];
   const dayLengthMin = opts?.dayLengthMin;
+  const companyStartHour = opts?.companyStartHour;
   const out: LedgerConstraintLabel[] = [];
 
   const um = rules.unavailable_machines;
@@ -433,7 +471,9 @@ export function describeLedgerRules(
     for (const machine of Object.keys(um).sort()) {
       const wins = um[machine];
       const labels = Array.isArray(wins)
-        ? wins.map((w) => describeWindow(w, dayLengthMin)).filter((x): x is string => x !== null)
+        ? wins
+            .map((w) => describeWindow(w, dayLengthMin, companyStartHour))
+            .filter((x): x is string => x !== null)
         : [];
       out.push({
         label: labels.length > 0 ? `${machine} ferma (${labels.join(', ')})` : `${machine} ferma`,
