@@ -77,9 +77,13 @@ async function streamToString(stream: ReadableStream<Uint8Array>): Promise<strin
   return out;
 }
 
-function fakeHaikuReply(payload: object) {
+// Wave 16.6 §A — the managerText path now drives the Haiku instruction-
+// interpreter, which reads a forced `tool_use` block (name 'emit_constraint')
+// whose input is the FLAT entity shape, NOT the legacy parseIntent TEXT block
+// with nested `entities`.
+function fakeInterpreterReply(input: object) {
   return {
-    content: [{ type: 'text', text: JSON.stringify(payload) }],
+    content: [{ type: 'tool_use', name: 'emit_constraint', input }],
     usage: {
       input_tokens: 180,
       output_tokens: 20,
@@ -94,6 +98,17 @@ const nestedSolution = {
     fasi: [
       { operazione: 'OP-1', macchina: 'M01', operatore: 'OP-A', start_min: 0, end_min: 60 },
     ],
+  },
+  // Wave 16.6 §A — the instruction-interpreter gate re-resolves a shift_window's
+  // shift_id against the plan's CLOSED SET of shifts (buildSolutionContext reads
+  // ctx.shifts from this root `shift_types` map). Without it ctx.shifts is empty,
+  // so resolveShiftAlias('turno_mattina') would fail-closed (null) → the
+  // interpreter rejects and the shift_window HIT below could never route to
+  // Strategy B. Declaring the shift the manager references makes the plan
+  // actually contain it (a closed-set requirement, NOT a canonicalisation dodge).
+  shift_types: {
+    turno_mattina: { start: 480, end: 720 },
+    turno_pomeriggio: { start: 720, end: 960 },
   },
 };
 
@@ -142,9 +157,10 @@ afterEach(() => {
 describe('Wave 9 T1 — capacity_addition + shift_window route to Strategy B end-to-end', () => {
   it('capacity_addition: routed=B, backend receives rules.extra_capacity, solved fires', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'capacity_addition',
-        entities: { operators: 1, shift: 'serale' },
+        operators: 1,
+        shift: 'serale',
         confidence: 'high',
       }),
     );
@@ -157,7 +173,7 @@ describe('Wave 9 T1 — capacity_addition + shift_window route to Strategy B end
       new Response(JSON.stringify({
         status: 'OPTIMAL',
         method: 'cp-sat',
-        solution: { 'COM-001': { fasi: [] } },
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
         kpis: { makespan_min: 2900 },
         objective_value: 2900,
         warnings: [],
@@ -217,9 +233,11 @@ describe('Wave 9 T1 — capacity_addition + shift_window route to Strategy B end
 
   it('shift_window: routed=B, backend receives rules.shift_changes, solved fires', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'shift_window',
-        entities: { shift_id: 'turno_mattina', start_min: 360, end_min: 720 },
+        shift_id: 'turno_mattina',
+        start_min: 360,
+        end_min: 720,
         confidence: 'high',
       }),
     );
@@ -228,7 +246,7 @@ describe('Wave 9 T1 — capacity_addition + shift_window route to Strategy B end
       new Response(JSON.stringify({
         status: 'OPTIMAL',
         method: 'cp-sat',
-        solution: { 'COM-001': { fasi: [] } },
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
         kpis: { makespan_min: 2900 },
         objective_value: 2900,
         warnings: [],
@@ -287,16 +305,18 @@ describe('Wave 9 T1 — capacity_addition + shift_window route to Strategy B end
 
   it('deadline_change still routes normally (regression guard: supported intents keep working)', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'deadline_change',
-        entities: { order_id: 'COM-001', new_deadline_min: 1440 },
+        order_id: 'COM-001',
+        new_deadline_min: 1440,
         confidence: 'high',
       }),
     );
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify({
         status: 'OPTIMAL', method: 'cp-sat',
-        solution: {}, kpis: {}, objective_value: 0, warnings: [], cost_usd: 0,
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
+        kpis: {}, objective_value: 0, warnings: [], cost_usd: 0,
       }), { status: 200, headers: { 'content-type': 'application/json' } }),
     );
     vi.stubGlobal('fetch', fetchMock);

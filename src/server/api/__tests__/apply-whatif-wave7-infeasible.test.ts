@@ -7,9 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * `apply-whatif-wave7.test.ts`. This file pins down the edge cases the
  * Wave 8 audit flagged as un-tested:
  *
- *   1. Both first solve AND retry come back INFEASIBLE → BFF still emits
- *      a `solved` event so the UI never hangs; status stays INFEASIBLE
- *      and the warning marks the failed relaxation.
+ *   1. Both first solve AND retry come back INFEASIBLE → Wave 16.7: the BFF
+ *      emits an explicit `aborted_unsupported(infeasible_constraints)` (NOT a
+ *      misleading empty `solved` diff that rendered a fake "Vincolo applicato"
+ *      card), still carrying the relaxation warnings for diagnostics.
  *   2. OPTIMAL on the first call → NO retry, NO `lock_relaxing` event
  *      (regression guard against firing the relax path unnecessarily).
  *   3. Backend timeout during the retry → graceful `error` event with
@@ -90,9 +91,13 @@ async function streamToString(stream: ReadableStream<Uint8Array>): Promise<strin
   return out;
 }
 
-function fakeHaikuReply(payload: object) {
+// Wave 16.6 §A — the managerText path now drives the Haiku instruction-
+// interpreter, which reads a forced `tool_use` block (name 'emit_constraint')
+// whose input is the FLAT entity shape (intent_id + machine_id/order_ids/…),
+// NOT the legacy parseIntent TEXT block with nested `entities`.
+function fakeInterpreterReply(input: object) {
   return {
-    content: [{ type: 'text', text: JSON.stringify(payload) }],
+    content: [{ type: 'tool_use', name: 'emit_constraint', input }],
     usage: {
       input_tokens: 200,
       output_tokens: 30,
@@ -168,11 +173,11 @@ afterEach(() => {
 });
 
 describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
-  it('Case 2: both first solve AND retry INFEASIBLE → solved event with INFEASIBLE + lock_relaxed_to_soft warning', async () => {
+  it('Case 2: both first solve AND retry INFEASIBLE (empty) → aborted_unsupported(infeasible_constraints) + relaxation warnings (Wave 16.7)', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'order_priority',
-        entities: { order_ids: ['COM-001'] },
+        order_ids: ['COM-001'],
         confidence: 'high',
       }),
     );
@@ -217,27 +222,27 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
     const chunks = parseSse(await streamToString(res.body!));
     const events = chunks.map((c) => c.event);
 
-    // Stream must complete normally — solved + done, no `error`.
+    // Stream must complete normally — no `error`.
     expect(events).toContain('lock_relaxing');
-    expect(events).toContain('solved');
     expect(events).toContain('done');
     expect(events).not.toContain('error');
 
-    const solved = chunks.find((c) => c.event === 'solved')!.data as {
-      status: string;
+    // Wave 16.7: an INFEASIBLE-after-relaxation result with an EMPTY solution is
+    // no longer emitted as a misleading `solved` (which rendered an empty
+    // "Vincolo applicato" diff the manager only discovered at "Accetta"). It is
+    // now an explicit aborted_unsupported(infeasible_constraints) — while still
+    // carrying the relaxation markers + the backend's own warning.
+    expect(events).toContain('aborted_unsupported');
+    expect(events).not.toContain('solved');
+
+    const aborted = chunks.find((c) => c.event === 'aborted_unsupported')!.data as {
+      reason: string;
       warnings: string[];
     };
-    // Status reflects what the relaxed retry returned (still INFEASIBLE).
-    expect(solved.status).toBe('INFEASIBLE');
-    // The lock_relaxed_to_soft marker is prepended so the UI knows the
-    // BFF tried the fallback path; the backend's own warnings come after.
-    expect(solved.warnings[0]).toBe('lock_relaxed_to_soft');
-    expect(solved.warnings).toContain('cpsat:infeasible_after_relax');
-    // F-W8-06 Wave 9 OPT 1: the louder marker for "consolidated preserved
-    // as hint" travels alongside the legacy marker. The earlier
-    // `__plan_recomputed_from_scratch` marker is replaced now that the
-    // backend supports the hint mode (w9-backend-lock-mode 2026-05-23).
-    expect(solved.warnings).toContain('lock_relaxed_to_soft__consolidated_preserved_as_hint');
+    expect(aborted.reason).toBe('infeasible_constraints');
+    expect(aborted.warnings).toContain('lock_relaxed_to_soft');
+    expect(aborted.warnings).toContain('cpsat:infeasible_after_relax');
+    expect(aborted.warnings).toContain('lock_relaxed_to_soft__consolidated_preserved_as_hint');
 
     // Backend called exactly twice — original + 1 relaxed retry.
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -252,9 +257,9 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
     // is `__consolidated_preserved_as_hint` and the lock_relaxing event
     // carries `recompute_mode: 'frozen_phases_as_hint'`.
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'order_priority',
-        entities: { order_ids: ['COM-001'] },
+        order_ids: ['COM-001'],
         confidence: 'high',
       }),
     );
@@ -278,7 +283,7 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
       .mockResolvedValueOnce(jsonResponse({
         status: 'OPTIMAL',
         method: 'cp-sat',
-        solution: {},
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
         kpis: { makespan_min: 2900 },
         objective_value: 2900,
         warnings: [],
@@ -343,9 +348,9 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
 
   it('Case 3: OPTIMAL on first solve → no retry, no lock_relaxing event', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'order_priority',
-        entities: { order_ids: ['COM-001'] },
+        order_ids: ['COM-001'],
         confidence: 'high',
       }),
     );
@@ -353,7 +358,7 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
       status: 'OPTIMAL',
       method: 'cp-sat',
-      solution: { 'COM-001': { fasi: [] } },
+      solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
       kpis: { makespan_min: 2700 },
       objective_value: 2700,
       warnings: [],
@@ -393,9 +398,9 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
     vi.useFakeTimers();
     try {
       anthropicCreate.mockResolvedValueOnce(
-        fakeHaikuReply({
+        fakeInterpreterReply({
           intent_id: 'order_priority',
-          entities: { order_ids: ['COM-001'] },
+          order_ids: ['COM-001'],
           confidence: 'high',
         }),
       );
@@ -458,9 +463,9 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
     // BFF must stop after the second call. It must not loop, must not
     // recursively re-arm the relax path.
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'order_priority',
-        entities: { order_ids: ['COM-001'] },
+        order_ids: ['COM-001'],
         confidence: 'high',
       }),
     );
@@ -503,9 +508,9 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
     // backend cost and could mask a real solver issue. The BFF must
     // pass the INFEASIBLE straight through.
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'order_priority',
-        entities: { order_ids: ['COM-001'] },
+        order_ids: ['COM-001'],
         confidence: 'high',
       }),
     );
@@ -533,16 +538,21 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
 
     // No retry → no lock_relaxing.
     expect(events).not.toContain('lock_relaxing');
-    expect(events).toContain('solved');
     expect(events).not.toContain('error');
 
-    const solved = chunks.find((c) => c.event === 'solved')!.data as {
-      status: string;
+    // Wave 16.7: INFEASIBLE with no frozen-window (so no retry) + an empty
+    // solution → explicit aborted_unsupported(infeasible_constraints), not a
+    // misleading empty `solved` diff.
+    expect(events).toContain('aborted_unsupported');
+    expect(events).not.toContain('solved');
+
+    const aborted = chunks.find((c) => c.event === 'aborted_unsupported')!.data as {
+      reason: string;
       warnings: string[];
     };
-    // INFEASIBLE passes through unchanged — no spurious relax marker.
-    expect(solved.status).toBe('INFEASIBLE');
-    expect(solved.warnings).not.toContain('lock_relaxed_to_soft');
+    expect(aborted.reason).toBe('infeasible_constraints');
+    // No relaxation happened (frozenPhases empty) → no relax marker.
+    expect(aborted.warnings).not.toContain('lock_relaxed_to_soft');
 
     // Exactly one backend call (no retry).
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -556,9 +566,9 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
     // before reject. The fix is a synchronous abort-check inside the
     // race helper + an explicit check right after `lock_relaxing`.
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'order_priority',
-        entities: { order_ids: ['COM-001'] },
+        order_ids: ['COM-001'],
         confidence: 'high',
       }),
     );
@@ -629,9 +639,9 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
     vi.useFakeTimers();
     try {
       anthropicCreate.mockResolvedValueOnce(
-        fakeHaikuReply({
+        fakeInterpreterReply({
           intent_id: 'order_priority',
-          entities: { order_ids: ['COM-001'] },
+          order_ids: ['COM-001'],
           confidence: 'high',
         }),
       );
@@ -673,7 +683,7 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
       // Resolve retry as OPTIMAL.
       retryResolve!(new Response(JSON.stringify({
         status: 'OPTIMAL', method: 'cp-sat',
-        solution: {}, kpis: { makespan_min: 2900 },
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: { makespan_min: 2900 },
         objective_value: 2900, warnings: [], cost_usd: 0,
       }), { status: 200, headers: { 'content-type': 'application/json' } }));
 
@@ -702,27 +712,28 @@ describe('F-W7-02 — INFEASIBLE recovery edge cases', () => {
   });
 });
 
-describe('B-W8-S-04 — Haiku unknown+high short-circuits Opus cascade', () => {
-  // Stress engineer 2026-05-22: `intent_id="unknown" + confidence="high"`
-  // is Haiku's "definitely outside the 5 catalog intents" signal. The
-  // previous router cascaded to Opus translator (strategy-router.ts:452)
-  // which also returned unsupported. $0.20 per cycle × 5 stress cycles
-  // = $1.00 wasted. The BFF now short-circuits and emits
-  // `aborted_unsupported` directly when Haiku is confident.
+describe('Wave 16.6 — interpreter unknown intent rejects without Opus cascade', () => {
+  // OBSOLETE-PREMISE rewrite (Wave 16.6). The legacy B-W8-S-04 premise was a
+  // confidence-gated short-circuit: `unknown + high` bailed to
+  // aborted_unsupported (saving an Opus call), while `unknown + low/medium`
+  // still cascaded to the Opus translator (Strategy C) as a rescue. That
+  // confidence gate no longer exists. When managerText is set the route ALWAYS
+  // runs the closed-set instruction interpreter, which is AUTHORITATIVE: an
+  // `intent_id:'unknown'` is a STRUCTURAL reject at ANY confidence → `routed`
+  // strategy 'unsupported' then `aborted_unsupported`, with NO Opus call. These
+  // tests are rewritten to pin that new truth, preserving each scenario's
+  // distinct utterance/confidence and asserting (a) the exact terminal event
+  // sequence, (b) no translating/translated/solving/solved, and (c) exactly ONE
+  // LLM call (the interpreter — never a second Opus call).
 
-  it('Haiku unknown + confidence=high → aborted_unsupported, no translating event, no Opus call', async () => {
+  it('unknown + confidence=high → aborted_unsupported, no translating event, no Opus call', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
-        intent_id: 'unknown',
-        entities: {},
-        confidence: 'high',
-        fallback_reasoning: 'domanda di valutazione finanziaria fuori dai 5 intent del catalogo',
-      }),
+      fakeInterpreterReply({ intent_id: 'unknown', confidence: 'high' }),
     );
 
-    // No backend calls expected — the short-circuit bails before
-    // anything network-side fires. Stub fetch with a failing impl so
-    // an unexpected call is loud.
+    // No backend calls expected — the reject bails before anything
+    // network-side fires. Stub fetch with a failing impl so an unexpected
+    // call is loud.
     const fetchMock = vi.fn().mockRejectedValue(new Error('unexpected backend call'));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -750,43 +761,31 @@ describe('B-W8-S-04 — Haiku unknown+high short-circuits Opus cascade', () => {
     };
     expect(routed.strategy).toBe('unsupported');
     expect(routed.intent_id).toBe('unknown');
-    expect(routed.warnings).toContain('haiku_unknown_high_no_cascade');
+    // The interpreter's structural-reject marker (replaces the legacy
+    // confidence-gated `haiku_unknown_high_no_cascade`).
+    expect(routed.warnings).toContain('interpreter_reject');
 
     const aborted = chunks.find((c) => c.event === 'aborted_unsupported')!.data as {
       reason: string;
       warnings: string[];
     };
-    // Reason preserves the Haiku fallback_reasoning when present, so
-    // the UI can surface the precise diagnosis to the manager.
-    expect(aborted.reason).toBe('domanda di valutazione finanziaria fuori dai 5 intent del catalogo');
-    expect(aborted.warnings).toContain('haiku_unknown_high_no_cascade');
+    // Reason is the interpreter's manager-facing clarify message.
+    expect(aborted.reason.length).toBeGreaterThanOrEqual(10);
+    expect(aborted.warnings).toContain('interpreter_reject');
 
-    // Anthropic SDK called exactly once — only the Haiku parser, no
-    // Opus translator cascade. The savings claim ($0.20/cycle) hinges
-    // on this assertion.
+    // Interpreter only — exactly ONE LLM call, never a second Opus call.
     expect(anthropicCreate).toHaveBeenCalledTimes(1);
     // Backend never reached — no fetch made.
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('Haiku unknown + confidence=high with NO Haiku-supplied fallback_reasoning → reason still meaningful (parser injects default)', async () => {
-    // Defense in depth — the intent-parser injects a default reason
-    // (`intent non riconosciuto dal catalogo`) when Haiku omits one
-    // (parser line ~318). The short-circuit then forwards whatever
-    // the parser produced. If the parser ever stops injecting a
-    // default, the BFF's `?? 'haiku_classified_unknown_high_confidence'`
-    // fallback in apply-whatif.ts:B-W8-S-04 catches it.
-    //
-    // The assertion is on the property "reason is a non-empty
-    // meaningful string", because the exact text depends on the
-    // upstream parser layer.
+  it('unknown intent → reject reason is a meaningful clarify message', async () => {
+    // The interpreter always supplies a manager-facing clarify message on
+    // reject, so the UI can surface a precise prompt regardless of what the
+    // model returned. (Legacy premise: the parser injected a default
+    // fallback_reasoning that the short-circuit forwarded as the abort reason.)
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
-        intent_id: 'unknown',
-        entities: {},
-        confidence: 'high',
-        // No fallback_reasoning.
-      }),
+      fakeInterpreterReply({ intent_id: 'unknown', confidence: 'high' }),
     );
 
     const fetchMock = vi.fn().mockRejectedValue(new Error('unexpected backend call'));
@@ -797,44 +796,26 @@ describe('B-W8-S-04 — Haiku unknown+high short-circuits Opus cascade', () => {
     );
     expect(res.status).toBe(200);
     const chunks = parseSse(await streamToString(res.body!));
+    const events = chunks.map((c) => c.event);
 
     const aborted = chunks.find((c) => c.event === 'aborted_unsupported')!.data as { reason: string };
-    // Must be non-empty meaningful text (>= 10 chars). Both the
-    // parser default and the BFF default qualify.
+    // Must be non-empty meaningful text (>= 10 chars).
     expect(aborted.reason.length).toBeGreaterThanOrEqual(10);
-    expect(aborted.reason).toMatch(/intent|catalogo|haiku|unknown|classified/i);
+    expect(aborted.reason).toMatch(/richiesta|riformula|piano|azione|catalogo/i);
+    // No Opus cascade — interpreter is authoritative on reject.
+    expect(events).not.toContain('translating');
+    expect(events).not.toContain('translated');
     expect(anthropicCreate).toHaveBeenCalledTimes(1);
   });
 
-  it('Haiku unknown + confidence=low → Opus translator cascade still fires (negative guard)', async () => {
-    // The short-circuit is intentionally scoped to confidence=high.
-    // When Haiku is uncertain (confidence=low), the cascade to Opus
-    // translator is a legitimate rescue path — Opus may recognize a
-    // catalog intent Haiku couldn't pin down. Regression guard.
-    anthropicCreate
-      // 1st call: Haiku returns unknown/low.
-      .mockResolvedValueOnce(
-        fakeHaikuReply({
-          intent_id: 'unknown',
-          entities: {},
-          confidence: 'low',
-          fallback_reasoning: 'ambiguous',
-        }),
-      )
-      // 2nd call: Opus translator. We make it return unsupported so
-      // the assertion is symmetric, but the key check is that
-      // `anthropicCreate` was called TWICE (Haiku + Opus).
-      .mockResolvedValueOnce({
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            type: 'unsupported',
-            unsupportedReason: 'opus_could_not_map_either',
-            warnings: ['opus_unsupported'],
-          }),
-        }],
-        usage: { input_tokens: 800, output_tokens: 40, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-      });
+  it('unknown + confidence=low → reject without Opus cascade (no rescue path anymore)', async () => {
+    // OBSOLETE-PREMISE rewrite: the legacy code cascaded `unknown + low` to
+    // the Opus translator as a rescue. The closed-set interpreter is now
+    // authoritative — `unknown` at low confidence rejects WITHOUT any second
+    // Opus call. Distinct scenario preserved (uncertain utterance).
+    anthropicCreate.mockResolvedValueOnce(
+      fakeInterpreterReply({ intent_id: 'unknown', confidence: 'low' }),
+    );
 
     const fetchMock = vi.fn().mockRejectedValue(new Error('unexpected backend call'));
     vi.stubGlobal('fetch', fetchMock);
@@ -846,44 +827,28 @@ describe('B-W8-S-04 — Haiku unknown+high short-circuits Opus cascade', () => {
     const chunks = parseSse(await streamToString(res.body!));
     const events = chunks.map((c) => c.event);
 
-    // The Strategy C path fires — translating/translated events MUST
-    // be present, proving the cascade still runs for low confidence.
-    expect(events).toContain('translating');
-    expect(events).toContain('translated');
+    // No Opus cascade — translating/translated MUST be absent.
+    expect(events).not.toContain('translating');
+    expect(events).not.toContain('translated');
+    expect(events).not.toContain('solved');
+    expect(events).toContain('aborted_unsupported');
 
-    // Opus translator was called → 2 LLM calls total.
-    expect(anthropicCreate).toHaveBeenCalledTimes(2);
+    const routed = chunks.find((c) => c.event === 'routed')!.data as { strategy: string };
+    expect(routed.strategy).toBe('unsupported');
+
+    // Exactly ONE LLM call (interpreter) — never a second Opus call.
+    expect(anthropicCreate).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('F-W8-10 regression: Haiku unknown + confidence=medium STILL cascades to Opus (discriminator is === high only)', async () => {
-    // F-W8-10 (devils advocate 2026-05-22): pin that the
-    // discriminator is strictly `confidence === 'high'`, NOT
-    // `confidence !== 'low'`. The `medium` case represents Haiku
-    // "tentatively rejecting" with at least one assumption — Opus
-    // refinement still has value. Regressing the discriminator to
-    // `!== 'low'` would skip Opus for medium and burn UX (manager
-    // sees aborted_unsupported on borderline cases that Opus could
-    // have rescued).
-    anthropicCreate
-      .mockResolvedValueOnce(
-        fakeHaikuReply({
-          intent_id: 'unknown',
-          entities: {},
-          confidence: 'medium',
-          fallback_reasoning: 'classificazione tentata con piu assunzioni',
-        }),
-      )
-      .mockResolvedValueOnce({
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            type: 'unsupported',
-            unsupportedReason: 'opus_could_not_disambiguate',
-            warnings: ['opus_unsupported_medium_path'],
-          }),
-        }],
-        usage: { input_tokens: 800, output_tokens: 40, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-      });
+  it('unknown + confidence=medium → reject without Opus cascade (no rescue path anymore)', async () => {
+    // OBSOLETE-PREMISE rewrite of F-W8-10. The legacy discriminator was
+    // strictly `=== high` so `medium` cascaded to Opus. With the closed-set
+    // interpreter as the sole authority, `unknown` at medium confidence also
+    // rejects WITHOUT Opus. Distinct scenario preserved (borderline utterance).
+    anthropicCreate.mockResolvedValueOnce(
+      fakeInterpreterReply({ intent_id: 'unknown', confidence: 'medium' }),
+    );
 
     const fetchMock = vi.fn().mockRejectedValue(new Error('unexpected backend call'));
     vi.stubGlobal('fetch', fetchMock);
@@ -895,29 +860,31 @@ describe('B-W8-S-04 — Haiku unknown+high short-circuits Opus cascade', () => {
     const chunks = parseSse(await streamToString(res.body!));
     const events = chunks.map((c) => c.event);
 
-    // Must enter Strategy C — translating/translated present.
-    expect(events).toContain('translating');
-    expect(events).toContain('translated');
+    // No Opus cascade — translating/translated MUST be absent.
+    expect(events).not.toContain('translating');
+    expect(events).not.toContain('translated');
+    expect(events).not.toContain('solved');
+    expect(events).toContain('aborted_unsupported');
 
-    // The `haiku_unknown_high_no_cascade` warning MUST NOT appear —
-    // that marker is exclusively for the short-circuit path. Its
-    // presence on a medium-confidence run would indicate the
-    // discriminator regressed to `!== 'low'`.
-    const routed = chunks.find((c) => c.event === 'routed')!.data as { warnings: string[] };
+    // The legacy short-circuit marker is gone; the structural reject marker
+    // is present instead.
+    const routed = chunks.find((c) => c.event === 'routed')!.data as { strategy: string; warnings: string[] };
+    expect(routed.strategy).toBe('unsupported');
     expect(routed.warnings).not.toContain('haiku_unknown_high_no_cascade');
+    expect(routed.warnings).toContain('interpreter_reject');
 
-    // Opus was called → 2 LLM calls total.
-    expect(anthropicCreate).toHaveBeenCalledTimes(2);
+    // Exactly ONE LLM call (interpreter) — never a second Opus call.
+    expect(anthropicCreate).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('Haiku known intent + confidence=high → still routes through strategy A/B (not short-circuited)', async () => {
-    // Confirms the short-circuit only fires for `unknown`. A known
-    // catalog intent with high confidence proceeds to Strategy B /
-    // backend solve as usual.
+  it('known intent + confidence=high → still routes through Strategy B (hit, not rejected)', async () => {
+    // Confirms reject only fires for `unknown`. A known catalog intent with
+    // high confidence proceeds to Strategy B / backend solve as usual.
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'order_priority',
-        entities: { order_ids: ['COM-001'] },
+        order_ids: ['COM-001'],
         confidence: 'high',
       }),
     );
@@ -925,7 +892,7 @@ describe('B-W8-S-04 — Haiku unknown+high short-circuits Opus cascade', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
       status: 'OPTIMAL',
       method: 'cp-sat',
-      solution: { 'COM-001': { fasi: [] } },
+      solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
       kpis: { makespan_min: 2700 },
       objective_value: 2700,
       warnings: [],

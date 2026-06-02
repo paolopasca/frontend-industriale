@@ -379,7 +379,7 @@ describe('Wave 16.3 BFF orchestration — gray-zone confirmation retry', () => {
     const solvePayload = {
       status: 'OPTIMAL',
       method: 'cp-sat',
-      solution: { status: 'OPTIMAL', fasi: [] },
+      solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
       kpis: { makespan_min: 480 },
       objective_value: 480,
       warnings: [],

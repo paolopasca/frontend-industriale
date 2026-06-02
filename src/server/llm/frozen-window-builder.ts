@@ -156,11 +156,13 @@ export function buildFrozenPhases(
  * the solver can re-plan around the future constraint without disturbing
  * everything already scheduled).
  *
- * This helper picks up four temporal forms:
- *   - "domani"        → 1 * 1440
- *   - "dopodomani"    → 2 * 1440
- *   - "giorno N"      → (N - 1) * 1440   (N ∈ [2, 365]; N=1 returns null)
- *   - "fra N giorni"  → N * 1440         (N ∈ [1, 365])
+ * This helper picks up four temporal forms, each scaled by the company's
+ * working-day length `dayLengthMin` (mirrors temporal-resolver.ts: whole
+ * day G == [(G-1)*dl, G*dl), so "domani" == day 2 == 1*dl):
+ *   - "domani"        → 1 * dayLengthMin
+ *   - "dopodomani"    → 2 * dayLengthMin
+ *   - "giorno N"      → (N - 1) * dayLengthMin   (N ∈ [2, 365]; N=1 returns null)
+ *   - "fra N giorni"  → N * dayLengthMin         (N ∈ [1, 365])
  *
  * Returns `null` when no temporal phrase is detected, or when the matched
  * phrase resolves to 0 (e.g. "giorno 1" == horizon start; manager is
@@ -169,6 +171,10 @@ export function buildFrozenPhases(
  * The returned value is in minutes from horizon start (the same coordinate
  * system as currentTimeMin / cutoffMin).
  */
+// Wave 16.8 — legacy fallback ONLY. The real working-day length is data-
+// dependent (demo-commesse runs a 06:00–22:00 plant → 960 min/day) and must be
+// passed in. Hard-coding 1440 froze a 960-min plant through the middle of the
+// next working day. Kept as the default for callers not yet wired (apply-whatif.ts).
 const DAY_MIN = 1440;
 
 // Regex patterns are module-level so detectScenarioStartMin and
@@ -181,20 +187,32 @@ const RE_DOMANI = /\bdomani\b/;
 const RE_FRA_N_GIORNI = /\b(?:fra|tra|in)\s+(\d{1,3})\s+giorn[io]\b/;
 const RE_GIORNO_N = /\bgiorno\s+(\d{1,3})\b/;
 
-export function detectScenarioStartMin(whatifText: string): number | null {
+export function detectScenarioStartMin(
+  whatifText: string,
+  // Wave 16.8: dayLengthMin va passato dal baseline.time_config — wiring del
+  // caller fatto separatamente. Opzionale con fallback al vecchio 1440 così
+  // apply-whatif.ts continua a compilare/comportarsi come prima finché il suo
+  // wiring non atterra. Valori non-positivi/non-finiti ricadono sul default.
+  dayLengthMin?: number,
+): number | null {
   if (typeof whatifText !== 'string' || whatifText.trim().length === 0) return null;
   const t = whatifText.toLowerCase();
 
+  const L =
+    typeof dayLengthMin === 'number' && Number.isFinite(dayLengthMin) && dayLengthMin > 0
+      ? dayLengthMin
+      : DAY_MIN;
+
   // "dopodomani" must be checked BEFORE "domani" because it contains it.
-  if (RE_DOPODOMANI.test(t)) return 2 * DAY_MIN;
-  if (RE_DOMANI.test(t)) return 1 * DAY_MIN;
+  if (RE_DOPODOMANI.test(t)) return 2 * L;
+  if (RE_DOMANI.test(t)) return 1 * L;
 
   // "fra N giorni" / "tra N giorni" / "in N giorni". N==0 ("fra 0 giorni"
   // is semantically "now") returns null so the legacy cushion path runs.
   const fraMatch = t.match(RE_FRA_N_GIORNI);
   if (fraMatch) {
     const n = Number(fraMatch[1]);
-    if (Number.isFinite(n) && n >= 1 && n <= 365) return n * DAY_MIN;
+    if (Number.isFinite(n) && n >= 1 && n <= 365) return n * L;
   }
 
   // "giorno N" (1-based day index). Day 1 == horizon start == minute 0,
@@ -203,7 +221,7 @@ export function detectScenarioStartMin(whatifText: string): number | null {
   const dayMatch = t.match(RE_GIORNO_N);
   if (dayMatch) {
     const n = Number(dayMatch[1]);
-    if (Number.isFinite(n) && n >= 2 && n <= 365) return (n - 1) * DAY_MIN;
+    if (Number.isFinite(n) && n >= 2 && n <= 365) return (n - 1) * L;
   }
 
   return null;

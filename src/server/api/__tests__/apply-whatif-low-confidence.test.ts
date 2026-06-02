@@ -1,24 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * F-W8-07 — low_confidence_classification warning (Wave 9 w9-bff-frontend).
+ * Wave 16.6 — low-confidence interpreter outcomes (OBSOLETE-PREMISE rewrite of
+ * F-W8-07).
  *
- * When the Haiku intent parser returns `confidence: 'low'` the BFF still
- * applies the classified intent (no short-circuit) but tags
- * `low_confidence_classification` on the solved.warnings array AND emits
- * a structured server-side log entry. The UI then renders a yellow,
- * informative banner ("verify the result matches your intent").
+ * Legacy premise (F-W8-07): the Haiku intent PARSER returned a confidence and
+ * the BFF, on a low-confidence HIT, still solved while tagging
+ * `low_confidence_classification` on solved.warnings (+ a structured
+ * console.warn), and `unknown + low` cascaded to the Opus translator
+ * (Strategy C). The Wave 16.6 closed-set instruction interpreter changed this
+ * fundamentally:
  *
- * This is intentionally DIFFERENT from B-W8-S-04 (`unknown + high`) which
- * short-circuits straight to aborted_unsupported.
+ *   - A low/medium-confidence parse is now classified as GRAY by the
+ *     deterministic gate (instruction-interpreter.ts: `isGray = confidence !==
+ *     'high' || assumption`). The route therefore emits `requires_confirmation`
+ *     and STOPS — it does NOT solve, so a `solved` event with a
+ *     `low_confidence_classification` warning is no longer produced on this
+ *     path (the route's hit-branch low-confidence push is dead code because a
+ *     HIT always carries confidence 'high'). The manager confirms the gray
+ *     payload to proceed (covered by the gray-zone fast-path elsewhere).
+ *   - A high-confidence parse is a HIT and solves cleanly (no warning).
+ *   - `unknown` at ANY confidence is a structural REJECT →
+ *     `aborted_unsupported`, with NO Opus cascade (the interpreter is
+ *     authoritative — verified in apply-whatif-wave7-infeasible.test.ts).
  *
- * Coverage:
- *   - Happy path: low + machine_unavailability still solves, warning present.
- *   - Negative: confidence='medium' does NOT emit the warning.
- *   - Negative: confidence='high' does NOT emit the warning.
- *   - Negative: confidence='low' on unknown intent_id still goes to
- *     Strategy C (Opus translator cascade), warning still tagged.
- *   - Log channel: console.warn invoked with structured payload.
+ * These tests are rewritten to assert that real behaviour with equal rigor,
+ * preserving each original scenario's distinct utterance/confidence.
  */
 
 const anthropicCreate = vi.fn();
@@ -73,9 +80,13 @@ async function streamToString(stream: ReadableStream<Uint8Array>): Promise<strin
   return out;
 }
 
-function fakeHaikuReply(payload: object) {
+// Wave 16.6 §A — the managerText path now drives the Haiku instruction-
+// interpreter, which reads a forced `tool_use` block (name 'emit_constraint')
+// whose input is the FLAT entity shape, NOT the legacy parseIntent TEXT block
+// with nested `entities`.
+function fakeInterpreterReply(input: object) {
   return {
-    content: [{ type: 'text', text: JSON.stringify(payload) }],
+    content: [{ type: 'tool_use', name: 'emit_constraint', input }],
     usage: {
       input_tokens: 180,
       output_tokens: 25,
@@ -104,6 +115,13 @@ const nestedSolution = {
       { operazione: 'OP-1', macchina: 'M03', operatore: 'OP-B', start_min: 0, end_min: 80 },
     ],
   },
+  // Wave 16.8: buildSolutionContext reads time_config from originalSolution and
+  // the interpreter grounds machine_unavailability's SYMBOLIC day/clock refs
+  // against it. A 24h/midnight tc reproduces the legacy absolute minutes
+  // (giorno N = N*1440, ora = h*60). These GRAY tests only assert the payload
+  // is present (no exact-minute pin), but the window is kept faithful anyway.
+  // (extractCommesse ignores this key — it carries no `fasi` array.)
+  time_config: { day_length_min: 1440, company_start_hour: 0, start_date: '2026-06-01' },
 };
 
 const baseBody = {
@@ -149,28 +167,28 @@ afterEach(() => {
 });
 
 describe('F-W8-07 — low_confidence_classification warning', () => {
-  it('confidence=low + supported intent → solve completes with low_confidence_classification warning', async () => {
+  it('confidence=low + supported intent → GRAY requires_confirmation, no solve (Wave 16.6)', async () => {
+    // OBSOLETE-PREMISE rewrite: a low-confidence parse used to solve with a
+    // `low_confidence_classification` warning. The interpreter's deterministic
+    // gate now classifies low/medium confidence as GRAY → the route emits
+    // `requires_confirmation` and STOPS before the solver. No `solved`, no
+    // backend call, no warning. (The manager confirms the gray payload to
+    // proceed via the gray-zone fast-path.)
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'machine_unavailability',
-        entities: { machine_id: 'M02', start_min: 720, end_min: 1080 },
+        machine_id: 'M02',
+        // Wave 16.8: SYMBOLIC. oggi 12:00–18:00 on the 24h/midnight tc → [720, 1080].
+        day_ref: 'oggi',
+        start_hour: 12,
+        end_hour: 18,
         confidence: 'low',
-        fallback_reasoning: "evento passato ('ieri sera'), assunzione su finestra",
+        assumption: "evento passato ('ieri sera'), assunzione su finestra",
       }),
     );
 
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      jsonResponse({
-        status: 'OPTIMAL',
-        method: 'cp-sat',
-        solution: { 'COM-001': { fasi: [] } },
-        kpis: { makespan_min: 2900 },
-        objective_value: 2900,
-        warnings: [],
-        cost_usd: 0,
-        wave7: { cutoff_min: null, locked_count: 0, frozen_phases: [], apply_rules: [] },
-      }),
-    );
+    // No backend call expected — the gray pause bails before the solver.
+    const fetchMock = vi.fn().mockRejectedValue(new Error('unexpected backend call'));
     vi.stubGlobal('fetch', fetchMock);
 
     const res = await invokeRoute(
@@ -183,49 +201,52 @@ describe('F-W8-07 — low_confidence_classification warning', () => {
     const chunks = parseSse(await streamToString(res.body!));
     const events = chunks.map((c) => c.event);
 
-    // Stream must complete normally — NO short-circuit on low confidence.
+    // Gray pause sequence: parsing_intent → intent_parsed → routed →
+    // requires_confirmation → done. No solve, no abort, no error.
     expect(events).toContain('parsing_intent');
     expect(events).toContain('intent_parsed');
     expect(events).toContain('routed');
-    expect(events).toContain('solving');
-    expect(events).toContain('solved');
+    expect(events).toContain('requires_confirmation');
     expect(events).toContain('done');
+    expect(events).not.toContain('solving');
+    expect(events).not.toContain('solved');
     expect(events).not.toContain('aborted_unsupported');
     expect(events).not.toContain('error');
 
-    // The warning must appear in solved.warnings so the SolutionDiff
-    // banner lights up.
-    const solved = chunks.find((c) => c.event === 'solved')!.data as {
-      status: string;
-      warnings: string[];
+    // The confirmation carries the gated payload + the low confidence so the
+    // UI can render the confirm modal.
+    const confirm = chunks.find((c) => c.event === 'requires_confirmation')!.data as {
+      confidence: string;
+      confirmedPayload: { unavailable_machines?: Record<string, unknown> };
     };
-    expect(solved.warnings).toContain('low_confidence_classification');
+    expect(confirm.confidence).toBe('low');
+    // M02 is already canonical in this fixture's closed set (machines M01/M02/M03).
+    expect(confirm.confirmedPayload.unavailable_machines).toBeDefined();
 
-    // Backend was called exactly once — the constraint was still applied.
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Backend never reached — interpreter is the only LLM call.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(anthropicCreate).toHaveBeenCalledTimes(1);
   });
 
-  it('confidence=medium does NOT emit low_confidence_classification', async () => {
+  it('confidence=medium → GRAY requires_confirmation, no solve (Wave 16.6)', async () => {
+    // OBSOLETE-PREMISE rewrite: medium confidence used to solve (no warning).
+    // It is now GRAY → requires_confirmation, no solve. Distinct scenario
+    // preserved (whole-day default assumption).
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'machine_unavailability',
-        entities: { machine_id: 'M02', start_min: 2880, end_min: 4320 },
+        machine_id: 'M02',
+        // Wave 16.8: SYMBOLIC whole-day block. "gg3" → day_ref "3"; the range
+        // form day_ref_end "4" makes it the whole giorno 3 → on the 24h/midnight
+        // tc [2*1440, 3*1440] = [2880, 4320], matching the legacy whole-day window.
+        day_ref: '3',
+        day_ref_end: '4',
         confidence: 'medium',
-        fallback_reasoning: 'whole_day_default_no_explicit_time',
+        assumption: 'whole_day_default_no_explicit_time',
       }),
     );
 
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      jsonResponse({
-        status: 'OPTIMAL',
-        method: 'cp-sat',
-        solution: { 'COM-001': { fasi: [] } },
-        kpis: { makespan_min: 2900 },
-        objective_value: 2900,
-        warnings: [],
-        cost_usd: 0,
-      }),
-    );
+    const fetchMock = vi.fn().mockRejectedValue(new Error('unexpected backend call'));
     vi.stubGlobal('fetch', fetchMock);
 
     const res = await invokeRoute(
@@ -236,18 +257,27 @@ describe('F-W8-07 — low_confidence_classification warning', () => {
     );
     expect(res.status).toBe(200);
     const chunks = parseSse(await streamToString(res.body!));
+    const events = chunks.map((c) => c.event);
 
-    const solved = chunks.find((c) => c.event === 'solved')!.data as {
-      warnings: string[];
+    expect(events).toContain('requires_confirmation');
+    expect(events).not.toContain('solved');
+    expect(events).not.toContain('aborted_unsupported');
+
+    const confirm = chunks.find((c) => c.event === 'requires_confirmation')!.data as {
+      confidence: string;
     };
-    expect(solved.warnings).not.toContain('low_confidence_classification');
+    expect(confirm.confidence).toBe('medium');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('confidence=high does NOT emit low_confidence_classification', async () => {
+  it('confidence=high → HIT solves cleanly, no low_confidence_classification warning', async () => {
+    // Still valid post-16.6: a high-confidence parse is a HIT and solves. The
+    // `low_confidence_classification` marker must NOT appear (it only ever rode
+    // a low/medium HIT, which the gate no longer produces).
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'order_priority',
-        entities: { order_ids: ['COM-001'] },
+        order_ids: ['COM-001'],
         confidence: 'high',
       }),
     );
@@ -256,7 +286,7 @@ describe('F-W8-07 — low_confidence_classification warning', () => {
       jsonResponse({
         status: 'OPTIMAL',
         method: 'cp-sat',
-        solution: { 'COM-001': { fasi: [] } },
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
         kpis: { makespan_min: 2900 },
         objective_value: 2900,
         warnings: [],
@@ -273,6 +303,9 @@ describe('F-W8-07 — low_confidence_classification warning', () => {
     );
     expect(res.status).toBe(200);
     const chunks = parseSse(await streamToString(res.body!));
+    const events = chunks.map((c) => c.event);
+    expect(events).toContain('solved');
+    expect(events).not.toContain('requires_confirmation');
 
     const solved = chunks.find((c) => c.event === 'solved')!.data as {
       warnings: string[];
@@ -280,54 +313,18 @@ describe('F-W8-07 — low_confidence_classification warning', () => {
     expect(solved.warnings).not.toContain('low_confidence_classification');
   });
 
-  it('confidence=low on unknown intent_id still emits warning AND still falls back to Strategy C (Opus translator)', async () => {
-    // Haiku returns unknown + low → B-W8-S-04 short-circuit does NOT
-    // fire (it only fires on unknown + HIGH). The router still cascades
-    // to the Opus translator (strategy C). The warning must travel
-    // through that path too, ending up on the solved.warnings.
-    //
-    // Sequence: 1st anthropic call = Haiku (unknown+low). 2nd anthropic
-    // call = Opus translator returning a force_priority constraint
-    // payload (the constraint-translator's expected wire schema).
-    anthropicCreate
-      .mockResolvedValueOnce(
-        fakeHaikuReply({
-          intent_id: 'unknown',
-          entities: {},
-          confidence: 'low',
-          fallback_reasoning: 'incerto, richiede translator',
-        }),
-      )
-      .mockResolvedValueOnce({
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            type: 'force_priority',
-            rules: { priority_orders: ['COM-001'] },
-            rationale: 'Manager wants COM-001 anticipated.',
-            confidence: 'high',
-            warnings: [],
-          }),
-        }],
-        usage: {
-          input_tokens: 800,
-          output_tokens: 60,
-          cache_read_input_tokens: 0,
-          cache_creation_input_tokens: 0,
-        },
-      });
-
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      jsonResponse({
-        status: 'OPTIMAL',
-        method: 'cp-sat',
-        solution: { 'COM-001': { fasi: [] } },
-        kpis: { makespan_min: 2900 },
-        objective_value: 2900,
-        warnings: [],
-        cost_usd: 0,
-      }),
+  it('unknown + confidence=low → reject (aborted_unsupported), NO Opus cascade (Wave 16.6)', async () => {
+    // OBSOLETE-PREMISE rewrite: `unknown + low` used to cascade to the Opus
+    // translator (Strategy C) as a rescue and tag the low-confidence warning.
+    // The closed-set interpreter is now authoritative: `unknown` at ANY
+    // confidence is a structural REJECT → aborted_unsupported, with NO second
+    // Opus call and no `low_confidence_classification` warning.
+    anthropicCreate.mockResolvedValueOnce(
+      fakeInterpreterReply({ intent_id: 'unknown', confidence: 'low' }),
     );
+
+    // No backend call — the reject bails before the solver.
+    const fetchMock = vi.fn().mockRejectedValue(new Error('unexpected backend call'));
     vi.stubGlobal('fetch', fetchMock);
 
     const res = await invokeRoute(
@@ -340,63 +337,80 @@ describe('F-W8-07 — low_confidence_classification warning', () => {
     const chunks = parseSse(await streamToString(res.body!));
     const events = chunks.map((c) => c.event);
 
-    // Must NOT short-circuit (B-W8-S-04 fires only on unknown+high).
-    expect(events).not.toContain('aborted_unsupported');
-    expect(events).toContain('solved');
+    // Reject path: aborted_unsupported, never solved.
+    expect(events).toContain('aborted_unsupported');
+    expect(events).not.toContain('solved');
+    // No Opus cascade — translating/translated MUST be absent.
+    expect(events).not.toContain('translating');
+    expect(events).not.toContain('translated');
 
-    const solved = chunks.find((c) => c.event === 'solved')!.data as {
-      warnings: string[];
-    };
-    // The low_confidence marker must survive the Strategy C detour and
-    // reach the UI.
-    expect(solved.warnings).toContain('low_confidence_classification');
+    const routed = chunks.find((c) => c.event === 'routed')!.data as { strategy: string };
+    expect(routed.strategy).toBe('unsupported');
+
+    // Interpreter only — exactly ONE LLM call, no second Opus call.
+    expect(anthropicCreate).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('logs a structured server-side warning when low_confidence triggers (audit channel)', async () => {
+  it('low-confidence "M2" alias resolves to canonical M02 and GRAYs (no solve, no audit log)', async () => {
+    // OBSOLETE-PREMISE rewrite: the legacy audit channel emitted a structured
+    // console.warn tagged `low_confidence_classification` on a low-confidence
+    // SOLVE. That solve no longer happens — a low-confidence parse is GRAY →
+    // requires_confirmation. We assert the real behaviour: (a) no
+    // `low_confidence_classification` console.warn is produced on this path,
+    // and (b) the alias "M2" the manager typed is canonicalised by the gate to
+    // "M02" (the fixture's real id) inside the gray confirmedPayload — pinning
+    // the closed-set resolution rather than a vacuous check.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       anthropicCreate.mockResolvedValueOnce(
-        fakeHaikuReply({
+        fakeInterpreterReply({
           intent_id: 'machine_unavailability',
-          entities: { machine_id: 'M2', start_min: 0 },
+          machine_id: 'M2',
+          // Wave 16.8: SYMBOLIC, no explicit time → whole day TODAY. day_ref
+          // "oggi" on the 24h/midnight tc → [0, 1440]. The "M2" alias is still
+          // re-resolved by the gate to the canonical closed-set id "M02".
+          day_ref: 'oggi',
           confidence: 'low',
-          fallback_reasoning: 'evento passato',
+          assumption: 'evento passato',
         }),
       );
-      const fetchMock = vi.fn().mockResolvedValueOnce(
-        jsonResponse({
-          status: 'OPTIMAL',
-          method: 'cp-sat',
-          solution: { 'COM-001': { fasi: [] } },
-          kpis: { makespan_min: 2900 },
-          objective_value: 2900,
-          warnings: [],
-          cost_usd: 0,
-        }),
-      );
+      // No backend call — gray pause bails before the solver.
+      const fetchMock = vi.fn().mockRejectedValue(new Error('unexpected backend call'));
       vi.stubGlobal('fetch', fetchMock);
 
-      await invokeRoute(
+      const res = await invokeRoute(
         makeRequest(
           { ...baseBody, managerText: 'M2 in panne ieri sera' },
           '10.0.97.5',
         ),
       );
+      const chunks = parseSse(await streamToString(res.body!));
+      const events = chunks.map((c) => c.event);
 
-      // Drain stream to ensure the route fully completed.
-      // (Already awaited via invokeRoute → handler returns the stream;
-      // we re-read below.)
+      // Gray pause, not a solve.
+      expect(events).toContain('requires_confirmation');
+      expect(events).not.toContain('solved');
+      expect(fetchMock).not.toHaveBeenCalled();
 
-      // console.warn must have been called at least once with a payload
-      // tagged "low_confidence_classification" so production logs are
-      // greppable for audit.
+      // CANONICALISATION: the manager typed "M2"; the gate re-resolves it
+      // against the closed set (machines M01/M02/M03) to "M02". The gray
+      // payload key is therefore the canonical "M02".
+      const confirm = chunks.find((c) => c.event === 'requires_confirmation')!.data as {
+        confirmedPayload: { unavailable_machines?: Record<string, unknown> };
+      };
+      const unavail = confirm.confirmedPayload.unavailable_machines ?? {};
+      expect(Object.keys(unavail)).toEqual(['M02']);
+
+      // The legacy structured audit log for low_confidence_classification is
+      // gone (the route no longer console.warns on this path).
       const lowConfidenceLog = warnSpy.mock.calls.find((call) =>
         call.some(
           (arg) =>
             typeof arg === 'string' && arg.includes('low_confidence_classification'),
         ),
       );
-      expect(lowConfidenceLog).toBeDefined();
+      expect(lowConfidenceLog).toBeUndefined();
     } finally {
       warnSpy.mockRestore();
     }

@@ -67,14 +67,24 @@ async function streamToString(stream: ReadableStream<Uint8Array>): Promise<strin
   return out;
 }
 
+// Wave 16.6 §A — nested commessa-keyed shape so buildSolutionContext (used by
+// the instruction-interpreter on the managerText path) recovers the closed set
+// of orders (COM-001, COM-007) and machines (M-1, M-3). The legacy flat
+// {fasi, machines, orders} envelope yielded orders=[] under buildSolutionContext
+// (it harvests orders from the commessa MAP keys, not a top-level `orders`
+// field), so an order_priority interpreter HIT for COM-001 rejected. Max
+// end_min stays 120 so the A4 horizon-overshoot test (max end 120) is unchanged.
 const baseSolution = {
-  status: 'OPTIMAL',
-  fasi: [
-    { commessa: 'COM-001', macchina: 'M-1', operatore: 'OP-1', start_min: 0, end_min: 60 },
-    { commessa: 'COM-007', macchina: 'M-3', operatore: 'OP-2', start_min: 60, end_min: 120 },
-  ],
-  machines: ['M-1', 'M-3'],
-  orders: ['COM-001', 'COM-007'],
+  'COM-001': {
+    fasi: [
+      { operazione: 'OP-1', macchina: 'M-1', operatore: 'OP-1', start_min: 0, end_min: 60 },
+    ],
+  },
+  'COM-007': {
+    fasi: [
+      { operazione: 'OP-1', macchina: 'M-3', operatore: 'OP-2', start_min: 60, end_min: 120 },
+    ],
+  },
 };
 
 const baseBody = {
@@ -226,7 +236,7 @@ describe('Wave 16.4 A3 — empty-dict guard', () => {
         JSON.stringify({
           status: 'OPTIMAL',
           method: 'cp-sat',
-          solution: { status: 'OPTIMAL', fasi: [] },
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
           kpis: { makespan_min: 2700 },
           objective_value: 2700,
           warnings: [],
@@ -281,7 +291,7 @@ describe('Wave 16.4 A3 — empty-dict guard', () => {
         JSON.stringify({
           status: 'OPTIMAL',
           method: 'cp-sat',
-          solution: { status: 'OPTIMAL', fasi: [] },
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
           kpis: { makespan_min: 2700 },
           objective_value: 2700,
           warnings: [],
@@ -321,7 +331,7 @@ describe('Wave 16.4 A3 — empty-dict guard', () => {
       new Response(
         JSON.stringify({
           status: 'OPTIMAL', method: 'cp-sat',
-          solution: { status: 'OPTIMAL', fasi: [] },
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
           kpis: { makespan_min: 2700 }, objective_value: 2700,
           warnings: [], cost_usd: 0,
         }),
@@ -435,7 +445,7 @@ describe('Wave 16.4 A3 — empty-dict guard', () => {
       new Response(
         JSON.stringify({
           status: 'OPTIMAL', method: 'cp-sat',
-          solution: { status: 'OPTIMAL', fasi: [] },
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
           kpis: { makespan_min: 2700 }, objective_value: 2700,
           warnings: [], cost_usd: 0,
         }),
@@ -470,15 +480,22 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
   // route uses it when constructing cutoffMin. The route-level cutoffMin
   // appears on the wire as request.body.cutoff_min sent to /solve-template.
 
+  // Wave 16.6 §A — the managerText path now drives the Haiku instruction-
+  // interpreter, which reads a forced `tool_use` block (name 'emit_constraint')
+  // whose input is the FLAT entity shape, NOT the legacy parseIntent TEXT block
+  // with nested `entities`. The A4 cutoff auto-detect logic is independent of
+  // the interpreter shape (it parses the managerText directly), so only the
+  // mock envelope changes here.
   function fakeHaikuOrderPriority() {
     return {
       content: [{
-        type: 'text',
-        text: JSON.stringify({
+        type: 'tool_use',
+        name: 'emit_constraint',
+        input: {
           intent_id: 'order_priority',
-          entities: { order_ids: ['COM-001'] },
+          order_ids: ['COM-001'],
           confidence: 'high',
-        }),
+        },
       }],
       usage: {
         input_tokens: 100, output_tokens: 30,
@@ -492,7 +509,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -520,7 +538,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -548,7 +567,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -576,7 +596,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -624,7 +645,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -656,7 +678,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -693,7 +716,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -730,7 +754,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -767,7 +792,8 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -792,20 +818,22 @@ describe('Wave 16.4 A4 — cutoff auto-detect from text', () => {
   });
 
   it('does NOT emit horizon warning when detected cutoff fits inside baseline horizon', async () => {
+    // Nested commessa-keyed shape (see baseSolution note). Max end_min = 5000
+    // so the detected "domani" cutoff (1440) fits inside the horizon → no warning.
     const longSolution = {
-      status: 'OPTIMAL',
-      fasi: [
-        { commessa: 'COM-001', macchina: 'M-1', start_min: 0, end_min: 60 },
-        { commessa: 'COM-007', macchina: 'M-3', start_min: 60, end_min: 5000 },
-      ],
-      machines: ['M-1', 'M-3'],
-      orders: ['COM-001', 'COM-007'],
+      'COM-001': {
+        fasi: [{ operazione: 'OP-1', macchina: 'M-1', start_min: 0, end_min: 60 }],
+      },
+      'COM-007': {
+        fasi: [{ operazione: 'OP-1', macchina: 'M-3', start_min: 60, end_min: 5000 }],
+      },
     };
     anthropicCreate.mockResolvedValueOnce(fakeHaikuOrderPriority());
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          status: 'OPTIMAL', method: 'cp-sat', solution: {}, kpis: {},
+          status: 'OPTIMAL', method: 'cp-sat',
+          solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } }, kpis: {},
           objective_value: 0, warnings: [], cost_usd: 0,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },

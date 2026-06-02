@@ -57,7 +57,12 @@ export interface RunWhatIfOptions {
 // strutturate dell'analisi (Interpretazione, Impatti, Trade-off,
 // Raccomandazione) su scenari industriali standard.
 const MODEL = 'claude-sonnet-4-6';
-const MAX_OUTPUT_TOKENS = 1200;
+// 1200 era un residuo dell'era Opus 4.7: troppo basso per le 4 sezioni complete
+// (Interpretazione/Impatti/Trade-off/Raccomandazione) → stop_reason='max_tokens'
+// e analisi troncata a metà. Sonnet 4.6 regge fino a 128k token di output; 4096
+// dà margine abbondante. È solo un TETTO: si paga l'output reale, quindi le run
+// che finiscono prima (la norma) non costano di più.
+const MAX_OUTPUT_TOKENS = 4096;
 const MAX_SOLUTION_JSON_CHARS = 100_000;
 
 // Sonnet 4.6 pricing per 1M tokens (USD). Era Opus (15/75/18.75/1.5).

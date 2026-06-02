@@ -10,6 +10,7 @@ import {
   Wand2,
   X as XIcon,
   Clock,
+  Layers,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -20,6 +21,7 @@ import { sseStream, friendlyErrorMessage } from '@/lib/streamingFetch';
 import { SolutionDiff, type FrozenPhase } from './SolutionDiff';
 import { humanizeUnsupportedReason } from './unsupported-reason-labels';
 import { WhatIfConfirmationModal } from './WhatIfConfirmationModal';
+import { describeLedgerRules } from '@/lib/appliedRulesLedger';
 
 interface WhatIfAnalysisProps {
   slug: string | null;
@@ -27,10 +29,22 @@ interface WhatIfAnalysisProps {
   kpis: Record<string, number>;
   consultationMd?: string;
   dataSchemaMd?: string;
+  // Wave 16.6 §C — the RAW live backend solution map ({ COM-001: { fasi: [] } }),
+  // distinct from `solution` (the normalized AiInputs envelope used for display
+  // + the /api/whatif analysis call). apply-whatif must re-solve from THIS map
+  // so the solver/frozen-window builder see the real commessa→fasi shape and
+  // the applied constraints carry. Falls back to `solution` when absent.
+  liveSolutionMap?: unknown;
+  // Wave 16.6 §C — cumulative applied-rules ledger (folded new-wins by the
+  // parent). Threaded to apply-whatif as `priorRules` so prior-accepted
+  // constraints are re-applied together with the new scenario.
+  priorRules?: Record<string, unknown>;
   // Wave 16.4 A7 — when the manager clicks "Accetta" on a candidate diff
   // we synthesize a solve-template shaped result and hand it back to the
   // parent route so `setBackendResult` swaps the dashboard to the new plan.
-  onAcceptResult?: (result: unknown) => void;
+  // Wave 16.6 §C — second arg carries the accepted rules so the parent can
+  // append them to the ledger for the next What-If.
+  onAcceptResult?: (result: unknown, acceptedRules?: Record<string, unknown>) => void;
   // Wave 16.5 A3 — the full original backend envelope (status, solution,
   // kpis, time_config, maintenance, operator_config, …). The apply-whatif
   // `solved` event only returns solution+kpis; `adaptResult` needs the rest
@@ -38,6 +52,22 @@ interface WhatIfAnalysisProps {
   // shifts) to render the Gantt/KPI/OperationalPlan. On accept we merge the
   // candidate's solution+kpis over this so the dashboard refreshes fully.
   originalBackendResult?: unknown;
+  // Wave 16.6 (Option A) — clear the cumulative applied-rules ledger so the
+  // NEXT What-If/Ripianifica starts from a clean constraint slate. The parent
+  // owns the ledger (clearLedger + ledgerVersion bump) so priorRules recomputes
+  // to {} and the inherited-constraints panel disappears. The live plan on the
+  // dashboard is left untouched — only the carry is dropped.
+  onClearPriorRules?: () => void;
+  // Wave 16.7 — remove ONE inherited constraint (per-chip ×). Parent calls
+  // removeConstraintFromLedger(slug, slot, key) + bumps ledgerVersion.
+  onRemoveConstraint?: (slot: string, key: string) => void;
+  // Working-day length (time_config.day_length_min) so inherited-constraint
+  // day labels read correctly ("giorno 2", not the 1440-guess "giorno 1-2").
+  dayLengthMin?: number;
+  // Plant start hour (time_config.company_start_hour) so a partial-day inherited
+  // constraint shows the clock ("giorno 1 · 06:00–10:00"), not an all-day-looking
+  // "giorno 1". Wave 16.9.
+  companyStartHour?: number;
 }
 
 interface ChunkPayload { text: string }
@@ -91,6 +121,9 @@ interface ApplySolvedPayload {
   // names (commessa/operazione/macchina) and backend audit fields
   // (job_id/seq/machine_id/worker_id); we read only the UI-legacy slice.
   locked_phases?: FrozenPhase[];
+  // Wave 16.6 §C — the NEW scenario's rule slot (pre-merge), appended to the
+  // ledger on accept so the next What-If carries it.
+  applied_rules?: Record<string, unknown>;
 }
 
 interface ApplyAbortedUnsupportedPayload {
@@ -142,8 +175,14 @@ export function WhatIfAnalysis({
   kpis,
   consultationMd,
   dataSchemaMd,
+  liveSolutionMap,
+  priorRules,
   onAcceptResult,
   originalBackendResult,
+  onClearPriorRules,
+  onRemoveConstraint,
+  dayLengthMin,
+  companyStartHour,
 }: WhatIfAnalysisProps) {
   const [scenario, setScenario] = useState('');
   const [response, setResponse] = useState('');
@@ -154,9 +193,17 @@ export function WhatIfAnalysis({
   // Apply-whatif state (SSE /api/apply-whatif).
   const [applying, setApplying] = useState<ApplyingState>('idle');
   const [translatorChange, setTranslatorChange] = useState<ConstraintChange | null>(null);
+  // Wave 16.6 — reason surfaced when the interpreter REJECTS the scenario (entity
+  // off the plan's closed set / non-catalog). That path emits aborted_unsupported
+  // with NO 'translated' event, so translatorChange stays null; we render this so
+  // the manager sees WHY instead of a vanishing toast.
+  const [unsupportedReason, setUnsupportedReason] = useState<string | null>(null);
   const [candidateSolution, setCandidateSolution] = useState<unknown>(null);
   const [candidateKpis, setCandidateKpis] = useState<Record<string, number> | null>(null);
   const [candidateWarnings, setCandidateWarnings] = useState<string[]>([]);
+  // Wave 16.6 §C — the NEW scenario's rule slot echoed on `solved`. Appended
+  // to the parent's ledger on "Accetta" so the next What-If carries it.
+  const [appliedRules, setAppliedRules] = useState<Record<string, unknown> | null>(null);
   const [applyCostUsd, setApplyCostUsd] = useState<number | null>(null);
 
   // Wave 7 — telemetry from BFF Wave 7 SSE contract.
@@ -231,9 +278,11 @@ export function WhatIfAnalysis({
   const resetApplyState = useCallback(() => {
     setApplying('idle');
     setTranslatorChange(null);
+    setUnsupportedReason(null);
     setCandidateSolution(null);
     setCandidateKpis(null);
     setCandidateWarnings([]);
+    setAppliedRules(null);
     setApplyCostUsd(null);
     setLockedCount(null);
     setModifiedCount(null);
@@ -367,9 +416,11 @@ export function WhatIfAnalysis({
 
     setApplying('translating');
     setTranslatorChange(null);
+    setUnsupportedReason(null);
     setCandidateSolution(null);
     setCandidateKpis(null);
     setCandidateWarnings([]);
+    setAppliedRules(null);
     setApplyCostUsd(null);
     setLockedCount(null);
     setModifiedCount(null);
@@ -391,7 +442,11 @@ export function WhatIfAnalysis({
         '/api/apply-whatif',
         {
           slug,
-          originalSolution: solution,
+          // Wave 16.6 §C — re-solve from the RAW live solution map so the
+          // applied constraints carry. `solution` (the AiInputs envelope) is
+          // the wrong shape for the solver baseline (the core bug fixed here);
+          // fall back to it only when the live map wasn't threaded.
+          originalSolution: liveSolutionMap ?? solution,
           kpis,
           whatifText: response,
           consultationMd,
@@ -402,6 +457,9 @@ export function WhatIfAnalysis({
           // Wave 7 — cutoff window for hard-lock of pre-cutoff phases.
           currentTimeMin,
           cushionMin,
+          // Wave 16.6 §C — cumulative ledger of prior-accepted constraints,
+          // merged new-wins with this scenario by the BFF before the solve.
+          ...(priorRules && Object.keys(priorRules).length > 0 ? { priorRules } : {}),
           // Wave 16.3 — GRAY_ZONE retry flags (accepted by BFF BodySchema).
           ...(flags.userConfirmedGrayZone ? { userConfirmedGrayZone: true } : {}),
           ...(flags.confirmedPayload ? { confirmedPayload: flags.confirmedPayload } : {}),
@@ -460,6 +518,7 @@ export function WhatIfAnalysis({
         } else if (event === 'aborted_unsupported') {
           const payload = data as ApplyAbortedUnsupportedPayload;
           setApplying('unsupported');
+          setUnsupportedReason(payload.reason ?? null);
           toast.warning(`Scenario non applicabile: ${humanizeUnsupportedReason(payload.reason)}`);
           // 'done' is still expected after this, but we do not transition out of 'unsupported'.
         } else if (event === 'solving') {
@@ -507,6 +566,10 @@ export function WhatIfAnalysis({
           setCandidateSolution(payload.newSolution ?? null);
           setCandidateKpis(payload.newKpis ?? null);
           setCandidateWarnings(Array.isArray(payload.warnings) ? payload.warnings : []);
+          // Wave 16.6 §C — the NEW scenario's rule delta to ledger on accept.
+          if (payload.applied_rules && typeof payload.applied_rules === 'object') {
+            setAppliedRules(payload.applied_rules as Record<string, unknown>);
+          }
           // Wave 7 telemetry on `solved` payload (per BFF contract: always present).
           if (typeof payload.locked_count === 'number') setLockedCount(payload.locked_count);
           if (typeof payload.modified_count === 'number') setModifiedCount(payload.modified_count);
@@ -557,7 +620,7 @@ export function WhatIfAnalysis({
       }
     }
     applyAbortRef.current = null;
-  }, [canApply, slug, planReady, solution, kpis, response, scenario, consultationMd, dataSchemaMd, computeCutoffParams, intentId, setGrayZoneConfirmation]);
+  }, [canApply, slug, planReady, solution, liveSolutionMap, priorRules, kpis, response, scenario, consultationMd, dataSchemaMd, computeCutoffParams, intentId, setGrayZoneConfirmation]);
 
   const runApplyWhatIf = useCallback(() => {
     return runApplyWhatIfWithFlags();
@@ -612,6 +675,28 @@ export function WhatIfAnalysis({
       return;
     }
 
+    // Wave 16.6 §D — defence-in-depth: never swap in a phase-less candidate.
+    // The §D empty-solution guard already converts a zero-phase solve into
+    // aborted_unsupported (so we should never reach accept with one), but a
+    // belt-and-braces check here keeps the Gantt from blanking even if a
+    // future code path bypasses the guard. Counts both the nested
+    // `{commessa:{fasi:[]}}` map and a flat top-level `fasi[]`.
+    const countPhases = (sol: unknown): number => {
+      if (!sol || typeof sol !== 'object') return 0;
+      const root = sol as Record<string, unknown>;
+      if (Array.isArray(root.fasi)) return root.fasi.length;
+      let n = 0;
+      for (const job of Object.values(root)) {
+        const fasi = job && typeof job === 'object' ? (job as { fasi?: unknown }).fasi : null;
+        if (Array.isArray(fasi)) n += fasi.length;
+      }
+      return n;
+    };
+    if (countPhases(candidateSolution) === 0) {
+      toast.error('Soluzione candidate vuota — niente da applicare.');
+      return;
+    }
+
     const base =
       originalBackendResult && typeof originalBackendResult === 'object'
         ? (originalBackendResult as Record<string, unknown>)
@@ -628,7 +713,9 @@ export function WhatIfAnalysis({
 
     // Hand the merged plan to the parent FIRST so the dashboard refreshes
     // even if the audit echo below fails (the candidate is already valid).
-    onAcceptResult?.(merged);
+    // Wave 16.6 §C — pass the NEW scenario's rule delta so the parent appends
+    // it to the ledger; the next What-If then re-applies it.
+    onAcceptResult?.(merged, appliedRules ?? undefined);
     resetApplyState();
     toast.success('Piano aggiornato con il candidate.');
 
@@ -655,6 +742,7 @@ export function WhatIfAnalysis({
     candidateSolution,
     candidateKpis,
     candidateWarnings,
+    appliedRules,
     intentId,
     strategy,
     onAcceptResult,
@@ -697,6 +785,15 @@ export function WhatIfAnalysis({
   const showLowConfidenceBanner =
     confidence !== null && confidence !== 'high' && showCandidateDiff;
 
+  // Wave 16.6 (Option A) — the constraints carried in from prior accepted
+  // reschedules/what-ifs (the ledger). Surfacing them removes the "why did
+  // everything slide to the next day?" surprise: the manager sees exactly
+  // which previously-accepted rules are re-applied on top of this scenario.
+  const inheritedConstraints = useMemo(
+    () => describeLedgerRules(priorRules, { dayLengthMin, companyStartHour }),
+    [priorRules, dayLengthMin, companyStartHour],
+  );
+
   return (
     <Card className="overflow-hidden">
       <CardHeader className="pb-3">
@@ -709,6 +806,58 @@ export function WhatIfAnalysis({
         </p>
       </CardHeader>
       <CardContent className="space-y-3">
+        {inheritedConstraints.length > 0 && (
+          <div
+            role="region"
+            aria-label="Vincoli ereditati dal piano corrente"
+            data-testid="whatif-inherited-constraints"
+            className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 space-y-2"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+                <Layers className="h-3.5 w-3.5" aria-hidden />
+                Vincoli ereditati dal piano corrente ({inheritedConstraints.length})
+              </div>
+              {onClearPriorRules && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  data-testid="whatif-clear-inherited"
+                  onClick={onClearPriorRules}
+                  disabled={applyInFlight}
+                >
+                  Azzera
+                </Button>
+              )}
+            </div>
+            <ul className="flex flex-wrap gap-1.5" aria-label="Elenco vincoli ereditati">
+              {inheritedConstraints.map((c) => (
+                <li
+                  key={`${c.slot}:${c.key}`}
+                  className="flex items-center gap-1 rounded border bg-background/70 pl-1.5 pr-1 py-0.5 text-[11px] text-foreground"
+                >
+                  <span>{c.label}</span>
+                  {onRemoveConstraint && (
+                    <button
+                      type="button"
+                      aria-label={`Rimuovi vincolo: ${c.label}`}
+                      data-testid={`whatif-remove-${c.slot}-${c.key}`}
+                      className="rounded text-muted-foreground hover:text-destructive disabled:opacity-50"
+                      onClick={() => onRemoveConstraint(c.slot, c.key)}
+                      disabled={applyInFlight}
+                    >
+                      <XIcon className="h-3 w-3" aria-hidden />
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <p className="text-[10px] text-muted-foreground leading-snug">
+              Questi vincoli, gia accettati in precedenza, vengono ri-applicati a questo scenario. Azzera per esplorare dal piano pulito.
+            </p>
+          </div>
+        )}
         <div
           role="region"
           aria-label="Cutoff temporale per il ricalcolo"
@@ -941,12 +1090,13 @@ export function WhatIfAnalysis({
               aria-valuemax={100}
               aria-label={applyLabel || 'Stato esecuzione what-if'}
             />
-            {applying === 'unsupported' && translatorChange?.unsupportedReason && (
+            {applying === 'unsupported' && (translatorChange?.unsupportedReason ?? unsupportedReason) && (
               <div
                 className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs text-amber-900 dark:text-amber-200"
                 data-testid="whatif-apply-unsupported-reason"
               >
-                <strong>Motivo:</strong> {translatorChange.unsupportedReason}
+                <strong>Motivo:</strong>{' '}
+                {humanizeUnsupportedReason(translatorChange?.unsupportedReason ?? unsupportedReason ?? '')}
               </div>
             )}
             {applyCostUsd != null && applying !== 'translating' && applying !== 'solving' && (

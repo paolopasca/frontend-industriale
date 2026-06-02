@@ -6,12 +6,99 @@ import {
   recordCost,
 } from '@/server/llm/client';
 import { translateWhatIfToConstraint } from '@/server/llm/constraint-translator';
-import { parseIntent } from '@/server/llm/intent-parser';
-import { routeIntent, type BaselineFasi } from '@/server/llm/strategy-router';
-import { loadCatalog } from '@/server/llm/catalog/loader';
-import { apply as applyDataModification, canApply as dataModifierCanApply } from '@/server/llm/data-modifier';
+import { interpretInstruction } from '@/server/llm/instruction-interpreter';
 import { buildFrozenPhases, detectScenarioStartMin, detectScenarioPhraseMatches, type FrozenPhase } from '@/server/llm/frozen-window-builder';
+import { buildSolutionContext, dayLengthMinFromBaseline, type SolutionContext } from '@/lib/solutionContext';
+import { mergeRuleSlots } from '@/lib/appliedRulesLedger';
+import { resolveMachineAlias, resolveOrderAlias, resolveShiftAlias } from '@/lib/entityResolver';
 import { resolveTemplate } from '@/lib/api';
+
+/**
+ * Wave 16.6 M-4 — re-gate a manager-confirmed gray-zone payload against the
+ * live plan's closed set. The gray pause emitted a payload that was already
+ * gated (interpreter) or translator-produced, but the confirm re-entry receives
+ * that payload back FROM the client (echoed via confirmedPayload). A stale or
+ * tampered client could swap an entity id (e.g. M02 → M99) between the pause and
+ * the confirm to push an off-set entity into the solver — the closed-set
+ * guarantee would then be bypassed on the trust-the-client second pass. So we
+ * re-resolve every machine/order/shift id against the live closed set:
+ *   - valid id (possibly an alias like "m2") → canonicalised in place,
+ *   - off-set / ambiguous id → reject (fail-closed, per
+ *     feedback_closed_set_fail_closed: an empty or non-matching set returns null,
+ *     never accept-all).
+ * Shift ids are only re-gated when the plan exposes a non-empty shift set; an
+ * absent shift closed set means the backend treats an unknown shift key as a
+ * no-op passthrough, so there is no wrong-entity-edited risk to guard there.
+ *
+ * @returns the canonicalised payload, or the first offending raw id.
+ */
+function regateConfirmedRules(
+  payload: Record<string, unknown>,
+  ctx: SolutionContext,
+): { ok: true; payload: Record<string, unknown> } | { ok: false; offending: string } {
+  const out: Record<string, unknown> = { ...payload };
+  const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+
+  // unavailable_machines: { [machineId]: window[] }
+  if (isPlainObject(payload.unavailable_machines)) {
+    const remapped: Record<string, unknown> = {};
+    for (const [mid, windows] of Object.entries(payload.unavailable_machines)) {
+      const canon = resolveMachineAlias(mid, ctx);
+      if (canon === null) return { ok: false, offending: mid };
+      remapped[canon] = windows;
+    }
+    out.unavailable_machines = remapped;
+  }
+
+  // priority_orders: [orderId, ...]
+  if (Array.isArray(payload.priority_orders)) {
+    const remapped: string[] = [];
+    for (const oid of payload.priority_orders) {
+      if (typeof oid !== 'string') return { ok: false, offending: String(oid) };
+      const canon = resolveOrderAlias(oid, ctx);
+      if (canon === null) return { ok: false, offending: oid };
+      remapped.push(canon);
+    }
+    out.priority_orders = remapped;
+  }
+
+  // deadline_changes: { [orderId]: {...} }
+  if (isPlainObject(payload.deadline_changes)) {
+    const remapped: Record<string, unknown> = {};
+    for (const [oid, body] of Object.entries(payload.deadline_changes)) {
+      const canon = resolveOrderAlias(oid, ctx);
+      if (canon === null) return { ok: false, offending: oid };
+      remapped[canon] = body;
+    }
+    out.deadline_changes = remapped;
+  }
+
+  // extra_capacity: { machine_id?, shift?, operators?, duration_min? }
+  if (isPlainObject(payload.extra_capacity)) {
+    const ec = { ...payload.extra_capacity };
+    if (typeof ec.machine_id === 'string') {
+      const canon = resolveMachineAlias(ec.machine_id, ctx);
+      if (canon === null) return { ok: false, offending: ec.machine_id };
+      ec.machine_id = canon;
+    }
+    out.extra_capacity = ec;
+  }
+
+  // shift_changes: { [shiftId]: {...} } — only re-gate when the plan exposes a
+  // shift closed set (else the backend handles unknown keys as no-op passthrough).
+  if (isPlainObject(payload.shift_changes) && ctx.shifts.length > 0) {
+    const remapped: Record<string, unknown> = {};
+    for (const [sid, body] of Object.entries(payload.shift_changes)) {
+      const canon = resolveShiftAlias(sid, ctx);
+      if (canon === null) return { ok: false, offending: sid };
+      remapped[canon] = body;
+    }
+    out.shift_changes = remapped;
+  }
+
+  return { ok: true, payload: out };
+}
 
 /**
  * Wave 7 BFF route — apply a what-if scenario as a real constraint
@@ -78,6 +165,13 @@ const BodySchema = z.object({
   userConfirmedGrayZone: z.boolean().optional(),
   confirmedPayload: z.record(z.string(), z.unknown()).optional(),
   forceOpusFallback: z.boolean().optional(),
+  // Wave 16.6 §C — cumulative applied-rules ledger. The UI folds every
+  // previously-accepted rule payload (mergeLedgerRules) and threads it here
+  // so the solver re-applies prior-accepted constraints together with the
+  // new scenario. Merged NEW-WINS (the new scenario beats a conflicting
+  // prior slot) via mergeRuleSlots before the solve. Optional so Wave 4.1
+  // and pre-16.6 callers (no ledger) keep the single-rule behaviour.
+  priorRules: z.record(z.string(), z.unknown()).optional(),
 });
 
 type Body = z.infer<typeof BodySchema>;
@@ -135,7 +229,7 @@ function diffKpis(
 // the cutoff auto-detect path can warn when the detected scenario start
 // falls past the planning horizon. Devil-advocate LOW-5 (2026-05-27).
 // Scans both nested `{commessa:{fasi:[]}}` and flat `{fasi:[]}` shapes
-// since both are accepted upstream by buildBaselineForRouter.
+// since both are accepted as the originalSolution baseline.
 function estimateHorizonMaxEndMin(originalSolution: unknown): number {
   if (!originalSolution || typeof originalSolution !== 'object') return 0;
   let maxEnd = 0;
@@ -157,6 +251,61 @@ function estimateHorizonMaxEndMin(originalSolution: unknown): number {
     }
   }
   return maxEnd;
+}
+
+// Wave 16.6 §D — empty-solution guard (the Gantt-not-updating fix).
+// The dashboard's adaptFJSP (resultAdapter.ts) builds machines/operators/
+// operations by iterating `solution[commessa].fasi[]`. The apply-whatif
+// `solved` event updates the KPI cards from `newKpis`, but if the backend
+// returns a solution map with NO job carrying a non-empty fasi[] (a
+// degenerate/empty solve — e.g. a rule that the solver applied to an empty
+// model, or a backend that echoed `{}`), the KPIs change but the Gantt /
+// OperationalPlan render blank. The manager sees numbers move while the
+// visual plan stays empty — indistinguishable from a frozen Gantt. We
+// detect that here and emit aborted_unsupported(empty_solution_after_solve)
+// instead of a misleading `solved`. Tolerant to both the nested
+// `{commessa:{fasi:[]}}` shape (the real solver output) and a flat
+// top-level `fasi[]` (legacy fixtures).
+function countSolutionPhases(solution: unknown): number {
+  if (!solution || typeof solution !== 'object') return 0;
+  const root = solution as Record<string, unknown>;
+  if (Array.isArray(root.fasi)) return root.fasi.length;
+  let total = 0;
+  for (const [, jobRaw] of Object.entries(root)) {
+    if (!jobRaw || typeof jobRaw !== 'object') continue;
+    const fasi = (jobRaw as { fasi?: unknown }).fasi;
+    if (Array.isArray(fasi)) total += fasi.length;
+  }
+  return total;
+}
+
+// Wave 16.6 §E — explicit clock-time start anchor with no enforcing slot.
+// Utterances like "anticipa COM-007 a domani alle 8" or "fai partire COM-001
+// il giorno 2 dalle 14" carry BOTH a day anchor (handled by the frozen-window
+// cutoff) AND an explicit wall-clock start time. The solver has NO release-time
+// constraint slot: f_apply_rules.py applies unavailable_machines / priority /
+// deadline / shift / capacity, but nothing that forces a given operation to
+// START at a given clock minute. So the start-time half of such an utterance is
+// silently dropped — the solver may schedule the order anywhere the day-anchor
+// freeze allows. We surface an amber `time_window_start_unsupported` warning so
+// the manager knows the time-of-day was not hard-enforced (the day-level freeze
+// still applies). NON-blocking: the solve proceeds.
+//
+// Detection is deliberately narrow to avoid false positives: a clock time
+// ("alle 14", "dalle 8:30", "alle ore 9") AND a day anchor ("domani",
+// "dopodomani", "giorno N", "fra N giorni") must BOTH be present. A bare "ferma
+// M-3 dalle 14 alle 18" (machine downtime window) is NOT flagged — that maps to
+// unavailable_machines which IS enforced; the guard only fires when the clock
+// time is attached to a day-shifted order anchor the solver can't pin.
+const RE_CLOCK_TIME = /\b(?:alle|dalle)\s+(?:ore\s+)?\d{1,2}(?:[:.]\d{2})?\b/;
+
+function hasExplicitTimeWindowStart(text: string | undefined): boolean {
+  if (typeof text !== 'string' || text.trim().length === 0) return false;
+  const t = text.toLowerCase();
+  if (!RE_CLOCK_TIME.test(t)) return false;
+  // Reuse the frozen-window detector's vocabulary: a non-null scenario start
+  // means a day anchor (domani/dopodomani/giorno N/fra N giorni) is present.
+  return detectScenarioStartMin(t) !== null;
 }
 
 // Wave 16.4 A3 — empty-dict guard. A rules payload like
@@ -289,33 +438,6 @@ function hasMeaningfulRules(rules: Record<string, unknown>): boolean {
   );
 }
 
-// F-W7-08 — describe the user-facing effect of a Wave 7 intent in short
-// Italian strings the SolutionDiff renders as an audit trail. The text
-// is about WHAT changed in the plan (the manager's mental model), not
-// which wire channel carries the payload. So it fires for both Strategy
-// A (data_modification) and Strategy B (rule_addition) variants of the
-// supported intents — the manager doesn't care about the routing detail.
-function describeIntentEffect(
-  intentId: string,
-  entities: Record<string, unknown>,
-): string[] {
-  if (intentId === 'machine_unavailability') {
-    const machineId = String(entities.machine_id ?? '');
-    const start = Number(entities.start_min);
-    const end = entities.end_min !== undefined ? Number(entities.end_min) : null;
-    const window = end !== null && Number.isFinite(end)
-      ? `[${start}, ${end}]`
-      : `[${start}, fine orizzonte]`;
-    return [`Bloccata macchina ${machineId} in finestra ${window} min`];
-  }
-  if (intentId === 'deadline_change') {
-    const orderId = String(entities.order_id ?? '');
-    const newDeadline = Number(entities.new_deadline_min);
-    return [`Aggiornata scadenza commessa ${orderId} → ${newDeadline} min`];
-  }
-  return [];
-}
-
 // Per-IP in-flight guard. Solve is expensive (Opus + backend CPU); a
 // second concurrent request from the same client almost always indicates
 // a runaway UI or a misclick — fail fast with 409 rather than double-pay.
@@ -326,62 +448,6 @@ const _inFlight = new Map<string, AbortController>();
 // memory) and corrupt the persisted plan. The lock is scoped to the
 // company slug so unrelated tenants stay independent.
 const _inFlightBySlug = new Map<string, AbortController>();
-
-// Wave 7 — coerce the solution payload (which can be top-level fasi[]
-// or `{commessa: {fasi: []}}`) into the BaselineFasi shape the strategy
-// router expects. Tolerant to legacy fixtures that ship a flat fasi[]
-// at the root.
-function buildBaselineForRouter(originalSolution: unknown): BaselineFasi {
-  if (!originalSolution || typeof originalSolution !== 'object') {
-    return { fasi: [] };
-  }
-  const root = originalSolution as Record<string, unknown>;
-  const flatFasi = Array.isArray(root.fasi)
-    ? (root.fasi as Array<Record<string, unknown>>)
-    : null;
-  const machines = Array.isArray(root.machines) ? (root.machines as string[]) : undefined;
-  const orders = Array.isArray(root.orders) ? (root.orders as string[]) : undefined;
-  const operators = Array.isArray(root.operators) ? (root.operators as string[]) : undefined;
-  const fasi: BaselineFasi['fasi'] = [];
-
-  if (flatFasi) {
-    for (const f of flatFasi) {
-      const commessa = typeof f.commessa === 'string' ? f.commessa : '';
-      const macchina = typeof f.macchina === 'string'
-        ? f.macchina
-        : typeof f.machine_id === 'string'
-          ? (f.machine_id as string)
-          : '';
-      const operatore = typeof f.operatore === 'string' ? f.operatore : undefined;
-      const start_min = typeof f.start_min === 'number' ? f.start_min : 0;
-      const end_min = typeof f.end_min === 'number' ? f.end_min : 0;
-      if (commessa && macchina) {
-        fasi.push({ commessa, macchina, operatore, start_min, end_min });
-      }
-    }
-  } else {
-    // Nested shape `{commessa: {fasi: [...]}}` — flatten into the router's fasi[].
-    for (const [commessa, jobRaw] of Object.entries(root)) {
-      if (!jobRaw || typeof jobRaw !== 'object') continue;
-      const jobFasi = (jobRaw as { fasi?: unknown }).fasi;
-      if (!Array.isArray(jobFasi)) continue;
-      for (const f of jobFasi as Array<Record<string, unknown>>) {
-        const macchina = typeof f.macchina === 'string'
-          ? f.macchina
-          : typeof f.machine_id === 'string'
-            ? (f.machine_id as string)
-            : '';
-        const operatore = typeof f.operatore === 'string' ? f.operatore : undefined;
-        const start_min = typeof f.start_min === 'number' ? f.start_min : 0;
-        const end_min = typeof f.end_min === 'number' ? f.end_min : 0;
-        if (macchina) {
-          fasi.push({ commessa, macchina, operatore, start_min, end_min });
-        }
-      }
-    }
-  }
-  return { fasi, machines, orders, operators };
-}
 
 const SOLVE_TIMEOUT_MS = 60_000;
 // Apply-whatif is the most expensive surface (Opus translator + backend
@@ -573,7 +639,11 @@ export const Route = createFileRoute('/api/apply-whatif')({
               // cannot retroactively unfreeze phases that have run today.
               // So we take the max of (detected, legacy) when both exist.
               const textForCutoff = input.managerText ?? input.whatifText;
-              const detectedScenarioStart = detectScenarioStartMin(textForCutoff);
+              // Wave 16.8 (F-TEMP-03): the freeze cutoff must use the real
+              // working-day length from the baseline, not the hardcoded 1440 —
+              // else "domani"/"giorno N" over-freeze on a 960-min plant (TD-031).
+              const baselineDayLength = dayLengthMinFromBaseline(input.originalSolution) ?? undefined;
+              const detectedScenarioStart = detectScenarioStartMin(textForCutoff, baselineDayLength);
               const phraseMatches = detectScenarioPhraseMatches(textForCutoff);
               const legacyCutoff = input.currentTimeMin !== undefined
                 ? input.currentTimeMin + input.cushionMin
@@ -617,6 +687,15 @@ export const Route = createFileRoute('/api/apply-whatif')({
                 wave7Warnings.push(`a4_cutoff_beyond_horizon:${cutoffMin}_max_${horizonMaxEnd}`);
               }
 
+              // Wave 16.6 §E — explicit clock start-time on a day-anchored
+              // order has no enforcing slot in the solver (f_apply_rules.py has
+              // no release-time constraint). The day-level freeze still applies,
+              // but the time-of-day is not pinned — warn so the manager isn't
+              // misled into thinking "alle 8" was honoured. Amber, non-blocking.
+              if (hasExplicitTimeWindowStart(textForCutoff)) {
+                wave7Warnings.push('time_window_start_unsupported');
+              }
+
               const frozenPhases: FrozenPhase[] = cutoffMin !== undefined
                 ? buildFrozenPhases(input.originalSolution, cutoffMin)
                 : [];
@@ -626,22 +705,57 @@ export const Route = createFileRoute('/api/apply-whatif')({
               // run the Haiku intent parser + strategy router. Otherwise
               // we keep the Wave 4.1 path (translator only).
               let rulesForSolve: Record<string, unknown> = {};
-              let datasetOverrides: Record<string, unknown> | null = null;
+              // Wave 16.6 §A — the interpreter (and the Wave 4.1 translator)
+              // both emit dynamic `rules` only; the legacy Strategy A
+              // (data_modification → dataset_overrides) path is gone. We keep
+              // datasetOverrides as a null constant so the resolveTemplate
+              // signature + the empty-dict guard's `!datasetOverrides` branch
+              // stay unchanged on the wire.
+              const datasetOverrides: Record<string, unknown> | null = null;
+              // strategyKind is now only 'B' (interpreter hit / translator rule),
+              // 'C' (Wave 4.1 translator path), or 'unsupported' — 'A' is dead
+              // but kept in the union to avoid touching the solved-telemetry type.
               let strategyKind: 'A' | 'B' | 'C' | 'unsupported' = 'C';
-              let unsupportedReason: string | null = null;
-              // F-W7-08 — audit trail for Strategy A. Manager must see in
-              // the UI what was changed at the dataset level (e.g.
-              // "Aggiunta finestra manutenzione: M02 [2160,2520]") rather
-              // than just "constraint applied".
+              // Audit trail surfaced on `solved` (empty now that Strategy A is
+              // gone; the interpreter's intent_id carries the labelling).
               const datasetOverridesSummary: string[] = [];
 
-              if (input.managerText) {
+              // Wave 16.6 §A — closed-set instruction interpreter. Replaces the
+              // legacy parseIntent + strategy-router chain for the managerText
+              // path. interpretInstruction (Haiku + a forced enum tool over the
+              // plan's REAL machine/order/shift ids + a deterministic gate)
+              // either returns a canonical `rules` payload (hit), a confirm
+              // pause (gray), or a structural reject (off-set / non-catalog) —
+              // the anti-hallucination guarantee. On hit, payload IS the solver
+              // rules slot (same shape the ledger merges), so it feeds straight
+              // into the §C merge + §D guards below.
+              //
+              // The userConfirmedGrayZone fast-path (manager already confirmed a
+              // gray payload) must SKIP the interpreter and fall through to the
+              // confirmed-payload handler in the Strategy C block — otherwise we
+              // would re-interpret and re-gray the same utterance. We mark
+              // strategyKind 'C' so the `!managerText || strategyKind==='C'`
+              // block below claims it.
+              if (input.managerText && !input.userConfirmedGrayZone) {
                 write('parsing_intent', { phase: 'parsing_intent', model: 'haiku-4.5' });
-                const parsed = await parseIntent(input.managerText, {
+                const ctx = buildSolutionContext(
+                  input.originalSolution,
+                  input.kpis ?? {},
+                  input.consultationMd,
+                );
+                // Wave 16.8 (F-TEMP-02): derive the day anchor from the planning
+                // clock so Haiku's "oggi"/"domani" resolve to the real plan-day
+                // instead of always day 1.
+                const whatIfDayLength = ctx.time_config?.day_length_min;
+                const whatIfDayAnchor =
+                  input.currentTimeMin !== undefined && whatIfDayLength && whatIfDayLength > 0
+                    ? Math.floor(input.currentTimeMin / whatIfDayLength) + 1
+                    : undefined;
+                const interp = await interpretInstruction(input.managerText, ctx, whatIfDayAnchor, {
                   signal: abort.signal,
                   onUsage: (u) => { accumulateUsage(u); },
                 });
-                if (abort.signal.aborted || parsed.aborted) {
+                if (abort.signal.aborted || interp.aborted) {
                   flushCost();
                   write('aborted', { reason: 'client_disconnect' });
                   write('done', {
@@ -651,78 +765,33 @@ export const Route = createFileRoute('/api/apply-whatif')({
                   });
                   return;
                 }
+                const ix = interp.interpretation;
                 write('intent_parsed', {
-                  intent_id: parsed.intent.intent_id,
-                  entities: parsed.intent.entities,
-                  confidence: parsed.intent.confidence,
-                  fallback_reasoning: parsed.intent.fallback_reasoning,
+                  intent_id: ix.intent_id ?? 'unknown',
+                  entities: ix.entities ?? {},
+                  confidence: ix.confidence,
                 });
 
-                // F-W8-07 — low confidence classification warning. When
-                // Haiku says confidence='low' it has classified an intent
-                // but with multiple assumptions; the manager must be told
-                // the result may not match their intent. Continue the
-                // normal flow (do NOT short-circuit) so the constraint is
-                // still applied, but tag wave7Warnings so the UI renders
-                // a yellow banner. NB: this is DIFFERENT from B-W8-S-04
-                // short-circuit which fires only on (unknown + high).
-                //
-                // intent_id='unknown' + low is INCLUDED here. It does not
-                // short-circuit (B-W8-S-04 fires only on unknown+high); it
-                // cascades to the Strategy C Opus translator, and when that
-                // rescues the utterance into an applied solve the manager
-                // must still see the low-confidence banner. The earlier
-                // F-W9-04 guard (`&& intent_id !== 'unknown'`) excluded it on
-                // the theory that unknown always ends in aborted_unsupported
-                // ("low confidence on a result that didn't apply anyway") —
-                // but that premise is false for the Strategy C rescue→solved
-                // path, and the banner ONLY ever renders from solved.warnings
-                // (the aborted_unsupported handler ignores warnings, see
-                // WhatIfAnalysis.tsx). So there was never a contradictory
-                // banner to avoid; the guard merely silenced F-W8-07's
-                // legitimate warning on the rescued path.
-                if (parsed.intent.confidence === 'low') {
-                  wave7Warnings.push('low_confidence_classification');
-                  console.warn(
-                    '[apply-whatif] low_confidence_classification',
-                    {
-                      intent_id: parsed.intent.intent_id,
-                      fallback_reasoning: parsed.intent.fallback_reasoning,
-                      manager_text: input.managerText?.slice(0, 200),
-                    },
-                  );
-                }
-
-                // B-W8-S-04 — short-circuit the Opus cascade when Haiku
-                // confidently classified the utterance as out-of-catalog.
-                // Previously the router returned `opus_translator` for
-                // every `intent_id === 'unknown'` (strategy-router.ts:452),
-                // which fired the Opus 4.7 translator only to have it
-                // also return `unsupported`. Cost: $0.20 per stress
-                // cycle × 5 = $1.00 wasted per stress run.
-                //
-                // When Haiku says "definitely outside the 5 catalog
-                // intents" (intent_id=unknown + confidence=high), trust
-                // it and emit aborted_unsupported directly. We still
-                // run the cascade for confidence=medium/low so the
-                // Opus translator can rescue ambiguous classifications.
-                if (
-                  parsed.intent.intent_id === 'unknown'
-                  && parsed.intent.confidence === 'high'
-                ) {
+                // reject — structural anti-hallucination outcome: off-set target
+                // ("M99") or non-catalog request. The closed-set gate is
+                // authoritative, so we do NOT cascade to the Opus translator;
+                // surface the clarify message + the raw unresolved token.
+                if (ix.result === 'reject') {
                   strategyKind = 'unsupported';
-                  const reason = parsed.intent.fallback_reasoning
-                    ?? 'haiku_classified_unknown_high_confidence';
-                  wave7Warnings.push('haiku_unknown_high_no_cascade');
+                  const rejectWarnings = [
+                    ...wave7Warnings,
+                    'interpreter_reject',
+                    ...(ix.unresolved_target ? [`unresolved_target:${ix.unresolved_target}`] : []),
+                  ];
                   write('routed', {
                     strategy: 'unsupported',
-                    intent_id: 'unknown',
-                    warnings: ['haiku_unknown_high_no_cascade'],
+                    intent_id: ix.intent_id ?? 'unknown',
+                    warnings: rejectWarnings,
                   });
                   flushCost();
                   write('aborted_unsupported', {
-                    reason,
-                    warnings: wave7Warnings,
+                    reason: ix.confirmation_message ?? 'interpreter_reject',
+                    warnings: rejectWarnings,
                   });
                   write('done', {
                     cost_usd: lastUsage?.cost_usd ?? 0,
@@ -734,80 +803,47 @@ export const Route = createFileRoute('/api/apply-whatif')({
                   return;
                 }
 
-                const baselineForRouter = buildBaselineForRouter(input.originalSolution);
-                const catalog = loadCatalog();
-                const outcome = routeIntent({
-                  intent: parsed.intent,
-                  baseline: baselineForRouter,
-                  catalog,
-                  tryDataModification: (intentId, entities) =>
-                    dataModifierCanApply(intentId)
-                      ? applyDataModification(intentId, entities).modified
-                      : null,
-                });
-
-                if (outcome.kind === 'data_modification') {
-                  strategyKind = 'A';
-                  const modRes = applyDataModification(outcome.intent_id, outcome.entities);
-                  if (modRes.modified) {
-                    datasetOverrides = modRes.dataset_overrides;
-                    if (modRes.rules_fallback) {
-                      // Pure Strategy A path uses rules_fallback because
-                      // the backend's dataset-merge is not deep enough
-                      // for the orders shape today.
-                      rulesForSolve = modRes.rules_fallback;
-                      wave7Warnings.push('strategy_a_via_rule_fallback');
-                    }
-                    datasetOverridesSummary.push(
-                      ...describeIntentEffect(outcome.intent_id, outcome.entities),
-                    );
-                  } else {
-                    // Router promised A but modifier rejected — fall back
-                    // to the Opus translator path. Warn but don't fail.
-                    strategyKind = 'C';
-                    wave7Warnings.push('data_modifier_rejected_post_route');
-                  }
-                  wave7Warnings.push(...outcome.warnings);
-                } else if (outcome.kind === 'rule_addition') {
-                  strategyKind = 'B';
-                  rulesForSolve = outcome.rules;
-                  wave7Warnings.push(...outcome.warnings);
-                  // F-W7-08 — emit audit summary for Strategy B too. The
-                  // manager sees what changed regardless of whether the
-                  // intent routed through data_modification or
-                  // rule_addition (machine_unavailability lives here now
-                  // per team-lead 2026-05-22 directive).
-                  datasetOverridesSummary.push(
-                    ...describeIntentEffect(outcome.intent_id, outcome.entities),
-                  );
-                } else if (outcome.kind === 'unsupported') {
-                  strategyKind = 'unsupported';
-                  unsupportedReason = outcome.reason;
-                  wave7Warnings.push(...outcome.warnings);
-                } else {
-                  strategyKind = 'C';
-                  wave7Warnings.push(...outcome.warnings);
-                  wave7Warnings.push(`route_reason:${outcome.reason}`);
-                }
-                write('routed', {
-                  strategy: strategyKind,
-                  intent_id: parsed.intent.intent_id,
-                  warnings: outcome.warnings,
-                });
-
-                if (strategyKind === 'unsupported') {
+                // gray — validated but Haiku flagged an assumption. Mirror the
+                // existing GRAY_ZONE pause: emit requires_confirmation and close.
+                // The manager confirms via userConfirmedGrayZone+confirmedPayload
+                // (re-enters and is claimed by the fast-path below).
+                if (ix.result === 'gray') {
+                  write('routed', {
+                    strategy: 'B',
+                    intent_id: ix.intent_id ?? 'unknown',
+                    warnings: ['interpreter_gray'],
+                  });
                   flushCost();
-                  write('aborted_unsupported', {
-                    reason: unsupportedReason ?? 'unsupported',
-                    warnings: wave7Warnings,
+                  write('requires_confirmation', {
+                    confirmationMessage:
+                      ix.confirmation_message ?? "Confermi l'interpretazione?",
+                    confidence: ix.confidence,
+                    confirmedPayload: ix.payload,
                   });
                   write('done', {
                     cost_usd: lastUsage?.cost_usd ?? 0,
                     tokens_in: lastUsage?.tokens_in ?? 0,
                     tokens_out: lastUsage?.tokens_out ?? 0,
+                    cache_read_tokens: lastUsage?.cache_read_tokens,
+                    cache_write_tokens: lastUsage?.cache_write_tokens,
                   });
                   return;
                 }
+
+                // hit — payload is the canonical rules slot. The interpreter
+                // already alias-resolved + gated the entities, so this is the
+                // Strategy-B equivalent (rule_addition) with no router needed.
+                strategyKind = 'B';
+                rulesForSolve = ix.payload;
+                // Note: a hit is ALWAYS high-confidence — the interpreter's gate
+                // routes any low/medium confidence (or any assumption) to gray
+                // (requires_confirmation) upstream, so there is no low-confidence
+                // banner to carry on this hit path (the legacy push was dead code).
+                write('routed', {
+                  strategy: 'B',
+                  intent_id: ix.intent_id ?? 'unknown',
+                  warnings: [],
+                });
               }
 
               // Strategy C path — also taken when managerText is absent
@@ -848,7 +884,36 @@ export const Route = createFileRoute('/api/apply-whatif')({
                     });
                     return;
                   }
-                  rulesForSolve = input.confirmedPayload;
+                  // Wave 16.6 M-4 — re-gate the client-echoed confirmedPayload
+                  // against the live closed set before it reaches the solver.
+                  // The gray payload was gated when emitted, but the confirm
+                  // re-entry trusts the client echo; a tampered/stale id (M02→M99)
+                  // would otherwise slip an off-set entity past the closed-set
+                  // guarantee. Off-set id → fail-closed abort.
+                  const reCtx = buildSolutionContext(
+                    input.originalSolution,
+                    input.kpis ?? {},
+                    input.consultationMd,
+                  );
+                  const regated = regateConfirmedRules(input.confirmedPayload, reCtx);
+                  if (!regated.ok) {
+                    flushCost();
+                    write('aborted_unsupported', {
+                      reason: 'unresolved_entity_target',
+                      warnings: [
+                        ...wave7Warnings,
+                        `gray_zone_offset_target:${regated.offending}`,
+                        'use_opus_fallback_to_disambiguate',
+                      ],
+                    });
+                    write('done', {
+                      cost_usd: lastUsage?.cost_usd ?? 0,
+                      tokens_in: lastUsage?.tokens_in ?? 0,
+                      tokens_out: lastUsage?.tokens_out ?? 0,
+                    });
+                    return;
+                  }
+                  rulesForSolve = regated.payload;
                   wave7Warnings.push('gray_zone_confirmed_by_manager');
                 } else {
                   write('translating', { phase: 'translating' });
@@ -913,14 +978,31 @@ export const Route = createFileRoute('/api/apply-whatif')({
                 }
               }
 
+              // Wave 16.6 §C — fold the cumulative ledger UNDER the new
+              // scenario (NEW-WINS). priorRules carries every previously-
+              // accepted constraint (the UI built it via mergeLedgerRules);
+              // merging it here means the solver re-applies "M2 ferma il
+              // giorno 2" together with the manager's new what-if, while a
+              // conflicting newer slot beats the prior one. When no ledger was
+              // sent (Wave 4.1 / pre-16.6 callers) this is a no-op identity.
+              //
+              // Note: this only carries the dynamic `rules` slots. Strategy A's
+              // dataset_overrides are not part of the ledger contract today
+              // (the ledger stores rule payloads, not dataset mutations); when
+              // datasetOverrides is set, rulesForSolve typically holds the
+              // rules_fallback which still merges correctly.
+              const mergedRules = mergeRuleSlots(input.priorRules, rulesForSolve);
+
               // Wave 16.4 A3 — empty-dict guard. Reject underspecified rules
               // BEFORE the solver call so the manager gets a clear toast
               // instead of a silent no-op "solved" with zero delta. Skip the
               // guard when the change goes through dataset_overrides (Strategy A)
               // since the rules object can legitimately be empty in that path.
+              // Run it on the MERGED payload: a new scenario that is itself
+              // empty but rides on a non-empty ledger is still actionable.
               if (
                 !datasetOverrides
-                && !hasMeaningfulRules(rulesForSolve)
+                && !hasMeaningfulRules(mergedRules)
               ) {
                 flushCost();
                 write('aborted_unsupported', {
@@ -973,7 +1055,7 @@ export const Route = createFileRoute('/api/apply-whatif')({
                 resolveTemplate(
                   input.slug,
                   problemType,
-                  rulesForSolve,
+                  mergedRules,
                   cutoffMin,
                   frozenPhases,
                   datasetOverrides,
@@ -1033,7 +1115,7 @@ export const Route = createFileRoute('/api/apply-whatif')({
                   resolveTemplate(
                     input.slug,
                     problemType,
-                    rulesForSolve,
+                    mergedRules,
                     cutoffMin,
                     frozenPhases, // F-W8-06 Wave 9 OPT 1: full list, NOT [].
                     datasetOverrides,
@@ -1055,6 +1137,60 @@ export const Route = createFileRoute('/api/apply-whatif')({
                     ...(relaxedResult.warnings ?? []),
                   ],
                 };
+              }
+
+              // Wave 16.6 §D — empty-solution guard (Gantt-not-updating fix).
+              // The backend can report a SUCCESS status (OPTIMAL/FEASIBLE) yet
+              // return a solution map with no schedulable phases (degenerate
+              // solve, echoed `{}`, a rule that emptied the model). The KPI
+              // cards would update from newKpis while the Gantt /
+              // OperationalPlan render blank, which looks exactly like a frozen
+              // Gantt to the manager. Convert that into an explicit
+              // aborted_unsupported so the UI shows a clear "scenario non
+              // applicabile" instead of a misleading half-update.
+              //
+              // Scope (Wave 16.7 — supersedes the original "INFEASIBLE is a
+              // legitimate empty `solved`" rule):
+              //  - BOTH success-but-empty AND INFEASIBLE-but-empty are guarded.
+              //    An INFEASIBLE solve returns solution={}; previously it fell
+              //    through to a `solved` event that rendered a misleading
+              //    "Vincolo applicato" diff with empty KPIs (the manager only
+              //    discovered it at "Accetta"). See the Wave 16.7 note below.
+              //  - Gated on the BASELINE having had phases: a problem that was
+              //    legitimately empty to begin with is not flagged (nothing to
+              //    render either way).
+              const solveStatus = (solveResult.status ?? '').toUpperCase();
+              const isSuccessStatus = solveStatus === 'OPTIMAL' || solveStatus === 'FEASIBLE';
+              const isInfeasibleStatus = solveStatus === 'INFEASIBLE';
+              const solvedPhaseCount = countSolutionPhases(solveResult.solution);
+              const baselinePhaseCount = countSolutionPhases(input.originalSolution);
+              // Wave 16.7 — also guard INFEASIBLE-with-empty-solution. An
+              // INFEASIBLE solve with no frozen-window relaxation available (or
+              // relaxation still infeasible) otherwise falls through to `solved`
+              // with an empty solution → the UI renders a misleading "Vincolo
+              // applicato" diff with empty KPIs (only caught at "Accetta").
+              // Convert it to an explicit reject so the manager learns WHY.
+              if (solvedPhaseCount === 0 && baselinePhaseCount > 0 && (isSuccessStatus || isInfeasibleStatus)) {
+                flushCost();
+                const emptyReason = isInfeasibleStatus
+                  ? 'infeasible_constraints'
+                  : 'empty_solution_after_solve';
+                write('aborted_unsupported', {
+                  reason: emptyReason,
+                  warnings: [
+                    ...wave7Warnings,
+                    ...(solveResult.warnings ?? []),
+                    emptyReason,
+                  ],
+                });
+                write('done', {
+                  cost_usd: lastUsage?.cost_usd ?? 0,
+                  tokens_in: lastUsage?.tokens_in ?? 0,
+                  tokens_out: lastUsage?.tokens_out ?? 0,
+                  cache_read_tokens: lastUsage?.cache_read_tokens,
+                  cache_write_tokens: lastUsage?.cache_write_tokens,
+                });
+                return;
               }
 
               const newKpis: Record<string, number> = solveResult.kpis ?? {};
@@ -1115,6 +1251,14 @@ export const Route = createFileRoute('/api/apply-whatif')({
                 skipped_rules_count: skippedRulesCount,
                 dataset_overrides_summary: datasetOverridesSummary,
                 locked_phases: lockedPhasesOut,
+                // Wave 16.6 §C — echo the NEW scenario's rule slot (pre-merge,
+                // i.e. WITHOUT priorRules, which the ledger already holds). On
+                // "Accetta" the UI appends exactly this delta so the next
+                // What-If folds it in. Strategy A (dataset_overrides) carries
+                // an empty rulesForSolve — the UI's append is a no-op for empty
+                // payloads, which is correct (dataset mutations aren't ledgered
+                // today).
+                applied_rules: rulesForSolve,
                 // Pass the raw backend envelope through for diagnostics
                 // (devil's advocate + UI can introspect skipped entries).
                 wave7: wave7Env,

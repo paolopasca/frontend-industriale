@@ -5,7 +5,7 @@ export interface SolutionContext {
   machine_aliases: Record<string, string>;
   orders: string[];
   shifts: string[];
-  time_config: { day_length_min: number; start_date: string } | null;
+  time_config: { day_length_min: number; start_date: string; company_start_hour?: number } | null;
   shift_types: Record<string, { start: number; end: number }> | null;
   order_deadlines: Record<string, number> | null;
 }
@@ -14,11 +14,37 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-function extractMachines(fasi: Array<Record<string, unknown>>): string[] {
-  const seen = new Set<string>();
+function collectMachinesFromFasi(
+  fasi: Array<Record<string, unknown>>,
+  seen: Set<string>,
+): void {
   for (const f of fasi) {
     const m = f.macchina ?? f.machine ?? f.machine_id ?? f.machineId;
     if (typeof m === 'string' && m.trim()) seen.add(m.trim());
+  }
+}
+
+// Wave 16.6: the machine closed set must populate for EVERY originalSolution
+// shape the BFF passes, not just the flat AiSolutionEnvelope. The what-if route
+// hands buildSolutionContext either a flat `{fasi:[...]}`, a nested
+// `{COM-001:{fasi:[...]}}`, or a raw backend `{solution:{COM-001:{fasi}}}`.
+// Pre-fix, extractMachines read ONLY the top-level fasi[], so nested/raw shapes
+// produced machines=[] → the interpreter's machine enum was omitted and every
+// machine instruction silently failed the gate. Harvest from BOTH the flat
+// fasi[] AND each commessa's nested fasi[] so the set is shape-agnostic. Orders
+// already came from the commesse map (extractOrders); now machines mirror that.
+function extractMachines(
+  flatFasi: Array<Record<string, unknown>>,
+  commesse: Record<string, unknown>,
+): string[] {
+  const seen = new Set<string>();
+  collectMachinesFromFasi(flatFasi, seen);
+  for (const jobRaw of Object.values(commesse)) {
+    if (!isObject(jobRaw)) continue;
+    const jobFasi = jobRaw.fasi;
+    if (Array.isArray(jobFasi)) {
+      collectMachinesFromFasi(jobFasi as Array<Record<string, unknown>>, seen);
+    }
   }
   return [...seen];
 }
@@ -77,8 +103,32 @@ export function buildMachineAliases(machines: string[]): Record<string, string> 
   return Object.fromEntries(proposals);
 }
 
-function extractOrders(commesse: Record<string, unknown>): string[] {
-  return Object.keys(commesse);
+function collectOrdersFromFasi(
+  fasi: Array<Record<string, unknown>>,
+  seen: Set<string>,
+): void {
+  for (const f of fasi) {
+    const o = f.commessa ?? f.order ?? f.order_id ?? f.commessa_id;
+    if (typeof o === 'string' && o.trim()) seen.add(o.trim());
+  }
+}
+
+// Wave 16.6 OBS-1 — the order closed set must populate for EVERY originalSolution
+// shape, mirroring the machine fix (extractMachines). The flat AiSolutionEnvelope
+// shape `{status, fasi:[{commessa}], machines, orders}` carries NO commesse map,
+// so reading only Object.keys(commesse) yielded orders=[] for that shape — which
+// made the interpreter (and the M-4 re-gate) reject every order_priority /
+// deadline_change against a flat baseline (fail-closed on an empty set, per
+// feedback_closed_set_fail_closed). Harvest order ids from the flat fasi[].commessa
+// too so the set-source is symmetric with machines. The top-level `orders` field
+// is intentionally NOT trusted (it is not the schedule's own assignment record).
+function extractOrders(
+  flatFasi: Array<Record<string, unknown>>,
+  commesse: Record<string, unknown>,
+): string[] {
+  const seen = new Set<string>(Object.keys(commesse));
+  collectOrdersFromFasi(flatFasi, seen);
+  return [...seen];
 }
 
 function extractOrderDeadlines(
@@ -99,17 +149,43 @@ function extractOrderDeadlines(
 
 function extractTimeConfig(
   raw: unknown,
-): { day_length_min: number; start_date: string } | null {
+): { day_length_min: number; start_date: string; company_start_hour?: number } | null {
   if (!isObject(raw)) return null;
   const tc = raw.time_config;
   if (isObject(tc)) {
     const dl = tc.day_length_min ?? tc.dayLengthMin;
     const sd = tc.start_date ?? tc.startDate;
     if (typeof dl === 'number' && typeof sd === 'string') {
-      return { day_length_min: dl, start_date: sd };
+      // Wave 16.8: carry company_start_hour (solver minute-0 = this hour, e.g.
+      // 06:00) so the temporal resolver can offset the manager's clock times.
+      // Already emitted by the backend data_normalizer; absent → resolver
+      // defaults to 0 (midnight origin), the legacy behaviour.
+      const csh = tc.company_start_hour ?? tc.companyStartHour;
+      const result: { day_length_min: number; start_date: string; company_start_hour?: number } = {
+        day_length_min: dl,
+        start_date: sd,
+      };
+      if (typeof csh === 'number' && Number.isFinite(csh)) result.company_start_hour = csh;
+      return result;
     }
   }
   return null;
+}
+
+/**
+ * Wave 16.8 — the solver working-day length (model-minutes, e.g. 960 for a
+ * 06:00-22:00 plant) from a baseline solution's time_config. The ONLY correct
+ * unit for day-anchored cutoffs and the temporal resolver: the model axis
+ * compresses nights, so a calendar 1440 over-freezes (TD-031). Returns null when
+ * absent → callers fall back to their legacy default. Shared by reschedule-fresh
+ * and apply-whatif so the unit is sourced identically on both paths.
+ */
+export function dayLengthMinFromBaseline(baseline: unknown): number | null {
+  if (!baseline || typeof baseline !== 'object') return null;
+  const tc = (baseline as Record<string, unknown>).time_config;
+  if (!tc || typeof tc !== 'object') return null;
+  const dl = (tc as Record<string, unknown>).day_length_min;
+  return typeof dl === 'number' && Number.isFinite(dl) && dl > 0 ? dl : null;
 }
 
 function extractShiftTypes(
@@ -137,12 +213,26 @@ function extractShiftTypes(
 //
 // Raw shape (from apply-whatif route): { status, solution: { COM-001: { fasi, scadenza_min }, ... }, kpis }
 // Normalised shape (AiSolutionEnvelope): { commesse: { COM-001: { fasi, ... } }, fasi: [...], ... }
+// Bare-nested shape (what-if originalSolution): { COM-001: { fasi, scadenza_min }, ... }
 function extractCommesse(solution: unknown): Record<string, unknown> {
   if (!isObject(solution)) return {};
   // Normalised AiSolutionEnvelope — commesse field is set by buildAiSolutionEnvelope
   if (isObject(solution.commesse)) return solution.commesse as Record<string, unknown>;
   // Raw backend response — commessa map lives under solution.solution
   if (isObject(solution.solution)) return solution.solution as Record<string, unknown>;
+  // Bare-nested map `{COM-001:{fasi:[...]}}` (the what-if route hands this shape
+  // directly — buildBaselineForRouter flattens it the same way). Only when there
+  // is no top-level fasi[] (flat envelope) and the root's OWN values look like
+  // commessa entries (objects carrying a `fasi` array). Guarded against false
+  // positives: a stray `time_config`/`kpis` key without `fasi` is never treated
+  // as a commessa. Wave 16.6 — without this the bare-nested shape produced an
+  // empty closed set (machines & orders both []), starving the interpreter enum.
+  if (!Array.isArray(solution.fasi)) {
+    const entries = Object.entries(solution).filter(
+      ([, v]) => isObject(v) && Array.isArray((v as { fasi?: unknown }).fasi),
+    );
+    if (entries.length > 0) return Object.fromEntries(entries);
+  }
   return {};
 }
 
@@ -157,9 +247,9 @@ export function buildSolutionContext(
     Array.isArray(envelope?.fasi) ? envelope!.fasi : [];
   const commesse = extractCommesse(solution);
 
-  const machines = extractMachines(fasi);
+  const machines = extractMachines(fasi, commesse);
   const machine_aliases = buildMachineAliases(machines);
-  const orders = extractOrders(commesse);
+  const orders = extractOrders(fasi, commesse);
   const order_deadlines = extractOrderDeadlines(commesse);
 
   const raw = isObject(solution) ? solution : {};

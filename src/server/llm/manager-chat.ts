@@ -2,10 +2,12 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { getAnthropicClient } from './client';
 import {
   MANAGER_TOOLS,
+  buildManagerTools,
   executeManagerTool,
   normalizeForTools,
   type ManagerToolContext,
 } from './manager-chat-tools';
+import { buildSolutionContext, type SolutionContext } from '@/lib/solutionContext';
 
 /**
  * Manager Chat agentic loop with Haiku 4.5.
@@ -88,11 +90,20 @@ const ALLOWED_TOOL_NAMES = new Set(MANAGER_TOOLS.map((t) => t.name));
 // the prefix up to and including that block. Placing the breakpoint on the
 // final tool caches the entire tools array, which is reused on every loop
 // iteration of the agentic loop (~3 KB of schema, repeated up to 5 times).
-const cachedManagerTools: Anthropic.Tool[] = MANAGER_TOOLS.map((t, i) =>
-  i === MANAGER_TOOLS.length - 1
-    ? { ...t, cache_control: { type: 'ephemeral' as const } }
-    : t,
-);
+function withToolsCacheBreakpoint(tools: Anthropic.Tool[]): Anthropic.Tool[] {
+  return tools.map((t, i) =>
+    i === tools.length - 1
+      ? { ...t, cache_control: { type: 'ephemeral' as const } }
+      : t,
+  );
+}
+
+// Static fallback used when no live plan ids are available (older callers /
+// tests). When a SolutionContext exists we rebuild this per-request with the
+// real machine/order enum inlined (still cache-safe: the breakpoint sits on
+// the tools array, so the per-plan list is cached and reused across the
+// agentic loop; the big static SYSTEM_PROMPT block is a separate cache entry).
+const cachedManagerTools: Anthropic.Tool[] = withToolsCacheBreakpoint(MANAGER_TOOLS);
 
 const SYSTEM_PROMPT = [
   'Sei DAINO, assistente AI conversazionale per un manager di produzione di una PMI manifatturiera italiana.',
@@ -468,10 +479,46 @@ export async function runManagerChat(
   const specBlock = buildSpecBlock(input);
   const messages = buildInitialMessages(input);
 
+  // Closed-set view of the live plan: powers alias resolution ("m2" → "M02")
+  // inside the tools and the enum hints injected into the tool descriptions.
+  let solutionContext: SolutionContext | undefined;
+  try {
+    solutionContext = buildSolutionContext(input.solution, input.kpis);
+  } catch {
+    solutionContext = undefined;
+  }
+
   const toolContext: ManagerToolContext = {
     solution: input.solution,
     kpis: input.kpis,
+    solutionContext,
   };
+
+  // Inline the real machine/order/operator ids into the tool descriptions when
+  // known, so Haiku self-corrects toward valid identifiers. Cache breakpoint
+  // stays on the (rebuilt) tools array — see withToolsCacheBreakpoint.
+  const operatorIds = solutionContext
+    ? Array.from(
+        new Set(
+          normalizeForTools(input.solution, input.kpis)
+            .fasi.map((f) => f.operatore)
+            .filter((o) => o.length > 0),
+        ),
+      )
+    : [];
+  const requestTools =
+    solutionContext &&
+    (solutionContext.machines.length > 0 ||
+      solutionContext.orders.length > 0 ||
+      operatorIds.length > 0)
+      ? withToolsCacheBreakpoint(
+          buildManagerTools({
+            machines: solutionContext.machines,
+            orders: solutionContext.orders,
+            operators: operatorIds,
+          }),
+        )
+      : cachedManagerTools;
 
   const startTs = Date.now();
   let iterations = 0;
@@ -532,7 +579,7 @@ export async function runManagerChat(
                 cache_control: { type: 'ephemeral' },
               },
             ],
-            tools: cachedManagerTools,
+            tools: requestTools,
             messages,
           },
           { signal: options?.signal },

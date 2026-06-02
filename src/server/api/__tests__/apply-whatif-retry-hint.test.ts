@@ -76,9 +76,13 @@ async function streamToString(stream: ReadableStream<Uint8Array>): Promise<strin
   return out;
 }
 
-function fakeHaikuReply(payload: object) {
+// Wave 16.6 §A — the managerText path now drives the Haiku instruction-
+// interpreter, which reads a forced `tool_use` block (name 'emit_constraint')
+// whose input is the FLAT entity shape (intent_id + machine_id/start_min/…),
+// NOT the legacy parseIntent TEXT block with nested `entities`.
+function fakeInterpreterReply(input: object) {
   return {
-    content: [{ type: 'text', text: JSON.stringify(payload) }],
+    content: [{ type: 'tool_use', name: 'emit_constraint', input }],
     usage: {
       input_tokens: 180,
       output_tokens: 25,
@@ -111,6 +115,12 @@ const nestedSolution = {
       { operazione: 'OP-1', macchina: 'M03', operatore: 'OP-B', start_min: 0, end_min: 80 },
     ],
   },
+  // Wave 16.8: buildSolutionContext reads time_config from originalSolution and
+  // the interpreter grounds machine_unavailability's SYMBOLIC day/clock refs
+  // against it. A 24h/midnight tc reproduces the legacy absolute minutes
+  // (giorno N = N*1440, ora = h*60) so the on-the-wire window is unchanged.
+  // (extractCommesse ignores this key — it carries no `fasi` array.)
+  time_config: { day_length_min: 1440, company_start_hour: 0, start_date: '2026-06-01' },
 };
 
 const baseBody = {
@@ -160,11 +170,14 @@ afterEach(() => {
 describe('F-W9-08 — BFF retry payload contract (e2e test 5 companion)', () => {
   it('machine_unavailability + INFEASIBLE -> retry includes frozen_lock_mode=hint AND preserves frozen_phases', async () => {
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'machine_unavailability',
-        entities: { machine_id: 'M01', start_min: 0, end_min: 1200 },
+        machine_id: 'M01',
+        // Wave 16.8: SYMBOLIC. "tutto il primo turno" → giorno oggi, 00:00–20:00.
+        // On the 24h/midnight tc → [0, 1200] (end_hour 20 → 20*60), the legacy window.
+        day_ref: 'oggi',
+        end_hour: 20,
         confidence: 'high',
-        fallback_reasoning: null,
       }),
     );
 
@@ -187,7 +200,7 @@ describe('F-W9-08 — BFF retry payload contract (e2e test 5 companion)', () => 
       .mockResolvedValueOnce(jsonResponse({
         status: 'OPTIMAL',
         method: 'cp-sat',
-        solution: { 'COM-001': { fasi: [] } },
+        solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
         kpis: { makespan_min: 2970 },
         objective_value: 2970,
         warnings: [],
@@ -276,18 +289,21 @@ describe('F-W9-08 — BFF retry payload contract (e2e test 5 companion)', () => 
     // and must not stamp `frozen_lock_mode` on the (single) backend
     // request.
     anthropicCreate.mockResolvedValueOnce(
-      fakeHaikuReply({
+      fakeInterpreterReply({
         intent_id: 'machine_unavailability',
-        entities: { machine_id: 'M01', start_min: 0, end_min: 1200 },
+        machine_id: 'M01',
+        // Wave 16.8: SYMBOLIC. "tutto il primo turno" → giorno oggi, 00:00–20:00.
+        // On the 24h/midnight tc → [0, 1200] (end_hour 20 → 20*60), the legacy window.
+        day_ref: 'oggi',
+        end_hour: 20,
         confidence: 'high',
-        fallback_reasoning: null,
       }),
     );
 
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
       status: 'OPTIMAL',
       method: 'cp-sat',
-      solution: { 'COM-001': { fasi: [] } },
+      solution: { 'COM-001': { fasi: [{ macchina: 'M01', start_min: 0, end_min: 60 }] } },
       kpis: { makespan_min: 2700 },
       objective_value: 2700,
       warnings: [],

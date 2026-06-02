@@ -36,6 +36,37 @@ import {
 
 export type IntentConfidence = 'high' | 'medium' | 'low';
 
+/**
+ * Load-bearing temporal convention block, shared verbatim with the Wave 16.6
+ * instruction-interpreter so BE/FE temporal vocabulary cannot drift (see
+ * feedback_befe_temporal_lockstep). fine-giornata=18:00, "giorno N", "domani"
+ * are the load-bearing definitions; any edit must apply to BOTH prompts.
+ */
+export const CONVENZIONI_TEMPORALI = `CONVENZIONI TEMPORALI (REGOLA UNICA, NON DEVIARE):
+- I valori \`start_min\` e \`end_min\` sono SEMPRE minuti assoluti dall'inizio dell'orizzonte di pianificazione (minuto 0 = 00:00 del giorno 1).
+- "giorno N" significa il giorno N dell'orizzonte (gg1 = giorno 1 = minuti 0-1440, gg2 = giorno 2 = minuti 1440-2880, gg3 = 2880-4320, ecc.). "domani" e "il giorno successivo" sono sinonimi di "giorno 2" quando il manager parla durante il giorno 1.
+- "fine giornata" si riferisce SEMPRE alla FINE DEL TURNO LAVORATIVO, NON alla mezzanotte. Il default e' 18:00 (1080 minuti dall'inizio del giorno). USA 24:00 (mezzanotte = 1440 minuti dall'inizio del giorno) SOLO se il manager dice esplicitamente "mezzanotte" o "alle 24". Esempi:
+    "fine giornata di oggi" (gg1) → 0 + 1080 = 1080
+    "fine giornata di domani" (gg2) → 1440 + 1080 = 2520
+    "fine giornata di gg3" → 2*1440 + 1080 = 3960
+- Convenzioni industriali per le fasce non specificate (orari di RIFERIMENTO; il manager puo' sovrascriverli se cita orari espliciti):
+    "mattina presto" = 6:00 (360 min dall'inizio del giorno)
+    "mattina" = 8:00 (480)
+    "mezzogiorno" = 12:00 (720)
+    "pomeriggio" = 14:00 (840)
+    "tardo pomeriggio" = 17:00 (1020)
+    "serale" / "sera" = 18:00 (1080)
+    "notte" = 22:00 (1320)
+    "mezzanotte" = 24:00 (1440)
+- Esempi concreti di calcolo:
+    "ore 12 del giorno 2" → 1*1440 + 12*60 = 2160
+    "ore 14 del giorno 1" → 0 + 14*60 = 840
+    "M2 rotto al gg2 ore 12, fino a fine giornata" → start_min=2160, end_min=2520 (gg2 ore 18:00, NON 2880)
+    "Fermo M-3 dalle 14 alle 18 di domani" → start_min=2280 (gg2 ore 14:00), end_min=2520 (gg2 ore 18:00)
+    "M2 in panne stamattina" (parlato in gg1) → start_min=480 (gg1 ore 8:00)
+- Se l'utterance dice "dalle X" senza "alle Y", lascia \`end_min\` non popolato — il default verra' applicato dal router downstream (fine orizzonte).
+- Se l'utterance si riferisce al PASSATO ("ieri sera", "stamattina alle 6"), classifica comunque l'intent ma metti confidence="low" e in \`fallback_reasoning\` annota "evento passato: il vincolo non puo' bloccare fasi pre-cutoff" — il router downstream decidera' se rifiutare o applicare al cutoff corrente.`;
+
 export interface Intent {
   intent_id: string;
   entities: Record<string, unknown>;
@@ -131,30 +162,7 @@ LIVELLI DI CONFIDENCE:
 - "medium": l'intent e' chiaro ma una entita' richiede un'assunzione ragionevole (es. l'orario non e' completamente specificato).
 - "low": classificazione tentata ma con piu' assunzioni; popola \`fallback_reasoning\` con la lista delle assunzioni.
 
-CONVENZIONI TEMPORALI (REGOLA UNICA, NON DEVIARE):
-- I valori \`start_min\` e \`end_min\` sono SEMPRE minuti assoluti dall'inizio dell'orizzonte di pianificazione (minuto 0 = 00:00 del giorno 1).
-- "giorno N" significa il giorno N dell'orizzonte (gg1 = giorno 1 = minuti 0-1440, gg2 = giorno 2 = minuti 1440-2880, gg3 = 2880-4320, ecc.). "domani" e "il giorno successivo" sono sinonimi di "giorno 2" quando il manager parla durante il giorno 1.
-- "fine giornata" si riferisce SEMPRE alla FINE DEL TURNO LAVORATIVO, NON alla mezzanotte. Il default e' 18:00 (1080 minuti dall'inizio del giorno). USA 24:00 (mezzanotte = 1440 minuti dall'inizio del giorno) SOLO se il manager dice esplicitamente "mezzanotte" o "alle 24". Esempi:
-    "fine giornata di oggi" (gg1) → 0 + 1080 = 1080
-    "fine giornata di domani" (gg2) → 1440 + 1080 = 2520
-    "fine giornata di gg3" → 2*1440 + 1080 = 3960
-- Convenzioni industriali per le fasce non specificate (orari di RIFERIMENTO; il manager puo' sovrascriverli se cita orari espliciti):
-    "mattina presto" = 6:00 (360 min dall'inizio del giorno)
-    "mattina" = 8:00 (480)
-    "mezzogiorno" = 12:00 (720)
-    "pomeriggio" = 14:00 (840)
-    "tardo pomeriggio" = 17:00 (1020)
-    "serale" / "sera" = 18:00 (1080)
-    "notte" = 22:00 (1320)
-    "mezzanotte" = 24:00 (1440)
-- Esempi concreti di calcolo:
-    "ore 12 del giorno 2" → 1*1440 + 12*60 = 2160
-    "ore 14 del giorno 1" → 0 + 14*60 = 840
-    "M2 rotto al gg2 ore 12, fino a fine giornata" → start_min=2160, end_min=2520 (gg2 ore 18:00, NON 2880)
-    "Fermo M-3 dalle 14 alle 18 di domani" → start_min=2280 (gg2 ore 14:00), end_min=2520 (gg2 ore 18:00)
-    "M2 in panne stamattina" (parlato in gg1) → start_min=480 (gg1 ore 8:00)
-- Se l'utterance dice "dalle X" senza "alle Y", lascia \`end_min\` non popolato — il default verra' applicato dal router downstream (fine orizzonte).
-- Se l'utterance si riferisce al PASSATO ("ieri sera", "stamattina alle 6"), classifica comunque l'intent ma metti confidence="low" e in \`fallback_reasoning\` annota "evento passato: il vincolo non puo' bloccare fasi pre-cutoff" — il router downstream decidera' se rifiutare o applicare al cutoff corrente.
+${CONVENZIONI_TEMPORALI}
 
 CONVENZIONI ID:
 - Macchine: format tipico "M01", "M-1", "M02", "M2". Mantieni esattamente la forma scritta dal manager.

@@ -1,4 +1,10 @@
 import type Anthropic from '@anthropic-ai/sdk';
+import type { SolutionContext } from '@/lib/solutionContext';
+import {
+  resolveMachineAlias,
+  resolveOrderAlias,
+  resolveAgainstSet,
+} from '@/lib/entityResolver';
 
 /**
  * Manager Chat tool definitions for Haiku 4.5 agentic loop (Wave 3).
@@ -41,6 +47,14 @@ export interface ManagerToolContext {
   kpis: Record<string, number>;
   /** Optional pre-normalized payload to avoid re-parsing on every tool call. */
   normalized?: NormalizedSolution;
+  /**
+   * Closed-set view of the plan (machines[], orders[], aliases) used to
+   * canonicalize loose manager input — e.g. "m2" → "M02" — via the shared
+   * entityResolver. Populated by the BFF (`runManagerChat`) from the live
+   * solution. When absent (older callers / tests), tools fall back to the
+   * raw sanitized id and the exact-match filter is unchanged.
+   */
+  solutionContext?: SolutionContext;
 }
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -52,6 +66,36 @@ function isObject(v: unknown): v is Record<string, unknown> {
 function sanitizeId(v: unknown): string | null {
   if (typeof v !== 'string') return null;
   return ID_PATTERN.test(v) ? v : null;
+}
+
+/**
+ * Map a *sanitized* identifier to its canonical plan id via the shared
+ * entityResolver, so loose manager input ("m2", "linea 2") matches the real
+ * "M02" before the exact-match filter runs.
+ *
+ * SECURITY: callers MUST pass the post-`sanitizeId` value — the resolver is an
+ * ergonomics layer, NOT an injection guard. If `solutionContext` is absent
+ * (older callers / no live plan), or the resolver finds no canonical match,
+ * we return the sanitized id unchanged so the downstream filter behaves
+ * exactly as before (and yields found:false on a genuine miss).
+ */
+function resolveId(
+  sanitized: string,
+  ctx: ManagerToolContext,
+  resolver: (token: string, sctx: SolutionContext) => string | null,
+): string {
+  const sctx = ctx.solutionContext;
+  if (!sctx) return sanitized;
+  const canonical = resolver(sanitized, sctx);
+  return canonical ?? sanitized;
+}
+
+/** Distinct operator ids present in the plan — the closed set for operator
+ *  alias resolution (operators aren't carried in SolutionContext). */
+function operatorIdsOf(fasi: FaseRecord[]): string[] {
+  const seen = new Set<string>();
+  for (const f of fasi) if (f.operatore) seen.add(f.operatore);
+  return [...seen];
 }
 
 function asFiniteNumber(v: unknown): number | null {
@@ -423,7 +467,7 @@ export const MANAGER_TOOLS: Anthropic.Tool[] = [
         machine_id: {
           type: 'string',
           description:
-            "Identificativo macchina alfanumerico (es. 'M-3'). Omettere per lista completa.",
+            "Identificativo macchina alfanumerico (es. 'M02'). Puoi passare la forma usata dal manager ('m2', 'M-2', 'linea 2'): viene normalizzata all'id reale del piano prima della ricerca. Omettere per lista completa.",
         },
       },
       required: [],
@@ -439,7 +483,7 @@ export const MANAGER_TOOLS: Anthropic.Tool[] = [
         operator_id: {
           type: 'string',
           description:
-            "Identificativo operatore alfanumerico (es. 'O-2'). Omettere per lista completa.",
+            "Identificativo operatore alfanumerico (es. 'OP-02'). Puoi passare la forma usata dal manager ('o2', 'O-2', 'operatore 2'): viene normalizzata all'id reale del piano prima della ricerca. Omettere per lista completa.",
         },
       },
       required: [],
@@ -499,7 +543,7 @@ export const MANAGER_TOOLS: Anthropic.Tool[] = [
         commessa: {
           type: 'string',
           description:
-            "Identificativo commessa alfanumerico (es. 'COM-007').",
+            "Identificativo commessa alfanumerico (es. 'COM-007'). Puoi passare la forma usata dal manager ('com7', 'commessa 7'): viene normalizzata all'id reale del piano prima della ricerca.",
         },
       },
       required: ['commessa'],
@@ -526,6 +570,53 @@ export const MANAGER_TOOLS: Anthropic.Tool[] = [
     },
   },
 ];
+
+const MAX_ENUM_HINT_IDS = 30;
+
+function enumHint(label: string, ids: string[]): string {
+  if (ids.length === 0) return '';
+  const shown = ids.slice(0, MAX_ENUM_HINT_IDS);
+  const suffix = ids.length > shown.length ? ', …' : '';
+  return ` ${label} disponibili nel piano corrente: ${shown.join(', ')}${suffix}.`;
+}
+
+/**
+ * Build the manager tool list with the real plan ids inlined into the
+ * machine_id / commessa descriptions, so Haiku self-corrects toward valid
+ * identifiers ("la M02 esiste, la M99 no"). Falls back to the static
+ * {@link MANAGER_TOOLS} when no ids are known.
+ *
+ * The injected ids ARE per-plan volatile data — the BFF must keep the prompt
+ * cache breakpoint OFF this list (or downstream of it) to avoid busting the
+ * cache every request. See `runManagerChat`.
+ */
+export function buildManagerTools(closedSet?: {
+  machines?: string[];
+  orders?: string[];
+  operators?: string[];
+}): Anthropic.Tool[] {
+  const machines = closedSet?.machines ?? [];
+  const orders = closedSet?.orders ?? [];
+  const operators = closedSet?.operators ?? [];
+  if (machines.length === 0 && orders.length === 0 && operators.length === 0) {
+    return MANAGER_TOOLS;
+  }
+  const machineHint = enumHint('Macchine', machines);
+  const orderHint = enumHint('Commesse', orders);
+  const operatorHint = enumHint('Operatori', operators);
+  return MANAGER_TOOLS.map((tool) => {
+    if (machineHint && tool.name === 'get_machine_status') {
+      return { ...tool, description: tool.description + machineHint };
+    }
+    if (orderHint && tool.name === 'query_phase') {
+      return { ...tool, description: tool.description + orderHint };
+    }
+    if (operatorHint && tool.name === 'get_operator_assignments') {
+      return { ...tool, description: tool.description + operatorHint };
+    }
+    return tool;
+  });
+}
 
 export type ToolExecutor = (
   name: string,
@@ -572,9 +663,12 @@ export const executeManagerTool: ToolExecutor = async (name, input, ctx) => {
             "machine_id non valido: deve essere alfanumerico (lettere, cifre, '-', '_').",
         };
       }
-      const machines = summarizeMachines(norm.fasi, machineId);
-      if (machineId && machines.length === 0) {
-        return { machine_id: machineId, found: false, machines: [] };
+      // Canonicalize AFTER the injection guard: "m2" → "M02" before filtering.
+      const resolvedMachineId =
+        machineId === null ? null : resolveId(machineId, ctx, resolveMachineAlias);
+      const machines = summarizeMachines(norm.fasi, resolvedMachineId);
+      if (resolvedMachineId && machines.length === 0) {
+        return { machine_id: resolvedMachineId, found: false, machines: [] };
       }
       return { machines, total: machines.length };
     }
@@ -587,9 +681,17 @@ export const executeManagerTool: ToolExecutor = async (name, input, ctx) => {
             "operator_id non valido: deve essere alfanumerico (lettere, cifre, '-', '_').",
         };
       }
-      const operators = summarizeOperators(norm.fasi, opId);
-      if (opId && operators.length === 0) {
-        return { operator_id: opId, found: false, operators: [] };
+      // Operators aren't in SolutionContext, so canonicalize "o2" → "OP-02"
+      // against the operator set derived from the live plan, reusing the shared
+      // resolver primitive (no bespoke alias logic). Only when a live plan is
+      // present (solutionContext set), mirroring the machine/order gating.
+      const resolvedOpId =
+        opId !== null && ctx.solutionContext
+          ? resolveAgainstSet(opId, operatorIdsOf(norm.fasi)) ?? opId
+          : opId;
+      const operators = summarizeOperators(norm.fasi, resolvedOpId);
+      if (resolvedOpId && operators.length === 0) {
+        return { operator_id: resolvedOpId, found: false, operators: [] };
       }
       return { operators, total: operators.length };
     }
@@ -653,10 +755,12 @@ export const executeManagerTool: ToolExecutor = async (name, input, ctx) => {
             "commessa mancante o non valida: deve essere alfanumerica (lettere, cifre, '-', '_').",
         };
       }
-      const needleLc = commessa.toLowerCase();
+      // Canonicalize AFTER the injection guard: "com7" → "COM-007" before filtering.
+      const resolvedCommessa = resolveId(commessa, ctx, resolveOrderAlias);
+      const needleLc = resolvedCommessa.toLowerCase();
       const fasi = norm.fasi.filter((f) => f.commessa.toLowerCase() === needleLc);
       if (fasi.length === 0) {
-        return { commessa, found: false, fasi: [] };
+        return { commessa: resolvedCommessa, found: false, fasi: [] };
       }
       fasi.sort((a, b) => a.start_min - b.start_min);
       const totalDuration = fasi.reduce(
@@ -669,7 +773,7 @@ export const executeManagerTool: ToolExecutor = async (name, input, ctx) => {
         0,
       );
       return {
-        commessa,
+        commessa: resolvedCommessa,
         found: true,
         n_fasi: fasi.length,
         start_min: fasi[0]!.start_min,

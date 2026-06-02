@@ -1,4 +1,5 @@
 import type { Intent } from './intent-parser';
+import { canonicaliseId } from '@/lib/idCanon';
 import {
   findIntent,
   type ConstraintCatalog,
@@ -122,7 +123,7 @@ export type TryDataModificationFn = (
   baseline: BaselineFasi,
 ) => boolean | null;
 
-interface DerivedIds {
+export interface DerivedIds {
   machines: Set<string>;
   orders: Set<string>;
   operators: Set<string>;
@@ -143,7 +144,7 @@ function asStringSet(v: unknown): Set<string> | null {
   return null;
 }
 
-function deriveIds(baseline: BaselineFasi): DerivedIds {
+export function deriveIds(baseline: BaselineFasi): DerivedIds {
   const machines = asStringSet(baseline.machines) ?? new Set<string>();
   const orders = asStringSet(baseline.orders) ?? new Set<string>();
   const operators = asStringSet(baseline.operators) ?? new Set<string>();
@@ -161,83 +162,25 @@ function isPositiveInt(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v) && Number.isInteger(v) && v >= 0;
 }
 
-interface ValidationFailure {
+export interface ValidationFailure {
   ok: false;
   reason: string;
   warnings: string[];
 }
 
-interface ValidationSuccess {
+export interface ValidationSuccess {
   ok: true;
   normalised: Record<string, unknown>;
   warnings: string[];
 }
 
-type ValidationResult = ValidationFailure | ValidationSuccess;
+export type ValidationResult = ValidationFailure | ValidationSuccess;
 
 const CANONICAL_SHIFTS = new Set(['mattina', 'pomeriggio', 'serale', 'notte']);
 
-/**
- * B-W8-S-01 (stress-engineer 2026-05-22): Haiku emits `M2`, `M-2`, `m2`,
- * `M 2`, etc. depending on the operator's writing style, while the
- * baseline canonical form is `M02` (zero-padded). Pre-fix the strict
- * `must_exist_in_solution_machines` validator rejected those variants
- * with `unknown_machine:M2`, the router cascaded to the Opus translator
- * (Strategy C), and one Italian utterance cost ~$0.25 instead of a
- * Haiku-only $0.005 (250× overshoot, repeated 100s of times per stress
- * eval).
- *
- * The function probes a few canonical variants — original case,
- * uppercase, alphanumeric-only, zero-padded numeric tail, leading-zero
- * stripped — and returns the first one present in `known`. Pure-deterministic;
- * no Opus, no LLM, no extra cost. Returns null if nothing matches so the
- * caller falls back to the original error path.
- */
-function canonicaliseId(raw: string, known: Set<string>): string | null {
-  if (known.size === 0) return null;
-  const candidates: string[] = [];
-  const push = (s: string) => {
-    if (s && !candidates.includes(s)) candidates.push(s);
-  };
-  push(raw);
-  push(raw.toUpperCase());
-  const alnum = raw.replace(/[^a-zA-Z0-9]/g, '');
-  push(alnum);
-  push(alnum.toUpperCase());
-  // Zero-pad / strip numeric tail. Matches "M2", "M-2", "M02", "COM-7", "COM-007".
-  // Pattern: letters + optional separator + digits.
-  const m = alnum.match(/^([A-Za-z]+)(\d+)$/);
-  if (m) {
-    const prefix = m[1].toUpperCase();
-    const num = parseInt(m[2], 10);
-    if (Number.isFinite(num)) {
-      // Try the candidate prefix as-is (covers "M" + "2" → both M2 and M02 below)
-      // and a few common widths.
-      for (const width of [2, 3, 4]) {
-        push(`${prefix}${String(num).padStart(width, '0')}`);
-      }
-      // Strip-leading-zeros variant (baseline "M2" + Haiku said "M02")
-      push(`${prefix}${num}`);
-    }
-  }
-  // COM-007 style: keep the hyphen since baselines often have hyphenated
-  // order ids. Same numeric padding probe.
-  const mh = raw.match(/^([A-Za-z]+)-?(\d+)$/);
-  if (mh) {
-    const prefix = mh[1].toUpperCase();
-    const num = parseInt(mh[2], 10);
-    if (Number.isFinite(num)) {
-      for (const width of [2, 3, 4]) {
-        push(`${prefix}-${String(num).padStart(width, '0')}`);
-      }
-      push(`${prefix}-${num}`);
-    }
-  }
-  for (const cand of candidates) {
-    if (known.has(cand)) return cand;
-  }
-  return null;
-}
+// canonicaliseId moved to @/lib/idCanon (Wave 16.6) so the Haiku
+// instruction-interpreter and chat-manager alias resolver share the exact
+// same deterministic id-canonicalisation this router relies on.
 
 function validateField(
   value: unknown,
@@ -317,7 +260,7 @@ function validateField(
  * Walk entity schema, apply defaults, validate. Returns a normalised
  * entities map ready for payload construction, or a structured failure.
  */
-function validateEntities(
+export function validateEntities(
   intent: IntentDef,
   entities: Record<string, unknown>,
   ids: DerivedIds,
@@ -400,7 +343,7 @@ function validateEntities(
  * backend solver consumes (see `daino/templates/fjsp_constraints/f_apply_rules.py`).
  * Each intent's `fallback_rule_key` selects the top-level rules field.
  */
-function buildRulesPayload(intent: IntentDef, normalised: Record<string, unknown>): Record<string, unknown> {
+export function buildRulesPayload(intent: IntentDef, normalised: Record<string, unknown>): Record<string, unknown> {
   switch (intent.fallback_rule_key) {
     case 'unavailable_machines': {
       const machine_id = normalised.machine_id as string;
