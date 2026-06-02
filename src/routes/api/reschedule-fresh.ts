@@ -7,7 +7,7 @@ import {
 import { extractConstraintFromBackend } from '@/server/llm/extract-constraint-client';
 import { interpretInstruction } from '@/server/llm/instruction-interpreter';
 import { buildAiSolutionEnvelope } from '@/lib/aiInputs';
-import { buildSolutionContext } from '@/lib/solutionContext';
+import { buildSolutionContext, dayLengthMinFromBaseline } from '@/lib/solutionContext';
 import {
   buildFrozenPhases,
   type FrozenPhase,
@@ -104,20 +104,8 @@ function contextInput(baseline: unknown): unknown {
   };
 }
 
-/**
- * Wave 16.5-RE2 — the solver working-day length (model-minutes, e.g. 960 for
- * 06:00-22:00) from the baseline's time_config. This is the ONLY correct unit
- * for the day_anchor cutoff: the model axis compresses nights, so a calendar
- * 1440 would over-freeze (TD-031). Returns null when absent → caller skips the
- * freeze rather than computing a bogus cutoff.
- */
-function dayLengthMinFromBaseline(baseline: unknown): number | null {
-  if (!baseline || typeof baseline !== 'object') return null;
-  const tc = (baseline as Record<string, unknown>).time_config;
-  if (!tc || typeof tc !== 'object') return null;
-  const dl = (tc as Record<string, unknown>).day_length_min;
-  return typeof dl === 'number' && Number.isFinite(dl) && dl > 0 ? dl : null;
-}
+// dayLengthMinFromBaseline moved to @/lib/solutionContext (Wave 16.8 — shared
+// with apply-whatif so both paths source the working-day unit identically).
 
 /**
  * Wave 16.5-RE2 — the manager's "siamo al giorno N" anchor, parsed by the
@@ -237,7 +225,14 @@ export const Route = createFileRoute('/api/reschedule-fresh')({
         if (extracted.result === 'hit') {
           rules = (extracted.payload ?? {}) as Record<string, unknown>;
         } else {
-          const interp = await interpretInstruction(input.message, ctx);
+          // Wave 16.8 (F-TEMP-02): pass the manager's day anchor so Haiku's
+          // "oggi"/"domani" resolve to the right plan-day, not always day 1.
+          // Sourced from the extractor's payload ("siamo al giorno N").
+          const interp = await interpretInstruction(
+            input.message,
+            ctx,
+            dayAnchorFromPayload(extracted.payload) ?? undefined,
+          );
           const ix = interp.interpretation;
           if (ix.result === 'hit') {
             rules = ix.payload;

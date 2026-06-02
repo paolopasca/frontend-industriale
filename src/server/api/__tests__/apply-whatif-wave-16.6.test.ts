@@ -91,6 +91,12 @@ const nestedSolution = {
   'COM-007': {
     fasi: [{ operazione: 'OP-1', macchina: 'M03', operatore: 'OP-B', start_min: 0, end_min: 80 }],
   },
+  // Wave 16.8: buildSolutionContext reads time_config from originalSolution and
+  // the interpreter grounds machine_unavailability's SYMBOLIC day/clock refs
+  // against it. A 24h/midnight tc reproduces the legacy absolute minutes
+  // (giorno N = N*1440, ora = h*60) so the on-the-wire window is unchanged.
+  // (extractCommesse ignores this key — it carries no `fasi` array.)
+  time_config: { day_length_min: 1440, company_start_hour: 0, start_date: '2026-06-01' },
 };
 
 const baseBody = {
@@ -406,8 +412,14 @@ describe('Wave 16.6 §E — time_window_start_unsupported flag', () => {
       fakeInterpreterReply({
         intent_id: 'machine_unavailability',
         machine_id: 'M03',
-        start_min: 840,
-        end_min: 1080,
+        // Wave 16.8: SYMBOLIC, no day anchor in the utterance ("dalle 14 alle 18").
+        // day_ref "oggi" + 14:00–18:00 on the 24h/midnight tc → [840, 1080]. The
+        // clock-only window keeps the "bare downtime" meaning that must NOT emit
+        // the time_window_start_unsupported warning (gated on managerText having a
+        // day anchor, which "ferma M-3 dalle 14 alle 18" does not).
+        day_ref: 'oggi',
+        start_hour: 14,
+        end_hour: 18,
         confidence: 'high',
       }),
     );

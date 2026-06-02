@@ -8,7 +8,7 @@ import {
 import { translateWhatIfToConstraint } from '@/server/llm/constraint-translator';
 import { interpretInstruction } from '@/server/llm/instruction-interpreter';
 import { buildFrozenPhases, detectScenarioStartMin, detectScenarioPhraseMatches, type FrozenPhase } from '@/server/llm/frozen-window-builder';
-import { buildSolutionContext, type SolutionContext } from '@/lib/solutionContext';
+import { buildSolutionContext, dayLengthMinFromBaseline, type SolutionContext } from '@/lib/solutionContext';
 import { mergeRuleSlots } from '@/lib/appliedRulesLedger';
 import { resolveMachineAlias, resolveOrderAlias, resolveShiftAlias } from '@/lib/entityResolver';
 import { resolveTemplate } from '@/lib/api';
@@ -639,7 +639,11 @@ export const Route = createFileRoute('/api/apply-whatif')({
               // cannot retroactively unfreeze phases that have run today.
               // So we take the max of (detected, legacy) when both exist.
               const textForCutoff = input.managerText ?? input.whatifText;
-              const detectedScenarioStart = detectScenarioStartMin(textForCutoff);
+              // Wave 16.8 (F-TEMP-03): the freeze cutoff must use the real
+              // working-day length from the baseline, not the hardcoded 1440 —
+              // else "domani"/"giorno N" over-freeze on a 960-min plant (TD-031).
+              const baselineDayLength = dayLengthMinFromBaseline(input.originalSolution) ?? undefined;
+              const detectedScenarioStart = detectScenarioStartMin(textForCutoff, baselineDayLength);
               const phraseMatches = detectScenarioPhraseMatches(textForCutoff);
               const legacyCutoff = input.currentTimeMin !== undefined
                 ? input.currentTimeMin + input.cushionMin
@@ -739,7 +743,15 @@ export const Route = createFileRoute('/api/apply-whatif')({
                   input.kpis ?? {},
                   input.consultationMd,
                 );
-                const interp = await interpretInstruction(input.managerText, ctx, undefined, {
+                // Wave 16.8 (F-TEMP-02): derive the day anchor from the planning
+                // clock so Haiku's "oggi"/"domani" resolve to the real plan-day
+                // instead of always day 1.
+                const whatIfDayLength = ctx.time_config?.day_length_min;
+                const whatIfDayAnchor =
+                  input.currentTimeMin !== undefined && whatIfDayLength && whatIfDayLength > 0
+                    ? Math.floor(input.currentTimeMin / whatIfDayLength) + 1
+                    : undefined;
+                const interp = await interpretInstruction(input.managerText, ctx, whatIfDayAnchor, {
                   signal: abort.signal,
                   onUsage: (u) => { accumulateUsage(u); },
                 });

@@ -115,6 +115,12 @@ const nestedSolution = {
       { operazione: 'OP-1', macchina: 'M03', operatore: 'OP-B', start_min: 0, end_min: 80 },
     ],
   },
+  // Wave 16.8: buildSolutionContext reads time_config from originalSolution and
+  // the interpreter grounds machine_unavailability's SYMBOLIC day/clock refs
+  // against it. A 24h/midnight tc reproduces the legacy absolute minutes
+  // (giorno N = N*1440, ora = h*60) so the on-the-wire window is unchanged.
+  // (extractCommesse ignores this key — it carries no `fasi` array.)
+  time_config: { day_length_min: 1440, company_start_hour: 0, start_date: '2026-06-01' },
 };
 
 const baseBody = {
@@ -167,8 +173,10 @@ describe('F-W9-08 — BFF retry payload contract (e2e test 5 companion)', () => 
       fakeInterpreterReply({
         intent_id: 'machine_unavailability',
         machine_id: 'M01',
-        start_min: 0,
-        end_min: 1200,
+        // Wave 16.8: SYMBOLIC. "tutto il primo turno" → giorno oggi, 00:00–20:00.
+        // On the 24h/midnight tc → [0, 1200] (end_hour 20 → 20*60), the legacy window.
+        day_ref: 'oggi',
+        end_hour: 20,
         confidence: 'high',
       }),
     );
@@ -284,8 +292,10 @@ describe('F-W9-08 — BFF retry payload contract (e2e test 5 companion)', () => 
       fakeInterpreterReply({
         intent_id: 'machine_unavailability',
         machine_id: 'M01',
-        start_min: 0,
-        end_min: 1200,
+        // Wave 16.8: SYMBOLIC. "tutto il primo turno" → giorno oggi, 00:00–20:00.
+        // On the 24h/midnight tc → [0, 1200] (end_hour 20 → 20*60), the legacy window.
+        day_ref: 'oggi',
+        end_hour: 20,
         confidence: 'high',
       }),
     );

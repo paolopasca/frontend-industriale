@@ -114,6 +114,13 @@ const nestedSolution = {
       { operazione: 'OP-1', macchina: 'M03', operatore: 'OP-B', start_min: 0, end_min: 80 },
     ],
   },
+  // Wave 16.8: buildSolutionContext reads time_config from originalSolution and
+  // the interpreter grounds machine_unavailability's SYMBOLIC day/clock refs
+  // against it. A 24h/midnight tc reproduces the legacy absolute minutes
+  // (giorno N = N*1440, ora = h*60) so the on-the-wire window is unchanged.
+  // With currentTimeMin=120 < 1440 the dayAnchor folds to index 0 ("oggi"=day 0).
+  // (extractCommesse ignores this key — it carries no `fasi` array.)
+  time_config: { day_length_min: 1440, company_start_hour: 0, start_date: '2026-06-01' },
 };
 
 const baseBodyWave7 = {
@@ -170,8 +177,11 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
       fakeInterpreterReply({
         intent_id: 'machine_unavailability',
         machine_id: 'M01',
-        start_min: 720,
-        end_min: 1080,
+        // Wave 16.8: SYMBOLIC. "dalle 12 alle 18" oggi → [720, 1080] on the
+        // 24h/midnight tc (start_hour 12 → 720, end_hour 18 → 1080).
+        day_ref: 'oggi',
+        start_hour: 12,
+        end_hour: 18,
         confidence: 'high',
       }),
     );
@@ -546,8 +556,12 @@ describe('Wave 7 — POST /api/apply-whatif', () => {
       fakeInterpreterReply({
         intent_id: 'machine_unavailability',
         machine_id: 'M02',
-        start_min: 2160,
-        end_min: 2520,
+        // Wave 16.8: SYMBOLIC. "domani dalle 12 alle 18" → day index 1 (anchor 0)
+        // on the 24h/midnight tc → [1*1440+720, 1*1440+1080] = [2160, 2520],
+        // the exact window the applied_rules assertion below pins.
+        day_ref: 'domani',
+        start_hour: 12,
+        end_hour: 18,
         confidence: 'high',
       }),
     );

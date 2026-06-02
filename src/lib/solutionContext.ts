@@ -5,7 +5,7 @@ export interface SolutionContext {
   machine_aliases: Record<string, string>;
   orders: string[];
   shifts: string[];
-  time_config: { day_length_min: number; start_date: string } | null;
+  time_config: { day_length_min: number; start_date: string; company_start_hour?: number } | null;
   shift_types: Record<string, { start: number; end: number }> | null;
   order_deadlines: Record<string, number> | null;
 }
@@ -149,17 +149,43 @@ function extractOrderDeadlines(
 
 function extractTimeConfig(
   raw: unknown,
-): { day_length_min: number; start_date: string } | null {
+): { day_length_min: number; start_date: string; company_start_hour?: number } | null {
   if (!isObject(raw)) return null;
   const tc = raw.time_config;
   if (isObject(tc)) {
     const dl = tc.day_length_min ?? tc.dayLengthMin;
     const sd = tc.start_date ?? tc.startDate;
     if (typeof dl === 'number' && typeof sd === 'string') {
-      return { day_length_min: dl, start_date: sd };
+      // Wave 16.8: carry company_start_hour (solver minute-0 = this hour, e.g.
+      // 06:00) so the temporal resolver can offset the manager's clock times.
+      // Already emitted by the backend data_normalizer; absent → resolver
+      // defaults to 0 (midnight origin), the legacy behaviour.
+      const csh = tc.company_start_hour ?? tc.companyStartHour;
+      const result: { day_length_min: number; start_date: string; company_start_hour?: number } = {
+        day_length_min: dl,
+        start_date: sd,
+      };
+      if (typeof csh === 'number' && Number.isFinite(csh)) result.company_start_hour = csh;
+      return result;
     }
   }
   return null;
+}
+
+/**
+ * Wave 16.8 — the solver working-day length (model-minutes, e.g. 960 for a
+ * 06:00-22:00 plant) from a baseline solution's time_config. The ONLY correct
+ * unit for day-anchored cutoffs and the temporal resolver: the model axis
+ * compresses nights, so a calendar 1440 over-freezes (TD-031). Returns null when
+ * absent → callers fall back to their legacy default. Shared by reschedule-fresh
+ * and apply-whatif so the unit is sourced identically on both paths.
+ */
+export function dayLengthMinFromBaseline(baseline: unknown): number | null {
+  if (!baseline || typeof baseline !== 'object') return null;
+  const tc = (baseline as Record<string, unknown>).time_config;
+  if (!tc || typeof tc !== 'object') return null;
+  const dl = (tc as Record<string, unknown>).day_length_min;
+  return typeof dl === 'number' && Number.isFinite(dl) && dl > 0 ? dl : null;
 }
 
 function extractShiftTypes(

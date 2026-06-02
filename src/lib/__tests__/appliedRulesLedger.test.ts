@@ -302,6 +302,45 @@ describe('describeLedgerRules — per-constraint labels (Option A / Wave 16.7)',
     expect(labelsOf({ shift_changes: [{ x: 1 }] })).toEqual(['turni modificati']);
     expect(labelsOf({ extra_capacity: [{ y: 2 }] })).toEqual(['capacità extra']);
   });
+
+  // Wave 16.8 — `describeWindow` must label days by the company's REAL
+  // working-day length. The 1440 fallback is the LAST RESORT (only when
+  // dayLengthMin is absent). These cases pin both ends so the 1440 stays a
+  // fallback, not a baked-in assumption (feedback_no_assertion_relaxation).
+  describe('Wave 16.8 — "giorno N" label honours dayLengthMin (1440 = last resort)', () => {
+    const W = { unavailable_machines: { M03: [{ start_min: 960, end_min: 1920 }] } };
+
+    it('dayLengthMin ABSENT → falls back to the 1440 calendar day (mislabels as "giorno 1-2")', () => {
+      // The pre-fix behaviour, kept ONLY as the no-day-length fallback: a
+      // [960,1920) window spans two calendar days at 1440 → "giorno 1-2".
+      expect(labelsOf(W)).toEqual(['M03 ferma (giorno 1-2)']);
+      expect(labelsOf(W, {})).toEqual(['M03 ferma (giorno 1-2)']);
+      expect(labelsOf(W, { dayLengthMin: undefined })).toEqual(['M03 ferma (giorno 1-2)']);
+    });
+
+    it('dayLengthMin=960 (demo plant) → correct single "giorno 2"', () => {
+      // [960,1920) with a 960-min day is exactly day 2 (end exclusive).
+      expect(labelsOf(W, { dayLengthMin: 960 })).toEqual(['M03 ferma (giorno 2)']);
+      // And it is NOT the wrong calendar-day label.
+      expect(labelsOf(W, { dayLengthMin: 960 })).not.toEqual(['M03 ferma (giorno 1-2)']);
+    });
+
+    it('day boundaries align for both day lengths (start of day 1, start of day 2)', () => {
+      const day1 = { unavailable_machines: { M01: [{ start_min: 0, end_min: 960 }] } };
+      // 960-day: [0,960) is day 1; 1440-day: [0,960) is still day 1 (within it).
+      expect(labelsOf(day1, { dayLengthMin: 960 })).toEqual(['M01 ferma (giorno 1)']);
+      expect(labelsOf(day1, { dayLengthMin: 1440 })).toEqual(['M01 ferma (giorno 1)']);
+      // 960-day: [960,1920) is day 2; 1440-day: spans days 1-2.
+      const day2 = { unavailable_machines: { M01: [{ start_min: 960, end_min: 1920 }] } };
+      expect(labelsOf(day2, { dayLengthMin: 960 })).toEqual(['M01 ferma (giorno 2)']);
+      expect(labelsOf(day2, { dayLengthMin: 1440 })).toEqual(['M01 ferma (giorno 1-2)']);
+    });
+
+    it('non-positive dayLengthMin is ignored → 1440 last-resort fallback', () => {
+      expect(labelsOf(W, { dayLengthMin: 0 })).toEqual(['M03 ferma (giorno 1-2)']);
+      expect(labelsOf(W, { dayLengthMin: -100 })).toEqual(['M03 ferma (giorno 1-2)']);
+    });
+  });
 });
 
 describe('removeConstraintFromLedger — per-chip × (Wave 16.7)', () => {

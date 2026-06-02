@@ -235,14 +235,21 @@ describe('buildFrozenPhases', () => {
   });
 });
 
-describe('Wave 16.4 A4 — detectScenarioStartMin', () => {
+// NOTE (Wave 16.8): detectScenarioStartMin now accepts an optional
+// `dayLengthMin`. The block below pins the BACKWARD-COMPATIBLE default
+// (no dayLengthMin arg → 1440-minute calendar day) so the apply-whatif.ts
+// callers — which do NOT yet pass the arg — keep their shipped behaviour.
+// A second, parametrized block further down exercises BOTH 1440 and the
+// real demo day length (960), so the 1440 is no longer hard-wired into the
+// function (feedback_no_assertion_relaxation: parametrize, don't relax).
+describe('Wave 16.4 A4 — detectScenarioStartMin (default day length = 1440)', () => {
   it('returns null when no temporal phrase is present', () => {
     expect(detectScenarioStartMin('ferma M-1 dalle 14 alle 18')).toBeNull();
     expect(detectScenarioStartMin('anticipa COM-001')).toBeNull();
     expect(detectScenarioStartMin('')).toBeNull();
   });
 
-  it('detects "domani" → 1440', () => {
+  it('detects "domani" → 1440 (default day length)', () => {
     expect(detectScenarioStartMin('ferma M-1 domani dalle 14')).toBe(1440);
     expect(detectScenarioStartMin('Domani la linea M-2 non lavora')).toBe(1440);
   });
@@ -288,6 +295,59 @@ describe('Wave 16.4 A4 — detectScenarioStartMin', () => {
     // "fra 100 giorni" used to be rejected by \d{1,2}; now accepted up to 365.
     expect(detectScenarioStartMin('fra 100 giorni anticipa COM-001')).toBe(100 * 1440);
     expect(detectScenarioStartMin('giorno 200 ferma M-2')).toBe(199 * 1440);
+  });
+});
+
+// Wave 16.8 — the freeze cutoff must use the company's REAL working-day length,
+// not a hard-coded 1440. demo-commesse runs a 06:00–22:00 plant → 960 min/day,
+// so "domani" is +960 there, not +1440. The function takes `dayLengthMin` and
+// the whole-day forms scale by it (mirrors temporal-resolver: domani=1*dl,
+// dopodomani=2*dl, giorno N=(N-1)*dl, fra N giorni=N*dl).
+describe('Wave 16.8 — detectScenarioStartMin scales by dayLengthMin', () => {
+  // Parametrize over the legacy calendar day AND the real demo day length so
+  // the 1440 is exercised as a value, not baked in (no-assertion-relaxation).
+  for (const dl of [1440, 960]) {
+    describe(`dayLengthMin=${dl}`, () => {
+      it(`"domani" → 1 * ${dl}`, () => {
+        expect(detectScenarioStartMin('ferma M-1 domani dalle 14', dl)).toBe(1 * dl);
+      });
+      it(`"dopodomani" → 2 * ${dl}`, () => {
+        expect(detectScenarioStartMin('ferma M-1 dopodomani', dl)).toBe(2 * dl);
+      });
+      it(`"giorno N" (N>=2) → (N-1) * ${dl}`, () => {
+        expect(detectScenarioStartMin('sposta COM-001 al giorno 2', dl)).toBe(1 * dl);
+        expect(detectScenarioStartMin('giorno 3 ferma M-2', dl)).toBe(2 * dl);
+      });
+      it(`"fra/tra/in N giorni" → N * ${dl}`, () => {
+        expect(detectScenarioStartMin('fra 3 giorni anticipa COM-001', dl)).toBe(3 * dl);
+        expect(detectScenarioStartMin('tra 2 giorni ferma M-1', dl)).toBe(2 * dl);
+        expect(detectScenarioStartMin('in 5 giorni nuova capacita', dl)).toBe(5 * dl);
+      });
+      it('still returns null for "giorno 1" / "fra 0 giorni" regardless of dl', () => {
+        expect(detectScenarioStartMin('giorno 1 inizio orizzonte', dl)).toBeNull();
+        expect(detectScenarioStartMin('fra 0 giorni qualcosa', dl)).toBeNull();
+      });
+    });
+  }
+
+  it('with day_length_min=960, "domani" is 960 (NOT the wrong 1440)', () => {
+    // The exact bug Wave 16.8 fixes: hard-coded 1440 froze a 06:00–22:00 plant
+    // through the middle of the NEXT working day. 960 freezes to its start.
+    expect(detectScenarioStartMin('ferma M-1 domani', 960)).toBe(960);
+    expect(detectScenarioStartMin('ferma M-1 domani', 960)).not.toBe(1440);
+  });
+
+  it('omitting dayLengthMin keeps the backward-compatible 1440 (apply-whatif callers)', () => {
+    // apply-whatif.ts calls detectScenarioStartMin WITHOUT the arg; that path
+    // must keep shipping the 1440 calendar day until its caller wiring lands.
+    expect(detectScenarioStartMin('ferma M-1 domani')).toBe(1440);
+    expect(detectScenarioStartMin('giorno 3 ferma M-2')).toBe(2 * 1440);
+  });
+
+  it('ignores a non-positive / non-finite dayLengthMin and falls back to 1440', () => {
+    expect(detectScenarioStartMin('domani', 0)).toBe(1440);
+    expect(detectScenarioStartMin('domani', -5)).toBe(1440);
+    expect(detectScenarioStartMin('domani', Number.NaN)).toBe(1440);
   });
 });
 

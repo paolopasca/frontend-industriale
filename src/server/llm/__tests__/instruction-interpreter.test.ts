@@ -44,7 +44,7 @@ function ctxOf(partial: Partial<SolutionContext>): SolutionContext {
     machine_aliases: partial.machine_aliases ?? buildMachineAliases(machines),
     orders: partial.orders ?? ['COM-001', 'COM-007'],
     shifts: partial.shifts ?? ['turno_mattina', 'turno_pomeriggio', 'turno_serale'],
-    time_config: null,
+    time_config: partial.time_config ?? null,
     shift_types: partial.shift_types ?? {
       turno_mattina: { start: 480, end: 840 },
       turno_pomeriggio: { start: 840, end: 1080 },
@@ -53,6 +53,12 @@ function ctxOf(partial: Partial<SolutionContext>): SolutionContext {
     order_deadlines: partial.order_deadlines ?? { 'COM-001': 2880, 'COM-007': 4320 },
   };
 }
+
+// Wave 16.8: a 24h/midnight time_config makes the symbolic→resolver path
+// reproduce the legacy absolute minutes (giorno N = N*1440, ore = h*60), so
+// pre-16.8 expectations still hold. TC_DEMO mirrors a real 06:00–22:00 plant.
+const TC_24H = { day_length_min: 1440, company_start_hour: 0, start_date: '2026-06-01' };
+const TC_DEMO = { day_length_min: 960, company_start_hour: 6, start_date: '2026-04-01' };
 
 interface FakeUsage {
   input_tokens?: number;
@@ -86,19 +92,22 @@ async function runInterpret(
 
 describe('interpretInstruction — enum pick → hit', () => {
   it('"blocca la linea 2 da domani pomeriggio fino a fine giornata" → hit, unavailable_machines[M02]', async () => {
-    const ctx = ctxOf({});
+    const ctx = ctxOf({ time_config: TC_24H });
     const r = await runInterpret(
       {
         intent_id: 'machine_unavailability',
         machine_id: 'M02',
-        start_min: 2280,
-        end_min: 2520,
+        day_ref: 'domani',
+        start_hour: 14,
+        end_hour: 18,
         confidence: 'high',
       },
       'blocca la linea 2 da domani pomeriggio fino a fine giornata',
       ctx,
     );
     expect(r.interpretation.result).toBe('hit');
+    // Wave 16.8: symbolic {domani,14-18} resolved on 24h/midnight ctx → the
+    // same absolute minutes the old hardcoded path produced.
     expect(r.interpretation.payload).toEqual({
       unavailable_machines: { M02: [{ start_min: 2280, end_min: 2520 }] },
     });
@@ -179,16 +188,16 @@ describe('interpretInstruction — anti-hallucination gate', () => {
     expect(r.interpretation.result).toBe('reject');
   });
 
-  it('out-of-bounds minute → reject', async () => {
-    const ctx = ctxOf({});
+  it('absurd day far past the horizon → reject (resolver sanity ceiling)', async () => {
+    const ctx = ctxOf({ time_config: TC_24H });
     const r = await runInterpret(
       {
         intent_id: 'machine_unavailability',
         machine_id: 'M02',
-        start_min: 999_999_999,
+        day_ref: '100000',
         confidence: 'high',
       },
-      'M02 rotta',
+      'M02 rotta il giorno 100000',
       ctx,
     );
     expect(r.interpretation.result).toBe('reject');
@@ -197,42 +206,141 @@ describe('interpretInstruction — anti-hallucination gate', () => {
 
 describe('interpretInstruction — gray (assumption / sub-high confidence)', () => {
   it('"m2 rotta" with start_min default + medium confidence + assumption → gray', async () => {
-    const ctx = ctxOf({});
+    const ctx = ctxOf({ time_config: TC_24H });
     const r = await runInterpret(
       {
         intent_id: 'machine_unavailability',
         machine_id: 'M02',
-        start_min: 0,
+        day_ref: 'oggi',
         confidence: 'medium',
-        assumption: 'nessun orario esplicito: blocco da inizio orizzonte',
+        assumption: 'giorno non esplicito: assunto oggi, intera giornata',
       },
       'm2 rotta',
       ctx,
     );
     expect(r.interpretation.result).toBe('gray');
-    expect(r.interpretation.confirmation_message).toMatch(/assunzione|inizio orizzonte/i);
-    // Even gray carries the canonical payload so the caller can confirm-then-solve.
-    // end_min is materialised by the router's default_to:horizon_end (the max
-    // deadline in ctx.order_deadlines = 4320) since the manager gave no end.
+    expect(r.interpretation.confirmation_message).toMatch(/assun|giornata|oggi/i);
+    // Wave 16.8: bare "rotta" with no time → whole day TODAY [0, day_length]
+    // (resolver), not the whole horizon. More conservative; the manager extends
+    // if the stop lasts longer. Gray still carries the payload to confirm-then-solve.
     expect(r.interpretation.payload).toEqual({
-      unavailable_machines: { M02: [{ start_min: 0, end_min: 4320 }] },
+      unavailable_machines: { M02: [{ start_min: 0, end_min: 1440 }] },
     });
   });
 
   it('high confidence with NO assumption → hit (not gray)', async () => {
-    const ctx = ctxOf({});
+    const ctx = ctxOf({ time_config: TC_24H });
     const r = await runInterpret(
       {
         intent_id: 'machine_unavailability',
         machine_id: 'M02',
-        start_min: 840,
-        end_min: 1080,
+        day_ref: 'oggi',
+        start_hour: 14,
+        end_hour: 18,
         confidence: 'high',
       },
       'M02 ferma dalle 14 alle 18 di oggi',
       ctx,
     );
     expect(r.interpretation.result).toBe('hit');
+  });
+});
+
+describe('interpretInstruction — Wave 16.8 L-aware temporal grounding', () => {
+  it('demo (960/06:00): "M3 domani dalle 14 alle 18" → giorno 2 14-18 = [1440,1680], NOT [2280,2520]', async () => {
+    const ctx = ctxOf({ time_config: TC_DEMO });
+    const r = await runInterpret(
+      {
+        intent_id: 'machine_unavailability',
+        machine_id: 'M03',
+        day_ref: 'domani',
+        start_hour: 14,
+        end_hour: 18,
+        confidence: 'high',
+      },
+      'M3 rotta domani dalle 14 alle 18',
+      ctx,
+    );
+    expect(r.interpretation.result).toBe('hit');
+    expect(r.interpretation.payload).toEqual({
+      unavailable_machines: { M03: [{ start_min: 1440, end_min: 1680 }] },
+    });
+  });
+
+  it('demo: "M3 dal giorno 2 al giorno 4" → giorni 2-3 = [960, 2880)', async () => {
+    const ctx = ctxOf({ time_config: TC_DEMO });
+    const r = await runInterpret(
+      {
+        intent_id: 'machine_unavailability',
+        machine_id: 'M03',
+        day_ref: '2',
+        day_ref_end: '4',
+        confidence: 'high',
+      },
+      'M3 ferma dal giorno 2 al giorno 4',
+      ctx,
+    );
+    expect(r.interpretation.result).toBe('hit');
+    expect(r.interpretation.payload).toEqual({
+      unavailable_machines: { M03: [{ start_min: 960, end_min: 2880 }] },
+    });
+  });
+
+  it('demo: dayAnchor folds "oggi" — siamo al giorno 2, oggi 14-18 → [1440,1680]', async () => {
+    const ctx = ctxOf({ time_config: TC_DEMO });
+    const r = await runInterpret(
+      {
+        intent_id: 'machine_unavailability',
+        machine_id: 'M03',
+        day_ref: 'oggi',
+        start_hour: 14,
+        end_hour: 18,
+        confidence: 'high',
+      },
+      'siamo al giorno 2, ferma M3 dalle 14 alle 18',
+      ctx,
+      2,
+    );
+    expect(r.interpretation.result).toBe('hit');
+    expect(r.interpretation.payload).toEqual({
+      unavailable_machines: { M03: [{ start_min: 1440, end_min: 1680 }] },
+    });
+  });
+
+  it('apply-both: "m2 e m3 rotte domani" → blocks M02 AND M03, same window', async () => {
+    const ctx = ctxOf({ time_config: TC_DEMO });
+    const r = await runInterpret(
+      {
+        intent_id: 'machine_unavailability',
+        machine_ids: ['M02', 'M03'],
+        day_ref: 'domani',
+        confidence: 'high',
+      },
+      'm2 e m3 rotte domani',
+      ctx,
+    );
+    expect(r.interpretation.result).toBe('hit');
+    expect(r.interpretation.payload).toEqual({
+      unavailable_machines: {
+        M02: [{ start_min: 960, end_min: 1920 }],
+        M03: [{ start_min: 960, end_min: 1920 }],
+      },
+    });
+  });
+
+  it('apply-both anti-hallucination: any off-set machine in machine_ids → reject', async () => {
+    const ctx = ctxOf({ time_config: TC_DEMO });
+    const r = await runInterpret(
+      {
+        intent_id: 'machine_unavailability',
+        machine_ids: ['M02', 'M99'],
+        day_ref: 'domani',
+        confidence: 'high',
+      },
+      'm2 e m99 rotte domani',
+      ctx,
+    );
+    expect(r.interpretation.result).toBe('reject');
   });
 });
 

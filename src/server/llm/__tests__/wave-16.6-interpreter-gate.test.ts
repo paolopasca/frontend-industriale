@@ -28,7 +28,11 @@ function demoCtx(): SolutionContext {
     machine_aliases: buildMachineAliases(DEMO_MACHINES),
     orders: DEMO_ORDERS,
     shifts: ['mattina', 'pomeriggio'],
-    time_config: { day_length_min: 960, start_date: '2026-04-01' },
+    // Wave 16.8: a 24h/midnight time_config makes the symbolic→resolver path
+    // reproduce the legacy absolute minutes (giorno N = N*1440, ore = h*60), so
+    // the closed-set gate assertions below hold unchanged. machine_unavailability
+    // now carries SYMBOLIC day refs (day_ref) the resolver grounds with this tc.
+    time_config: { day_length_min: 1440, company_start_hour: 0, start_date: '2026-04-01' },
     shift_types: { mattina: { start: 0, end: 480 }, pomeriggio: { start: 480, end: 960 } },
     // Provide a horizon so bounds validation has an upper edge.
     order_deadlines: { 'COM-007': 5000 },
@@ -44,7 +48,9 @@ describe('Wave 16.6 interpreter gate — HIT path (in-set machine resolves)', ()
       {
         intent_id: 'machine_unavailability',
         machine_id: 'M2',
-        start_min: 960, // giorno 2 (day_length 960)
+        // Wave 16.8: SYMBOLIC day ref. "giorno 2" → day_ref "2"; the resolver
+        // grounds it on the 24h/midnight tc to [1440, 2880] (giorno 2 whole).
+        day_ref: '2',
         confidence: 'high',
       },
       demoCtx(),
@@ -72,7 +78,9 @@ describe('Wave 16.6 interpreter gate — HIT path (in-set machine resolves)', ()
       {
         intent_id: 'machine_unavailability',
         machine_id: 'M02',
-        start_min: 0,
+        // Wave 16.8: SYMBOLIC. "nessun orario esplicito" → whole day TODAY;
+        // day_ref "oggi" on the 24h/midnight tc resolves to [0, 1440].
+        day_ref: 'oggi',
         confidence: 'high',
         assumption: 'nessun orario esplicito: blocco da inizio orizzonte',
       },

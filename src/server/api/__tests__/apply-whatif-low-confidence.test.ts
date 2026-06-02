@@ -115,6 +115,13 @@ const nestedSolution = {
       { operazione: 'OP-1', macchina: 'M03', operatore: 'OP-B', start_min: 0, end_min: 80 },
     ],
   },
+  // Wave 16.8: buildSolutionContext reads time_config from originalSolution and
+  // the interpreter grounds machine_unavailability's SYMBOLIC day/clock refs
+  // against it. A 24h/midnight tc reproduces the legacy absolute minutes
+  // (giorno N = N*1440, ora = h*60). These GRAY tests only assert the payload
+  // is present (no exact-minute pin), but the window is kept faithful anyway.
+  // (extractCommesse ignores this key — it carries no `fasi` array.)
+  time_config: { day_length_min: 1440, company_start_hour: 0, start_date: '2026-06-01' },
 };
 
 const baseBody = {
@@ -171,8 +178,10 @@ describe('F-W8-07 — low_confidence_classification warning', () => {
       fakeInterpreterReply({
         intent_id: 'machine_unavailability',
         machine_id: 'M02',
-        start_min: 720,
-        end_min: 1080,
+        // Wave 16.8: SYMBOLIC. oggi 12:00–18:00 on the 24h/midnight tc → [720, 1080].
+        day_ref: 'oggi',
+        start_hour: 12,
+        end_hour: 18,
         confidence: 'low',
         assumption: "evento passato ('ieri sera'), assunzione su finestra",
       }),
@@ -227,8 +236,11 @@ describe('F-W8-07 — low_confidence_classification warning', () => {
       fakeInterpreterReply({
         intent_id: 'machine_unavailability',
         machine_id: 'M02',
-        start_min: 2880,
-        end_min: 4320,
+        // Wave 16.8: SYMBOLIC whole-day block. "gg3" → day_ref "3"; the range
+        // form day_ref_end "4" makes it the whole giorno 3 → on the 24h/midnight
+        // tc [2*1440, 3*1440] = [2880, 4320], matching the legacy whole-day window.
+        day_ref: '3',
+        day_ref_end: '4',
         confidence: 'medium',
         assumption: 'whole_day_default_no_explicit_time',
       }),
@@ -355,7 +367,10 @@ describe('F-W8-07 — low_confidence_classification warning', () => {
         fakeInterpreterReply({
           intent_id: 'machine_unavailability',
           machine_id: 'M2',
-          start_min: 0,
+          // Wave 16.8: SYMBOLIC, no explicit time → whole day TODAY. day_ref
+          // "oggi" on the 24h/midnight tc → [0, 1440]. The "M2" alias is still
+          // re-resolved by the gate to the canonical closed-set id "M02".
+          day_ref: 'oggi',
           confidence: 'low',
           assumption: 'evento passato',
         }),
