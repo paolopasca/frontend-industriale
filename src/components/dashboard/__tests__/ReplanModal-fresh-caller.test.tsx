@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ReplanModal } from '../ReplanModal';
+import { appendRule, clearLedger } from '@/lib/appliedRulesLedger';
 
 /**
  * Wave 16.5 B1 (devil-advocate refinement) — seam test / regression guard.
@@ -97,6 +98,60 @@ describe('ReplanModal fresh-solve primary path (real caller shape)', () => {
     // sent. Re-adding these naively would push the cutoff past the horizon.
     expect('currentTimeMin' in body).toBe(false);
     expect('cushionMin' in body).toBe(false);
+  });
+
+  // Wave 17 H1 (TD-022) — Ripianifica must carry the cumulative applied-rules
+  // ledger as priorRules so previously-accepted What-If constraints survive the
+  // fresh solve (the BFF folds them UNDER the new disruption). Without this the
+  // re-solve drops them silently.
+  it('sends the folded ledger as priorRules when the ledger is non-empty', async () => {
+    clearLedger('acme');
+    // Two prior accepted What-If turns: a machine ban + a priority order.
+    appendRule('acme', {
+      source: 'whatif',
+      rules: { unavailable_machines: { 'M-2': [{ start_min: 0, end_min: 480 }] } },
+    });
+    appendRule('acme', { source: 'whatif', rules: { priority_orders: ['COM-007'] } });
+
+    const fetchMock = vi.fn().mockResolvedValue(freshOkResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal open onClose={() => {}} companySlug="acme" originalSolution={BASELINE} onResult={() => {}} />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'macchina M1 è rotta, risolvi');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    // The cumulative ledger, folded, is sent so the BFF can re-apply it.
+    expect(body.priorRules).toBeTruthy();
+    expect(body.priorRules.unavailable_machines['M-2']).toEqual([{ start_min: 0, end_min: 480 }]);
+    expect(body.priorRules.priority_orders).toEqual(['COM-007']);
+    clearLedger('acme');
+  });
+
+  it('omits priorRules when the ledger is empty (lean legacy body)', async () => {
+    clearLedger('acme');
+    const fetchMock = vi.fn().mockResolvedValue(freshOkResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal open onClose={() => {}} companySlug="acme" originalSolution={BASELINE} onResult={() => {}} />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'macchina M1 è rotta');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    // No empty {} bloat — the field is absent entirely.
+    expect('priorRules' in body).toBe(false);
   });
 
   it('surfaces the result as a full replan from the horizon start', async () => {

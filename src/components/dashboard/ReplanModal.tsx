@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { chatReschedule, autoLogin, type ChatRescheduleResponse } from '@/lib/api';
 import type { SolverMethod } from '@/components/onboarding/SolverMethodSelect';
 import { getSlugScoped, setSlugScoped, migrateLegacyKeys } from '@/lib/storage';
+import { mergeLedgerRules } from '@/lib/appliedRulesLedger';
 
 interface Message {
   id: string;
@@ -275,6 +276,12 @@ export function ReplanModal({
     setBusy(true);
     setBusyLabel('Ricalcolo completo del piano da inizio orizzonte… (~25 s)');
     try {
+      // Wave 17 H1 (TD-022) — fold the cumulative applied-rules ledger into a
+      // single solver-`rules` payload and send it as priorRules so Ripianifica
+      // re-applies every previously-ACCEPTED What-If constraint alongside the
+      // new disruption. Without this the fresh solve dropped them silently. Only
+      // sent when non-empty so a first Ripianifica keeps the lean legacy body.
+      const priorRules = mergeLedgerRules(companySlug);
       const res = await fetch('/api/reschedule-fresh', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -287,6 +294,7 @@ export function ReplanModal({
           // currentTimeMin — day-0 is deadline-anchored, not wall-clock, so a
           // derived cutoff would be wrong (see the note above loadStored).
           baselineSolution: originalSolution,
+          ...(Object.keys(priorRules).length > 0 ? { priorRules } : {}),
         }),
       });
       if (!res.ok) {

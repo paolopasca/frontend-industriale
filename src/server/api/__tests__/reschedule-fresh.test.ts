@@ -109,6 +109,74 @@ describe('POST /api/reschedule-fresh', () => {
     expect(body.result.kpis).toEqual({ makespan_min: 1500 });
   });
 
+  it('merges cumulative priorRules with the freshly-extracted rule before solving (Wave 17 H1)', async () => {
+    // The manager already accepted "M-2 ferma 0-480" + priority COM-007 in
+    // earlier What-If turns (the ledger). Now they Ripianifica with "M-1 rotta".
+    // The fresh solve MUST honour BOTH the new disruption AND the accumulated
+    // prior constraints — otherwise Ripianifica silently drops every previously
+    // accepted rule (the cumulative-constraint failure this fixes).
+    vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
+      result: 'hit',
+      confidence: 0.9,
+      payload: { unavailable_machines: { 'M-1': [{ start_min: 0, end_min: 240 }] } },
+      rationale: 'macchina rotta -> blocco finestra',
+      pattern_id: 'machine_unavailability_v1',
+      confirmation_message: null,
+    });
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL',
+          method: 'deterministic-template',
+          solution: { fasi: [] },
+          kpis: { makespan_min: 1500 },
+          objective_value: 1500,
+          warnings: [],
+          cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await invokeRoute(
+      makeRequest(
+        {
+          slug: 'acme',
+          message: 'M-1 e rotta',
+          priorRules: {
+            unavailable_machines: { 'M-2': [{ start_min: 0, end_min: 480 }] },
+            priority_orders: ['COM-007'],
+          },
+        },
+        'ip-fresh-merge',
+      ),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+
+    // The solve-template call must carry the MERGED rules.
+    const solveCall = fetchMock.mock.calls.find(
+      ([url]) => typeof url === 'string' && url.includes('/api/public/solve-template'),
+    );
+    expect(solveCall, 'expected a POST to /api/public/solve-template').toBeTruthy();
+    const sentRules = JSON.parse((solveCall![1] as RequestInit).body as string).rules;
+    // Fresh disruption present…
+    expect(sentRules.unavailable_machines['M-1']).toEqual([{ start_min: 0, end_min: 240 }]);
+    // …AND the accumulated prior constraints survived.
+    expect(sentRules.unavailable_machines['M-2']).toEqual([{ start_min: 0, end_min: 480 }]);
+    expect(sentRules.priority_orders).toEqual(['COM-007']);
+
+    // The echoed applied_rules carries ONLY the NEW rule (pre-merge): the
+    // client ledger already holds the priors, so the solver gets the merged set
+    // but the ledger only needs the delta (mirrors apply-whatif's contract).
+    // Echoing the merged set here would double-append M-2 on the next turn.
+    expect(body.applied_rules.unavailable_machines['M-1']).toBeTruthy();
+    expect(body.applied_rules.unavailable_machines['M-2']).toBeUndefined();
+    expect(body.applied_rules.priority_orders).toBeUndefined();
+  });
+
   it('returns extract_miss when BOTH the extractor and the interpreter decline', async () => {
     // Wave 16.6 §A: on extractor MISS the route now gives the closed-set Haiku
     // interpreter a second pass. When the interpreter ALSO declines
