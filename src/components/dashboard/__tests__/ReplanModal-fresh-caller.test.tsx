@@ -289,6 +289,48 @@ describe('ReplanModal fresh-solve primary path (real caller shape)', () => {
     expect(screen.getByText(/ricalcolato/i)).toBeInTheDocument();
   });
 
+  // Wave 17 M2 (fresh path) — reschedule-fresh returns skipped_rules when the
+  // SOLVER dropped a rule. Since fresh is the PRODUCTION reschedule path, the
+  // manager must SEE which rule was ignored and why (anti-silent-no-op), even
+  // though the plan itself solved OPTIMAL.
+  it('renders skipped_rules from the fresh solve to the manager', async () => {
+    const onResult = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          code: 'solved_fresh',
+          cutoff_min: null,
+          frozen_count: 0,
+          applied_rules: { unavailable_machines: { 'M-1': [{ start_min: 0, end_min: 240 }] } },
+          skipped_rules: [
+            { type: 'operator_unavailable_skipped', target: 'OP-9', reason: 'window_after_horizon', message: "Indisponibilità operatore OP-9 ignorata: finestra oltre l'orizzonte di pianificazione." },
+          ],
+          result: {
+            status: 'OPTIMAL', method: 'deterministic-template', solution: { 'COM-001': { fasi: [] } },
+            kpis: {}, objective_value: 0, warnings: [], cost_usd: 0,
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal open onClose={() => {}} companySlug="acme" originalSolution={BASELINE} onResult={onResult} />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'M-1 rotta e OP-9 assente');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    // The solve succeeded (onResult fired) AND the skipped rule is shown.
+    await waitFor(() => expect(onResult).toHaveBeenCalledTimes(1));
+    expect(
+      screen.getByText(/ignorata: finestra oltre l'orizzonte/i),
+    ).toBeInTheDocument();
+  });
+
   // Wave 16.5-RE2 — ask-flow. When the BFF returns code 'needs_day', the modal
   // must ask which plan-day it is and NOT propagate any result to the
   // dashboard (no recalculation). Mirrors the BFF guarantee that no solve ran.

@@ -177,6 +177,56 @@ describe('POST /api/reschedule-fresh', () => {
     expect(body.applied_rules.priority_orders).toBeUndefined();
   });
 
+  it('surfaces skipped_rules from the solver wave7 audit (Wave 17 M2 — fresh path)', async () => {
+    // Fresh is the PRODUCTION reschedule path. A rule the solver skips
+    // (wave7.apply_rules) must reach the client as a per-rule reason rollup,
+    // never be dropped (anti-silent-no-op).
+    vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
+      result: 'hit',
+      confidence: 0.9,
+      payload: { unavailable_machines: { 'M-1': [{ start_min: 0, end_min: 240 }] } },
+      rationale: 'macchina rotta',
+      pattern_id: 'machine_unavailability_v1',
+      confirmation_message: null,
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL',
+          method: 'deterministic-template',
+          solution: { 'COM-001': { fasi: [] } },
+          kpis: { makespan_min: 1500 },
+          objective_value: 1500,
+          warnings: [],
+          cost_usd: 0,
+          wave7: {
+            locked_count: 0,
+            apply_rules: [
+              { type: 'unavailable_machine_block', machine_id: 'M-1', count: 1 },
+              { type: 'operator_unavailable_skipped', operator_id: 'OP-9', reason: 'window_after_horizon' },
+            ],
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    ));
+
+    const res = await invokeRoute(
+      makeRequest({ slug: 'acme', message: 'M-1 e rotta' }, 'ip-fresh-skip'),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    // The rollup must be present, manager-facing, and carry the real reason.
+    expect(Array.isArray(body.skipped_rules)).toBe(true);
+    expect(body.skipped_rules).toHaveLength(1);
+    const op = body.skipped_rules[0];
+    expect(op.type).toBe('operator_unavailable_skipped');
+    expect(op.target).toBe('OP-9');
+    expect(op.reason).toBe('window_after_horizon');
+    expect(op.message).toMatch(/OP-9/);
+  });
+
   it('returns extract_miss when BOTH the extractor and the interpreter decline', async () => {
     // Wave 16.6 §A: on extractor MISS the route now gives the closed-set Haiku
     // interpreter a second pass. When the interpreter ALSO declines

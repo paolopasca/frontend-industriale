@@ -334,6 +334,8 @@ export function ReplanModal({
         frozen_count?: number;
         // Wave 16.6 §C — the extracted rule slot that produced the plan.
         applied_rules?: Record<string, unknown>;
+        // Wave 17 M2 — per-rule reason rollup for rules the solver skipped.
+        skipped_rules?: Array<{ type: string; target?: string; reason?: string; message: string }>;
         result?: {
           status: string;
           method: string;
@@ -429,6 +431,22 @@ export function ReplanModal({
       } else {
         reschedMsg = `Piano ricalcolato da inizio orizzonte. Stato: ${r.status}.`;
       }
+      // Wave 17 M2 (fresh path = PRODUCTION) — anti-silent-no-op: when the
+      // solver skipped a rule (payload.skipped_rules), the manager MUST see
+      // WHICH and WHY even though the plan solved. Same wording as What-If /
+      // the warm path (shared formatter; messages are BE-provided).
+      const freshSkipped = Array.isArray(payload.skipped_rules) ? payload.skipped_rules : [];
+      const freshSkipMsgs: Message[] = freshSkipped.length > 0
+        ? [{
+            id: `${Date.now()}-fskip`,
+            role: 'assistant',
+            content:
+              `Attenzione — ${freshSkipped.length === 1 ? 'una regola non è stata applicata' : `${freshSkipped.length} regole non sono state applicate`}:\n`
+              + freshSkipped.map((s) => `• ${s.message || formatSkippedRule(s)}`).join('\n'),
+            timestamp: Date.now(),
+            action: 'error',
+          }]
+        : [];
       setMessages(prev => [
         ...prev,
         {
@@ -438,6 +456,7 @@ export function ReplanModal({
           timestamp: Date.now(),
           action: 'reschedule',
         },
+        ...freshSkipMsgs,
       ]);
       if (onResult) {
         onResult({

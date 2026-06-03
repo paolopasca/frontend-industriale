@@ -9,7 +9,7 @@ import { translateWhatIfToConstraint } from '@/server/llm/constraint-translator'
 import { interpretInstruction } from '@/server/llm/instruction-interpreter';
 import { buildFrozenPhases, detectScenarioStartMin, detectScenarioPhraseMatches, type FrozenPhase } from '@/server/llm/frozen-window-builder';
 import { buildSolutionContext, dayLengthMinFromBaseline, type SolutionContext } from '@/lib/solutionContext';
-import { mergeRuleSlots, formatSkippedRule, skipRuleTarget } from '@/lib/appliedRulesLedger';
+import { mergeRuleSlots, buildSkippedRulesRollup } from '@/lib/appliedRulesLedger';
 import { resolveMachineAlias, resolveOrderAlias, resolveShiftAlias } from '@/lib/entityResolver';
 import { resolveTemplate } from '@/lib/api';
 
@@ -293,49 +293,11 @@ function countSolutionPhases(solution: unknown): number {
 // explicit, human-readable rollup so the UI can show "OP-9 ignorato: finestra
 // oltre l'orizzonte" instead.
 //
-// The reason→Italian map, target extraction and message formatting live in
-// @/lib/appliedRulesLedger (formatSkippedRule / skipRuleTarget) as the SINGLE
-// source of truth shared with the ReplanModal reschedule path — both surfaces
-// render identical wording (anti-drift, Wave 17 B-2).
-
-interface SkippedRule {
-  type: string;
-  target?: string;
-  reason: string;
-  message: string;
-}
-
-// A wave7 entry is a "skip" (not an applied/no-effect-but-fine entry) when its
-// type marks it as skipped/failed/passthrough. `_block_noop` is included: the
-// rule was accepted but had ZERO effect (already blocked), which the manager
-// should still see rather than count as applied.
-function isSkippedRuleEntry(type: string): boolean {
-  return (
-    type.endsWith('_skipped')
-    || type.endsWith('_noop')
-    || type.endsWith('_data_layer_passthrough')
-    || type === 'apply_rules_failed'
-  );
-}
-
-function buildSkippedRulesRollup(applyRules: Array<Record<string, unknown>>): SkippedRule[] {
-  const out: SkippedRule[] = [];
-  for (const entry of applyRules) {
-    const type = typeof entry.type === 'string' ? entry.type : '';
-    if (!type || !isSkippedRuleEntry(type)) continue;
-    const target = skipRuleTarget(entry);
-    const rawReason = typeof entry.reason === 'string' && entry.reason.trim()
-      ? entry.reason
-      : 'motivo non specificato';
-    out.push({
-      type,
-      ...(target ? { target } : {}),
-      reason: rawReason,
-      message: formatSkippedRule(entry),
-    });
-  }
-  return out;
-}
+// The rollup builder, reason→Italian map, target extraction and message
+// formatting all live in @/lib/appliedRulesLedger (buildSkippedRulesRollup /
+// formatSkippedRule / skipRuleTarget) as the SINGLE source of truth shared with
+// the reschedule paths — every surface renders identical wording (anti-drift,
+// Wave 17 B-2). isSkippedRuleEntry (which entries count as skips) lives there too.
 
 // Wave 16.6 §E — explicit clock-time start anchor with no enforcing slot.
 // Utterances like "anticipa COM-007 a domani alle 8" or "fai partire COM-001

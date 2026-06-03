@@ -13,7 +13,7 @@ import {
   type FrozenPhase,
 } from '@/server/llm/frozen-window-builder';
 import { resolveTemplate, type ResolveTemplateFrozenPhase } from '@/lib/api';
-import { mergeRuleSlots } from '@/lib/appliedRulesLedger';
+import { mergeRuleSlots, buildSkippedRulesRollup } from '@/lib/appliedRulesLedger';
 
 /**
  * Wave 16.4 C4 / Wave 16.5 B1+B3 — fresh re-solve.
@@ -363,6 +363,13 @@ export const Route = createFileRoute('/api/reschedule-fresh')({
             undefined, // frozenLockMode: backend default 'hard'.
             true, // forceColdStart: a fresh solve must ignore the stale warm-start plan.
           );
+          // Wave 17 M2 (fresh path) — surface a manager-facing rollup of any
+          // rule the SOLVER skipped (wave7.apply_rules) so Ripianifica never
+          // silently drops a constraint. Same shared builder + wording as the
+          // What-If flow (anti-drift). [] when nothing was skipped.
+          const skippedRules = buildSkippedRulesRollup(
+            (solveResult.wave7?.apply_rules ?? []) as Array<Record<string, unknown>>,
+          );
           return new Response(
             JSON.stringify({
               ok: true,
@@ -370,6 +377,8 @@ export const Route = createFileRoute('/api/reschedule-fresh')({
               extracted_pattern_id: extracted.pattern_id,
               cutoff_min: cutoffMin ?? null,
               cutoff_source: cutoffSource,
+              // Wave 17 M2 — per-rule skipped-reason rollup (manager-facing).
+              skipped_rules: skippedRules,
               // Echo the resolved day anchor so the client can render
               // "ricalcolato dal giorno N (giorni precedenti congelati)".
               day_anchor: dayAnchor,

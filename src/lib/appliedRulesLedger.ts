@@ -420,6 +420,56 @@ export function formatSkippedRule(entry: { type?: unknown; reason?: unknown; [k:
   return target ? `${kind} ${target} ignorata: ${reasonIt}.` : `${kind} ignorata: ${reasonIt}.`;
 }
 
+/** A rolled-up skipped-rule entry (type + target + reason + manager message). */
+export interface SkippedRule {
+  type: string;
+  target?: string;
+  reason: string;
+  message: string;
+}
+
+// A backend wave7.apply_rules entry is a "skip" (not an applied/effective entry)
+// when its type marks it skipped/failed/passthrough. `_noop` is included: the
+// rule was accepted but had ZERO effect (e.g. machine already blocked), which
+// the manager should still see rather than count as applied.
+export function isSkippedRuleEntry(type: string): boolean {
+  return (
+    type.endsWith('_skipped')
+    || type.endsWith('_noop')
+    || type.endsWith('_data_layer_passthrough')
+    || type === 'apply_rules_failed'
+  );
+}
+
+/**
+ * Build the manager-facing per-rule reason rollup from a backend
+ * wave7.apply_rules audit log. Shared by the apply-whatif BFF route and the
+ * reschedule-fresh route so both surfaces render IDENTICAL skip wording
+ * (anti-drift, Wave 17 M2/B-2). Returns [] when nothing was skipped.
+ */
+export function buildSkippedRulesRollup(
+  applyRules: Array<Record<string, unknown>>,
+): SkippedRule[] {
+  const out: SkippedRule[] = [];
+  if (!Array.isArray(applyRules)) return out;
+  for (const entry of applyRules) {
+    if (!entry || typeof entry !== 'object') continue;
+    const type = typeof entry.type === 'string' ? entry.type : '';
+    if (!type || !isSkippedRuleEntry(type)) continue;
+    const target = skipRuleTarget(entry);
+    const rawReason = typeof entry.reason === 'string' && entry.reason.trim()
+      ? entry.reason
+      : 'motivo non specificato';
+    out.push({
+      type,
+      ...(target ? { target } : {}),
+      reason: rawReason,
+      message: formatSkippedRule(entry),
+    });
+  }
+  return out;
+}
+
 // ── presentation ────────────────────────────────────────────────────
 // Wave 16.6 (Option A) — a human-readable summary of the cumulative
 // priorRules carried into the next What-If, so the manager SEES which
