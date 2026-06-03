@@ -388,6 +388,12 @@ export const SKIP_REASON_IT: Record<string, string> = {
   unknown_shift_id: 'turno non riconosciuto',
   invalid_extra_operators: 'numero operatori extra non valido',
   no_shift_types_in_dataset: 'nessun tipo di turno definito nel dataset',
+  // Wave 17 #3 — the remaining shift_change_skipped reasons (f_apply_rules.py
+  // 1004-1061), previously fail-open to English for Italian managers.
+  shift_entry_not_dict: 'formato del turno non valido',
+  no_bounds_provided: 'nessun orario di inizio o fine indicato',
+  invalid_range: 'intervallo orario non valido (fine prima o uguale all\'inizio)',
+  end_exceeds_day_length: 'orario di fine oltre la durata della giornata',
 };
 
 export function skipKindLabel(type: string): string {

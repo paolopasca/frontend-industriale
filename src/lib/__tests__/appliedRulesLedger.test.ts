@@ -7,6 +7,7 @@ import {
   clearLedger,
   describeLedgerRules,
   removeConstraintFromLedger,
+  formatSkippedRule,
   type AppliedRule,
 } from '../appliedRulesLedger';
 
@@ -480,5 +481,24 @@ describe('removeConstraintFromLedger — per-chip × (Wave 16.7)', () => {
   it('is a no-op for null slug / empty ledger and never throws', () => {
     expect(() => removeConstraintFromLedger(null, 'unavailable_machines', 'M03')).not.toThrow();
     expect(() => removeConstraintFromLedger('empty-co', 'priority_orders', 'X')).not.toThrow();
+  });
+});
+
+describe('formatSkippedRule — every BE shift_change_skipped reason is Italian (Wave 17 #3)', () => {
+  // These 4 reasons (f_apply_rules.py:1004-1061) previously fell open to the raw
+  // English string in the manager-facing message. Italian managers must read
+  // Italian — assert the message does NOT contain the machine-readable token.
+  it.each([
+    ['shift_entry_not_dict'],
+    ['no_bounds_provided'],
+    ['invalid_range'],
+    ['end_exceeds_day_length'],
+  ])('reason %s renders in Italian, not the raw token', (reason) => {
+    const msg = formatSkippedRule({ type: 'shift_change_skipped', reason });
+    // No raw snake_case token leaks to the manager.
+    expect(msg).not.toContain(reason);
+    // It IS the shift-change kind, in Italian.
+    expect(msg).toMatch(/Cambio turno/);
+    expect(msg.length).toBeGreaterThan('Cambio turno ignorata: '.length);
   });
 });
