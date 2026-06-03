@@ -493,10 +493,19 @@ export function getJobColorHex(orderId: string): string {
 // active TimeConfig from the dashboard. Last-resort fallback (mock /
 // no config available) keeps the legacy 8h-day estimate so the mock
 // dashboard still renders something readable.
+// Wave 17 H2 — `dayLengthMin`/`companyStartHour` parameterise the no-config
+// fallback so it scales to ANY plant (8h/10h/16h/24h…) instead of assuming an
+// 8h day / 06:00 start. The full `tc` path is unchanged; the overrides only
+// matter when `tc` is absent (mock / degraded path) AND a caller can supply the
+// day length without a complete TimeConfig. When neither is given the legacy
+// 8h/06:00 default is preserved exactly (mirrors makespanToWorkingDays and the
+// MachineGantt TimeAxis `?? 480`/`?? 6` fallback).
 export function minutesToTimeStr(
   minutes: number,
   tc?: TimeConfig,
   isoDatetime?: string,
+  dayLengthMin?: number,
+  companyStartHour?: number,
 ): string {
   if (isoDatetime) {
     // "YYYY-MM-DD HH:MM" → "01/04 08:00" (compact, day+time)
@@ -507,10 +516,14 @@ export function minutesToTimeStr(
     }
   }
   if (tc) return formatModelMinute(minutes, tc);
-  // Legacy fallback for mock dataset (8h day starting 06:00).
-  const hours = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  const day = Math.floor(hours / 8) + 1;
-  const hourInDay = (hours % 8) + 6;
+  // Fallback for the mock / no-time_config path. Day length and start hour are
+  // parameterised; the legacy 8h day / 06:00 start are the defaults so behaviour
+  // is identical when nothing is supplied or the override is non-positive.
+  const dayLen = dayLengthMin && dayLengthMin > 0 ? dayLengthMin : 480;
+  const startHour = Number.isFinite(companyStartHour) ? (companyStartHour as number) : 6;
+  const day = Math.floor(minutes / dayLen) + 1;
+  const minInDay = minutes % dayLen;
+  const hourInDay = startHour + Math.floor(minInDay / 60);
+  const mins = minInDay % 60;
   return `G${day} ${String(hourInDay).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
 }
