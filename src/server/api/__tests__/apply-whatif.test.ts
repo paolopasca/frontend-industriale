@@ -309,6 +309,68 @@ describe('POST /api/apply-whatif', () => {
     expect(op.message).toMatch(/OP-9/);
   });
 
+  it('counts a *_block_noop as skipped, not applied — count matches the rollup (Wave 17 F-4)', async () => {
+    // A zero-effect block (machine already blocked by a maintenance window) is
+    // audited as unavailable_machine_block_noop. It must NOT be greened as
+    // "applied": isAppliedEntry and the skipped rollup were non-complementary
+    // (only the rollup excluded _noop), so skipped_rules_count contradicted
+    // skipped_rules.length and the manager was told a no-op block "applied".
+    anthropicCreate.mockResolvedValueOnce(
+      fakeAnthropicReply({
+        type: 'block_machine',
+        rules: { unavailable_machines: { 'M-3': [{ start_min: 840, end_min: 1080 }] } },
+        rationale: 'Fermo M-3 (già coperto).',
+        confidence: 'high',
+        warnings: [],
+      }),
+    );
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL',
+          method: 'cp-sat',
+          solution: {
+            'COM-001': { fasi: [{ macchina: 'M-1', operatore: 'OP-1', start_min: 0, end_min: 60 }] },
+          },
+          kpis: { makespan_min: 3000, on_time_rate: 0.8 },
+          objective_value: 3000,
+          warnings: [],
+          cost_usd: 0,
+          wave7: {
+            locked_count: 0,
+            apply_rules: [
+              // The ONLY rule the manager issued had ZERO effect.
+              {
+                type: 'unavailable_machine_block_noop',
+                machine_id: 'M-3',
+                reason: 'already_blocked_by_window_or_maintenance',
+              },
+            ],
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await invokeRoute(makeRequest(baseBody, '10.0.0.44'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+    const solved = chunks.find((c) => c.event === 'solved')!.data as {
+      modified_count: number;
+      skipped_rules_count: number;
+      skipped_rules: Array<{ type: string; reason: string; message: string }>;
+    };
+
+    // The noop is NOT applied…
+    expect(solved.modified_count).toBe(0);
+    // …it IS a skip, and the count MUST equal the rollup length (no contradiction).
+    expect(solved.skipped_rules_count).toBe(1);
+    expect(solved.skipped_rules).toHaveLength(1);
+    expect(solved.skipped_rules_count).toBe(solved.skipped_rules.length);
+    expect(solved.skipped_rules[0].type).toBe('unavailable_machine_block_noop');
+  });
+
   it('unsupported scenario: closes after aborted_unsupported without calling backend', async () => {
     anthropicCreate.mockResolvedValueOnce(
       fakeAnthropicReply({

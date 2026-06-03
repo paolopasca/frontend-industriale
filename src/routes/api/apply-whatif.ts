@@ -9,7 +9,7 @@ import { translateWhatIfToConstraint } from '@/server/llm/constraint-translator'
 import { interpretInstruction } from '@/server/llm/instruction-interpreter';
 import { buildFrozenPhases, detectScenarioStartMin, detectScenarioPhraseMatches, type FrozenPhase } from '@/server/llm/frozen-window-builder';
 import { buildSolutionContext, dayLengthMinFromBaseline, type SolutionContext } from '@/lib/solutionContext';
-import { mergeRuleSlots, buildSkippedRulesRollup } from '@/lib/appliedRulesLedger';
+import { mergeRuleSlots, buildSkippedRulesRollup, isSkippedRuleEntry } from '@/lib/appliedRulesLedger';
 import { resolveMachineAlias, resolveOrderAlias, resolveShiftAlias } from '@/lib/entityResolver';
 import { resolveTemplate } from '@/lib/api';
 
@@ -1242,13 +1242,18 @@ export const Route = createFileRoute('/api/apply-whatif')({
               // would inflate the count. We split into applied vs
               // skipped/passthrough so the UI can render either total.
               const applyRules = wave7Env?.apply_rules ?? [];
+              // Wave 17 F-4 — "applied" is the EXACT complement of "skipped" over
+              // the apply_rules set: every non-empty-typed entry that the rollup
+              // does NOT classify as a skip. Defining it via isSkippedRuleEntry
+              // (the shared classifier) guarantees the count and the rollup array
+              // can never diverge. Previously the two lists were maintained
+              // separately and isAppliedEntry missed `_noop`, so a zero-effect
+              // *_block_noop was BOTH counted as applied AND listed as skipped —
+              // "0 ignorate" contradicting the skip shown, greening a no-op.
               const isAppliedEntry = (entry: Record<string, unknown>): boolean => {
                 const t = typeof entry.type === 'string' ? entry.type : '';
                 if (t === '') return false;
-                if (t.endsWith('_skipped')) return false;
-                if (t === 'apply_rules_failed') return false;
-                if (t.endsWith('_data_layer_passthrough')) return false;
-                return true;
+                return !isSkippedRuleEntry(t);
               };
               const modifiedCount = applyRules.filter(isAppliedEntry).length;
               const skippedRulesCount = applyRules.length - modifiedCount;
