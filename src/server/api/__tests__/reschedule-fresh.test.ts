@@ -227,6 +227,70 @@ describe('POST /api/reschedule-fresh', () => {
     expect(op.message).toMatch(/OP-9/);
   });
 
+  it('discloses a carried-forward priorRule the solver no longer binds (Wave 17 F-5 — extra_capacity on non-dual-resource)', async () => {
+    // The devil's exact F-5 scenario: a cumulative priorRule (extra_capacity)
+    // is folded in but no longer binds on this dataset (FJSP / non-dual-resource)
+    // → solver audits extra_capacity_skipped. It must be DISCLOSED, not silently
+    // dropped while the manager sees a green "Piano ricalcolato".
+    vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
+      result: 'hit',
+      confidence: 0.9,
+      payload: { unavailable_machines: { 'M-1': [{ start_min: 0, end_min: 240 }] } },
+      rationale: 'macchina rotta',
+      pattern_id: 'machine_unavailability_v1',
+      confirmation_message: null,
+    });
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL',
+          method: 'deterministic-template',
+          solution: { 'COM-001': { fasi: [] } },
+          kpis: { makespan_min: 1500 },
+          objective_value: 1500,
+          warnings: [],
+          cost_usd: 0,
+          wave7: {
+            locked_count: 0,
+            apply_rules: [
+              { type: 'unavailable_machine_block', machine_id: 'M-1', count: 1 },
+              { type: 'extra_capacity_skipped', reason: 'dataset_not_dual_resource' },
+            ],
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await invokeRoute(
+      makeRequest(
+        {
+          slug: 'acme',
+          message: 'M-1 e rotta',
+          // The non-binding rule carried forward from an earlier What-If.
+          priorRules: { extra_capacity: { 'turno-1': 2 } },
+        },
+        'ip-fresh-f5',
+      ),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    // The merged rules DID carry extra_capacity to the solver…
+    const sentRules = JSON.parse(
+      (fetchMock.mock.calls.find(([u]) => typeof u === 'string' && u.includes('/api/public/solve-template'))![1] as RequestInit).body as string,
+    ).rules;
+    expect(sentRules.extra_capacity).toEqual({ 'turno-1': 2 });
+    // …and because the solver skipped it, the disclosure is surfaced (not silent).
+    expect(Array.isArray(body.skipped_rules)).toBe(true);
+    const cap = body.skipped_rules.find((r: { type: string }) => r.type === 'extra_capacity_skipped');
+    expect(cap).toBeTruthy();
+    expect(cap.reason).toBe('dataset_not_dual_resource');
+    expect(cap.message).toMatch(/capacità extra|doppia risorsa/i);
+    expect(cap.message).not.toMatch(/frozen_phase_lock/);
+  });
+
   it('returns extract_miss when BOTH the extractor and the interpreter decline', async () => {
     // Wave 16.6 §A: on extractor MISS the route now gives the closed-set Haiku
     // interpreter a second pass. When the interpreter ALSO declines
