@@ -225,6 +225,90 @@ describe('POST /api/apply-whatif', () => {
     expect(sentBody.rules.unavailable_machines).toBeDefined();
   });
 
+  it('surfaces a per-rule reason rollup for solver-skipped rules — never a silent count (Wave 17 M2)', async () => {
+    // The manager blocks a VALID machine (M-3) and also requests extra capacity
+    // that the SOLVER skips (the dataset is not dual-resource). M99-style unknown
+    // targets are already caught at the BFF translator (aborted_unsupported); the
+    // gap M2 fixes is the SOLVER-layer skip that still returns a green "solved"
+    // with a bare count and a HARDCODED wrong reason in the UI. The BFF must
+    // surface the real per-rule reason rollup from the wave7 audit.
+    anthropicCreate.mockResolvedValueOnce(
+      fakeAnthropicReply({
+        type: 'block_machine',
+        rules: {
+          unavailable_machines: { 'M-3': [{ start_min: 840, end_min: 1080 }] },
+        },
+        rationale: 'Fermo M-3.',
+        confidence: 'high',
+        warnings: [],
+      }),
+    );
+
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL',
+          method: 'cp-sat',
+          solution: {
+            'COM-001': { fasi: [{ macchina: 'M-1', operatore: 'OP-1', start_min: 0, end_min: 60 }] },
+          },
+          kpis: { makespan_min: 3000, on_time_rate: 0.8 },
+          objective_value: 3000,
+          warnings: [],
+          cost_usd: 0,
+          // Backend Wave 7 audit envelope — the contract source for M2. One rule
+          // applied, two skipped at the SOLVER for distinct machine-readable
+          // reasons (NOT the hardcoded conflict_with_frozen_phase_lock).
+          wave7: {
+            locked_count: 0,
+            apply_rules: [
+              { type: 'unavailable_machine_block', machine_id: 'M-3', count: 1 },
+              {
+                type: 'extra_capacity_skipped',
+                reason: 'dataset_not_dual_resource',
+              },
+              {
+                type: 'operator_unavailable_skipped',
+                operator_id: 'OP-9',
+                reason: 'window_after_horizon',
+              },
+            ],
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await invokeRoute(makeRequest(baseBody, '10.0.0.99'));
+    expect(res.status).toBe(200);
+    const chunks = parseSse(await streamToString(res.body!));
+    const solved = chunks.find((c) => c.event === 'solved')!.data as {
+      modified_count: number;
+      skipped_rules_count: number;
+      skipped_rules: Array<{ type: string; target?: string; reason: string; message: string }>;
+    };
+
+    // Counts still present (backward compat): 1 applied, 2 skipped.
+    expect(solved.modified_count).toBe(1);
+    expect(solved.skipped_rules_count).toBe(2);
+
+    // NEW: the per-rule rollup with the REAL reasons (not a hardcoded string).
+    expect(Array.isArray(solved.skipped_rules)).toBe(true);
+    expect(solved.skipped_rules).toHaveLength(2);
+
+    const cap = solved.skipped_rules.find((r) => r.type === 'extra_capacity_skipped')!;
+    expect(cap.reason).toBe('dataset_not_dual_resource');
+    expect(cap.message.length).toBeGreaterThan(5);
+    // The message must NOT be the old hardcoded frozen-lock string.
+    expect(cap.message).not.toMatch(/frozen_phase_lock/);
+
+    const op = solved.skipped_rules.find((r) => r.type === 'operator_unavailable_skipped')!;
+    expect(op.target).toBe('OP-9');
+    expect(op.reason).toBe('window_after_horizon');
+    expect(op.message).toMatch(/OP-9/);
+  });
+
   it('unsupported scenario: closes after aborted_unsupported without calling backend', async () => {
     anthropicCreate.mockResolvedValueOnce(
       fakeAnthropicReply({

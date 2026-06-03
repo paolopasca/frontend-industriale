@@ -130,6 +130,46 @@ describe('SolutionDiff — KPI merge across baseline (dashboard) and candidate (
     expect(cells[2].textContent).toContain('0,98');
   });
 
+  it('renders the per-rule skipped-reason rollup instead of a hardcoded reason (Wave 17 M2)', () => {
+    const skippedRules = [
+      {
+        type: 'extra_capacity_skipped',
+        reason: 'dataset_not_dual_resource',
+        message: 'Capacità extra ignorata: dataset senza doppia risorsa (capacità extra non applicabile).',
+      },
+      {
+        type: 'operator_unavailable_skipped',
+        target: 'OP-9',
+        reason: 'window_after_horizon',
+        message: "Indisponibilità operatore OP-9 ignorata: finestra oltre l'orizzonte di pianificazione.",
+      },
+    ];
+    render(
+      <SolutionDiff
+        baseline={{ solution: {}, kpis: { makespan_min: 1500 } }}
+        candidate={{
+          solution: {},
+          kpis: { makespan_min: 1400 } as unknown as Record<string, number>,
+          warnings: [],
+        }}
+        changeType="machine_unavailability"
+        changeRationale=""
+        onAccept={() => {}}
+        onDiscard={() => {}}
+        modifiedCount={1}
+        skippedRulesCount={2}
+        skippedRules={skippedRules}
+      />,
+    );
+    const html = document.body.innerHTML;
+    // The real per-rule messages must be visible to the manager…
+    expect(html).toContain('dataset senza doppia risorsa');
+    expect(html).toContain('OP-9');
+    expect(html).toContain("oltre l'orizzonte");
+    // …and the old hardcoded wrong reason must NOT appear.
+    expect(html).not.toContain('conflict_with_frozen_phase_lock');
+  });
+
   it('does not regress when both sides use the same shape', () => {
     const sameShape = {
       makespan_min: 1500,

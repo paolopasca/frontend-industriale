@@ -279,6 +279,102 @@ function countSolutionPhases(solution: unknown): number {
   return total;
 }
 
+// Wave 17 M2 — manager-facing per-rule reason rollup.
+//
+// The backend's wave7.apply_rules log carries typed audit entries
+// (f_apply_rules.py): `{type: "<rule>_block"|"<rule>_skipped"|..., reason?,
+// machine_id?|operator_id?|job_id?|shift_id?}`. A rule can pass the BFF
+// closed-set translator gate yet still be SKIPPED at the solver layer (e.g.
+// extra_capacity on a non-dual-resource dataset, an operator window after the
+// horizon, an already-blocked machine). Today the UI only sees a bare
+// `skipped_rules_count` and renders a HARDCODED "conflict_with_frozen_phase_lock"
+// reason — wrong for every other skip class, and a near-silent no-op (the
+// manager can't tell WHICH constraint was dropped or WHY). This builds an
+// explicit, human-readable rollup so the UI can show "OP-9 ignorato: finestra
+// oltre l'orizzonte" instead.
+
+// Machine-readable reason → Italian manager-facing phrase. Fail-OPEN: an
+// unmapped reason falls back to the raw reason string (never hidden), so a new
+// backend reason still surfaces something truthful rather than nothing.
+const SKIP_REASON_IT: Record<string, string> = {
+  'machine_id not in current dataset': 'macchina non presente nel piano corrente',
+  already_blocked_by_window_or_maintenance: 'già bloccata da una finestra o manutenzione esistente',
+  dual_resource_disabled: 'gestione operatori non attiva su questo dataset',
+  time_config_day_length_missing: 'durata giornata non configurata',
+  missing_or_sentinel_operator_id: 'operatore non identificato',
+  operator_id_not_in_dataset: 'operatore non presente nel piano corrente',
+  invalid_time_window: 'finestra oraria non valida',
+  missing_date: 'data mancante',
+  date_not_parseable_or_start_date_missing: 'data non interpretabile',
+  window_after_horizon: "finestra oltre l'orizzonte di pianificazione",
+  window_clipped_to_empty: 'finestra ridotta a vuoto',
+  overlaps_already_applied_window_same_operator: 'finestra già coperta per lo stesso operatore',
+  'job_id not in current dataset': 'commessa non presente nel piano corrente',
+  dataset_not_dual_resource: 'dataset senza doppia risorsa (capacità extra non applicabile)',
+  missing_shift_id: 'turno non specificato',
+  unknown_shift_id: 'turno non riconosciuto',
+  invalid_extra_operators: 'numero operatori extra non valido',
+  no_shift_types_in_dataset: 'nessun tipo di turno definito nel dataset',
+};
+
+interface SkippedRule {
+  type: string;
+  target?: string;
+  reason: string;
+  message: string;
+}
+
+// A wave7 entry is a "skip" (not an applied/no-effect-but-fine entry) when its
+// type marks it as skipped/failed/passthrough. `_block_noop` is included: the
+// rule was accepted but had ZERO effect (already blocked), which the manager
+// should still see rather than count as applied.
+function isSkippedRuleEntry(type: string): boolean {
+  return (
+    type.endsWith('_skipped')
+    || type.endsWith('_noop')
+    || type.endsWith('_data_layer_passthrough')
+    || type === 'apply_rules_failed'
+  );
+}
+
+function skipTargetOf(entry: Record<string, unknown>): string | undefined {
+  for (const key of ['machine_id', 'operator_id', 'job_id', 'shift_id', 'id'] as const) {
+    const v = entry[key];
+    if (typeof v === 'string' && v.trim()) return v;
+  }
+  return undefined;
+}
+
+// Map a rule `type` to the Italian noun for the message prefix.
+function skipKindLabel(type: string): string {
+  if (type.startsWith('unavailable_machine')) return 'Blocco macchina';
+  if (type.startsWith('operator_unavailable')) return 'Indisponibilità operatore';
+  if (type.startsWith('priority_order')) return 'Priorità commessa';
+  if (type.startsWith('deadline_change')) return 'Cambio scadenza';
+  if (type.startsWith('extra_capacity')) return 'Capacità extra';
+  if (type.startsWith('shift_change')) return 'Cambio turno';
+  return 'Regola';
+}
+
+function buildSkippedRulesRollup(applyRules: Array<Record<string, unknown>>): SkippedRule[] {
+  const out: SkippedRule[] = [];
+  for (const entry of applyRules) {
+    const type = typeof entry.type === 'string' ? entry.type : '';
+    if (!type || !isSkippedRuleEntry(type)) continue;
+    const target = skipTargetOf(entry);
+    const rawReason = typeof entry.reason === 'string' && entry.reason.trim()
+      ? entry.reason
+      : 'motivo non specificato';
+    const reasonIt = SKIP_REASON_IT[rawReason] ?? rawReason;
+    const kind = skipKindLabel(type);
+    const message = target
+      ? `${kind} ${target} ignorata: ${reasonIt}.`
+      : `${kind} ignorata: ${reasonIt}.`;
+    out.push({ type, ...(target ? { target } : {}), reason: rawReason, message });
+  }
+  return out;
+}
+
 // Wave 16.6 §E — explicit clock-time start anchor with no enforcing slot.
 // Utterances like "anticipa COM-007 a domani alle 8" or "fai partire COM-001
 // il giorno 2 dalle 14" carry BOTH a day anchor (handled by the frozen-window
@@ -1232,6 +1328,12 @@ export const Route = createFileRoute('/api/apply-whatif')({
               };
               const modifiedCount = applyRules.filter(isAppliedEntry).length;
               const skippedRulesCount = applyRules.length - modifiedCount;
+              // Wave 17 M2 — per-rule reason rollup (manager-facing). Surfaces
+              // the REAL reason each rule was skipped at the solver layer instead
+              // of a bare count + a hardcoded "conflict_with_frozen_phase_lock"
+              // string in the UI. Anti-silent-no-op: a rule the solver dropped is
+              // now visible WITH its reason, never folded into a green "applied".
+              const skippedRules = buildSkippedRulesRollup(applyRules);
               write('solved', {
                 newSolution: solveResult.solution ?? {},
                 newKpis,
@@ -1249,6 +1351,8 @@ export const Route = createFileRoute('/api/apply-whatif')({
                 locked_count: lockedCount,
                 modified_count: modifiedCount,
                 skipped_rules_count: skippedRulesCount,
+                // Wave 17 M2 — per-rule reason rollup; [] when nothing skipped.
+                skipped_rules: skippedRules,
                 dataset_overrides_summary: datasetOverridesSummary,
                 locked_phases: lockedPhasesOut,
                 // Wave 16.6 §C — echo the NEW scenario's rule slot (pre-merge,

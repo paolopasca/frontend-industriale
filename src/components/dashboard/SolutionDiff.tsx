@@ -454,6 +454,14 @@ interface SolutionDiffProps {
    */
   skippedRulesCount?: number;
   /**
+   * Wave 17 M2 — per-rule reason rollup (manager-facing). Each entry explains
+   * WHY one rule was skipped at the solver layer. When present, the "Regole
+   * applicate" section lists these reasons instead of just a bare count, and
+   * the machine-exclusion badge uses the real reason rather than a hardcoded
+   * "conflict_with_frozen_phase_lock" string (anti-silent-no-op).
+   */
+  skippedRules?: Array<{ type: string; target?: string; reason: string; message: string }>;
+  /**
    * Total phases identified as falling inside the frozen window.
    * `lockedCount` may be lower if the backend could not honour them all.
    * Drives the "Nessun lock applicato" warning: shown when frozenCount > 0
@@ -549,6 +557,7 @@ export function SolutionDiff({
   lockedCount,
   modifiedCount,
   skippedRulesCount,
+  skippedRules,
   frozenCount,
   intentId,
   strategy,
@@ -913,9 +922,13 @@ export function SolutionDiff({
                   data-offending-count={machineExclusionStatus.count}
                   aria-label={`${targetMachineId}: vincolo NON applicato (${machineExclusionStatus.count} fasi post-cutoff)`}
                   title={
-                    typeof skippedRulesCount === 'number' && skippedRulesCount > 0
-                      ? `machine_unavailability rule: skipped, reason=conflict_with_frozen_phase_lock (${skippedRulesCount} regole ignorate dal solver)`
-                      : `${machineExclusionStatus.count} fasi assegnate a ${targetMachineId} dopo il cutoff`
+                    // Wave 17 M2 — prefer the REAL per-rule reason for this
+                    // machine over the old hardcoded "conflict_with_frozen_phase_lock"
+                    // string (which lied whenever the actual reason differed).
+                    skippedRules?.find((r) => r.target === targetMachineId)?.message
+                      ?? (typeof skippedRulesCount === 'number' && skippedRulesCount > 0
+                        ? `${skippedRulesCount} regole ignorate dal solver — vedi i dettagli sotto`
+                        : `${machineExclusionStatus.count} fasi assegnate a ${targetMachineId} dopo il cutoff`)
                   }
                 >
                   <AlertTriangle className="h-3.5 w-3.5" aria-hidden />
@@ -1055,6 +1068,29 @@ export function SolutionDiff({
                 </>
               )}
             </div>
+            {/* Wave 17 M2 — per-rule reason rollup. Lists WHY each rule was
+                skipped at the solver layer so the manager sees the real reason
+                (e.g. "OP-9 ignorato: finestra oltre l'orizzonte") instead of a
+                bare count. Anti-silent-no-op: a dropped rule is never invisible. */}
+            {Array.isArray(skippedRules) && skippedRules.length > 0 && (
+              <ul
+                className="mt-1.5 space-y-1 text-xs text-amber-800 dark:text-amber-300"
+                data-testid="solution-diff-skipped-rules-list"
+              >
+                {skippedRules.map((r, i) => (
+                  <li
+                    key={`${r.type}-${r.target ?? ''}-${i}`}
+                    className="leading-snug flex items-start gap-1.5"
+                    data-testid={`solution-diff-skipped-rule-row-${i}`}
+                    data-skip-type={r.type}
+                    data-skip-reason={r.reason}
+                  >
+                    <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" aria-hidden />
+                    <span>{r.message}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
 
