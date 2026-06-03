@@ -433,6 +433,11 @@ export interface ChatRescheduleResponse {
   disruption?: { intent: string; target_id?: string; raw_message: string };
   warm_start?: Record<string, unknown>;
   trace_id?: string;
+  // Wave 17 H1/TD-022 — BE reschedule audit arrays (contract f654116). The
+  // manager-facing skipped_rules MUST be surfaced (anti-silent-no-op).
+  applied_rules?: Array<Record<string, unknown>>;
+  skipped_rules?: Array<{ type: string; reason?: string; [k: string]: unknown }>;
+  cold_restart?: boolean;
 }
 
 // /api/public/chat-reschedule was removed. The replacement is the
@@ -444,6 +449,12 @@ export interface RescheduleParams {
   sessionId?: string | null;
   runId?: number | null;
   elapsedMin?: number;
+  // Wave 17 H1/TD-022 — cumulative applied-rules ledger (mergeLedgerRules),
+  // folded into a single solver-`rules` payload. The BE merges this on top of
+  // the run's persisted rules (request wins on key conflict) so Ripianifica
+  // re-applies every previously-accepted What-If constraint. Omitted/empty →
+  // legacy behaviour (BE uses only the run's own rules).
+  rules?: Record<string, unknown>;
 }
 
 export async function chatReschedule(
@@ -477,6 +488,9 @@ export async function chatReschedule(
     event_description: params.message,
   };
   if (hasValidRun) body.run_id = params.runId;
+  // Wave 17 H1/TD-022 — send the cumulative rules only when non-empty so the
+  // legacy wire shape is unchanged for callers without a ledger.
+  if (params.rules && Object.keys(params.rules).length > 0) body.rules = params.rules;
   if (params.elapsedMin != null) body.elapsed_min = params.elapsedMin;
 
   try {
@@ -487,13 +501,19 @@ export async function chatReschedule(
     });
     const err = raw.error as string | undefined;
     const status = raw.status as string | undefined;
+    // Wave 17 H1/TD-022 — INFEASIBLE is a failure even without an `error` field:
+    // the BE returns an empty solution + warnings and persists status='error'.
+    // Treat it as 'infeasible' so the caller never shows a green "Piano ricalcolato".
+    const isInfeasible = status === 'INFEASIBLE';
     const action: ChatRescheduleResponse['action'] = err
-      ? (status === 'INFEASIBLE' ? 'infeasible' : 'error')
-      : 'reschedule';
+      ? (isInfeasible ? 'infeasible' : 'error')
+      : (isInfeasible ? 'infeasible' : 'reschedule');
     return {
       reply: err
         ? `Errore: ${err}`
-        : `Piano ricalcolato. Stato: ${status ?? 'OK'}.`,
+        : isInfeasible
+          ? 'Con questo vincolo il piano non ha soluzione (INFEASIBLE).'
+          : `Piano ricalcolato. Stato: ${status ?? 'OK'}.`,
       action,
       status,
       solution: raw.solution as Record<string, unknown> | undefined,
@@ -501,12 +521,22 @@ export async function chatReschedule(
       objective_value: raw.objective_value as number | undefined,
       warnings: raw.warnings as string[] | undefined,
       cost_usd: (raw.cost_usd as number | undefined) ?? 0,
+      rules_used: raw.rules_used as Record<string, unknown> | undefined,
       time_config: raw.time_config as Record<string, unknown> | undefined,
       maintenance: raw.maintenance as Record<string, unknown> | undefined,
       operator_config: raw.operator_config as Record<string, unknown> | undefined,
       shift_types: raw.shift_types as Record<string, unknown> | undefined,
       cp_sat_stats: raw.cp_sat_stats as Record<string, unknown> | undefined,
       warm_start: raw.warm_start as Record<string, unknown> | undefined,
+      // Wave 17 — surface the BE audit arrays so the UI can show what was
+      // applied AND what was skipped (anti-silent-no-op).
+      applied_rules: Array.isArray(raw.applied_rules)
+        ? (raw.applied_rules as Array<Record<string, unknown>>)
+        : undefined,
+      skipped_rules: Array.isArray(raw.skipped_rules)
+        ? (raw.skipped_rules as Array<{ type: string; reason?: string }>)
+        : undefined,
+      cold_restart: typeof raw.cold_restart === 'boolean' ? raw.cold_restart : undefined,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -515,9 +545,9 @@ export async function chatReschedule(
     if (msg.includes('Reschedule non disponibile') || msg.includes('501')) {
       return {
         reply:
-          'Reschedule non disponibile per questa strategia (la run è di tipo "compose": il backend '
-          + 'non ha salvato il solver). Avvia una nuova ottimizzazione con strategia codegen per '
-          + 'abilitare la ripianificazione, oppure rilancia un solve completo from-scratch.',
+          'Reschedule non disponibile per questa run (creata prima del supporto alla ripianificazione, '
+          + 'oppure terminata in errore prima del solve, quindi senza piano salvato). '
+          + 'Rilancia un solve completo from-scratch per abilitare la ripianificazione.',
         action: 'error',
         cost_usd: 0,
       };

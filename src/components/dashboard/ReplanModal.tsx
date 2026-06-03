@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { chatReschedule, autoLogin, type ChatRescheduleResponse } from '@/lib/api';
 import type { SolverMethod } from '@/components/onboarding/SolverMethodSelect';
 import { getSlugScoped, setSlugScoped, migrateLegacyKeys } from '@/lib/storage';
-import { mergeLedgerRules } from '@/lib/appliedRulesLedger';
+import { mergeLedgerRules, formatSkippedRule } from '@/lib/appliedRulesLedger';
 
 interface Message {
   id: string;
@@ -189,10 +189,17 @@ export function ReplanModal({
       const sessionId = getSlugScoped(SESSION_KEY, companySlug);
       const runIdRaw = getSlugScoped(RUN_KEY, companySlug);
       const runId = runIdRaw ? Number(runIdRaw) : null;
+      // Wave 17 H1/TD-022 — send the cumulative applied-rules ledger so the BE
+      // re-applies every previously-accepted What-If constraint on top of the
+      // run's own rules (request wins on conflict). Same source as the
+      // fresh-solve path (runFreshReschedule). Empty ledger → field omitted by
+      // chatReschedule so the legacy wire shape is unchanged.
+      const priorRules = mergeLedgerRules(companySlug);
       const res = await chatReschedule({
         message: text,
         sessionId,
         runId: Number.isFinite(runId) && (runId ?? 0) > 0 ? runId : null,
+        rules: priorRules,
       });
       // Wave 16.4 C4 / Wave 16.5 B2 — when the warm-start path cannot find
       // the session/run, attach a fresh-fallback hint so the user can opt
@@ -217,7 +224,23 @@ export function ReplanModal({
         action: res.action,
         freshFallbackText: isSessionNotFound ? text : undefined,
       };
-      setMessages(prev => [...prev, assistantMsg]);
+      // Wave 17 H1/TD-022 — anti-silent-no-op: when the BE reports rules it
+      // could NOT apply (skipped_rules), the manager MUST see WHICH and WHY,
+      // never a clean green "Piano ricalcolato". Append a distinct line per
+      // skipped rule using the shared formatter (same wording as What-If).
+      const skipped = Array.isArray(res.skipped_rules) ? res.skipped_rules : [];
+      const skipMsgs: Message[] = skipped.length > 0
+        ? [{
+            id: `${Date.now()}-skip`,
+            role: 'assistant',
+            content:
+              `Attenzione — ${skipped.length === 1 ? 'una regola non è stata applicata' : `${skipped.length} regole non sono state applicate`}:\n`
+              + skipped.map((r) => `• ${formatSkippedRule(r)}`).join('\n'),
+            timestamp: Date.now(),
+            action: 'error',
+          }]
+        : [];
+      setMessages(prev => [...prev, assistantMsg, ...skipMsgs]);
 
       if (res.action === 'reschedule' && onResult) {
         // Shape matches /api/public/solve-template so adaptResult works.

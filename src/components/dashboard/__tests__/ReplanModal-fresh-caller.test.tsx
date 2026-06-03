@@ -393,3 +393,136 @@ describe('ReplanModal fresh-solve primary path (real caller shape)', () => {
     expect(screen.queryByText(/giorni precedenti congelati/i)).not.toBeInTheDocument();
   });
 });
+
+// Wave 17 B-2 — the WARM-START reschedule path (chatReschedule →
+// POST /api/analysis/{sid}/reschedule). Driven by solverMethod='codegen-pipeline'
+// (usesFreshSolve=false). This is the path the BE's analysis_reschedule contract
+// targets: the cumulative ledger must be sent as `rules`, and the response's
+// skipped_rules must be SHOWN to the manager (anti-silent-no-op), not dropped.
+describe('ReplanModal warm-start path (chatReschedule real caller shape)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    // chatReschedule needs a session or a valid run; seed the slug-scoped session.
+    window.localStorage.setItem('daino:acme:daino_last_session_id', 'sess-1');
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    window.localStorage.clear();
+  });
+
+  // Route the fetch mock by URL: /api/auth/login (autoLogin) vs the reschedule.
+  function makeFetchMock(rescheduleBody: Record<string, unknown>) {
+    return vi.fn().mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.includes('/api/auth/login')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: 'tok' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify(rescheduleBody), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    });
+  }
+
+  it('sends the cumulative ledger as `rules` in the POST to /api/analysis/{sid}/reschedule', async () => {
+    clearLedger('acme');
+    appendRule('acme', {
+      source: 'whatif',
+      rules: { unavailable_machines: { 'M-2': [{ start_min: 0, end_min: 480 }] } },
+    });
+    appendRule('acme', { source: 'whatif', rules: { priority_orders: ['COM-007'] } });
+
+    const fetchMock = makeFetchMock({
+      status: 'OPTIMAL',
+      solution: { 'COM-001': { fasi: [] } },
+      kpis: { makespan_min: 1400 },
+      objective_value: 1400,
+      warnings: [],
+      applied_rules: [{ type: 'priority_orders_applied' }],
+      skipped_rules: [],
+      cost_usd: 0,
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal
+        open
+        onClose={() => {}}
+        companySlug="acme"
+        originalSolution={BASELINE}
+        solverMethod="codegen-pipeline"
+        onResult={() => {}}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'M-1 è rotta');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    await waitFor(() => {
+      const rescheduleCall = fetchMock.mock.calls.find(
+        ([u]) => typeof u === 'string' && u.includes('/api/analysis/sess-1/reschedule'),
+      );
+      expect(rescheduleCall, 'expected POST to the session reschedule endpoint').toBeTruthy();
+    });
+    const rescheduleCall = fetchMock.mock.calls.find(
+      ([u]) => typeof u === 'string' && u.includes('/api/analysis/sess-1/reschedule'),
+    )!;
+    const body = JSON.parse((rescheduleCall[1] as RequestInit).body as string);
+    // The cumulative ledger, folded, is sent as `rules` (BE merges it).
+    expect(body.rules).toBeTruthy();
+    expect(body.rules.unavailable_machines['M-2']).toEqual([{ start_min: 0, end_min: 480 }]);
+    expect(body.rules.priority_orders).toEqual(['COM-007']);
+    clearLedger('acme');
+  });
+
+  it('shows the skipped_rules reasons to the manager (anti-silent-no-op)', async () => {
+    clearLedger('acme');
+    const fetchMock = makeFetchMock({
+      status: 'OPTIMAL',
+      solution: { 'COM-001': { fasi: [] } },
+      kpis: { makespan_min: 1400 },
+      objective_value: 1400,
+      warnings: [],
+      applied_rules: [{ type: 'unavailable_machine_block', machine_id: 'M-1' }],
+      // A rule the BE could NOT bind — must be surfaced, not swallowed.
+      skipped_rules: [
+        { type: 'priority_order_skipped', reason: 'job_id not in current dataset' },
+      ],
+      cost_usd: 0,
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal
+        open
+        onClose={() => {}}
+        companySlug="acme"
+        originalSolution={BASELINE}
+        solverMethod="codegen-pipeline"
+        onResult={() => {}}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'priorità COM-999');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    // The manager must SEE that a rule was ignored AND the specific reason —
+    // not a clean green "Piano ricalcolato" (anti-silent-no-op). Match the
+    // skip line specifically (the reason gloss), which the user echo cannot
+    // collide with.
+    await waitFor(() =>
+      expect(
+        screen.getByText(/ignorata: commessa non presente nel piano/i),
+      ).toBeInTheDocument(),
+    );
+  });
+});

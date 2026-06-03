@@ -9,7 +9,7 @@ import { translateWhatIfToConstraint } from '@/server/llm/constraint-translator'
 import { interpretInstruction } from '@/server/llm/instruction-interpreter';
 import { buildFrozenPhases, detectScenarioStartMin, detectScenarioPhraseMatches, type FrozenPhase } from '@/server/llm/frozen-window-builder';
 import { buildSolutionContext, dayLengthMinFromBaseline, type SolutionContext } from '@/lib/solutionContext';
-import { mergeRuleSlots } from '@/lib/appliedRulesLedger';
+import { mergeRuleSlots, formatSkippedRule, skipRuleTarget } from '@/lib/appliedRulesLedger';
 import { resolveMachineAlias, resolveOrderAlias, resolveShiftAlias } from '@/lib/entityResolver';
 import { resolveTemplate } from '@/lib/api';
 
@@ -292,30 +292,11 @@ function countSolutionPhases(solution: unknown): number {
 // manager can't tell WHICH constraint was dropped or WHY). This builds an
 // explicit, human-readable rollup so the UI can show "OP-9 ignorato: finestra
 // oltre l'orizzonte" instead.
-
-// Machine-readable reason → Italian manager-facing phrase. Fail-OPEN: an
-// unmapped reason falls back to the raw reason string (never hidden), so a new
-// backend reason still surfaces something truthful rather than nothing.
-const SKIP_REASON_IT: Record<string, string> = {
-  'machine_id not in current dataset': 'macchina non presente nel piano corrente',
-  already_blocked_by_window_or_maintenance: 'già bloccata da una finestra o manutenzione esistente',
-  dual_resource_disabled: 'gestione operatori non attiva su questo dataset',
-  time_config_day_length_missing: 'durata giornata non configurata',
-  missing_or_sentinel_operator_id: 'operatore non identificato',
-  operator_id_not_in_dataset: 'operatore non presente nel piano corrente',
-  invalid_time_window: 'finestra oraria non valida',
-  missing_date: 'data mancante',
-  date_not_parseable_or_start_date_missing: 'data non interpretabile',
-  window_after_horizon: "finestra oltre l'orizzonte di pianificazione",
-  window_clipped_to_empty: 'finestra ridotta a vuoto',
-  overlaps_already_applied_window_same_operator: 'finestra già coperta per lo stesso operatore',
-  'job_id not in current dataset': 'commessa non presente nel piano corrente',
-  dataset_not_dual_resource: 'dataset senza doppia risorsa (capacità extra non applicabile)',
-  missing_shift_id: 'turno non specificato',
-  unknown_shift_id: 'turno non riconosciuto',
-  invalid_extra_operators: 'numero operatori extra non valido',
-  no_shift_types_in_dataset: 'nessun tipo di turno definito nel dataset',
-};
+//
+// The reason→Italian map, target extraction and message formatting live in
+// @/lib/appliedRulesLedger (formatSkippedRule / skipRuleTarget) as the SINGLE
+// source of truth shared with the ReplanModal reschedule path — both surfaces
+// render identical wording (anti-drift, Wave 17 B-2).
 
 interface SkippedRule {
   type: string;
@@ -337,40 +318,21 @@ function isSkippedRuleEntry(type: string): boolean {
   );
 }
 
-function skipTargetOf(entry: Record<string, unknown>): string | undefined {
-  for (const key of ['machine_id', 'operator_id', 'job_id', 'shift_id', 'id'] as const) {
-    const v = entry[key];
-    if (typeof v === 'string' && v.trim()) return v;
-  }
-  return undefined;
-}
-
-// Map a rule `type` to the Italian noun for the message prefix.
-function skipKindLabel(type: string): string {
-  if (type.startsWith('unavailable_machine')) return 'Blocco macchina';
-  if (type.startsWith('operator_unavailable')) return 'Indisponibilità operatore';
-  if (type.startsWith('priority_order')) return 'Priorità commessa';
-  if (type.startsWith('deadline_change')) return 'Cambio scadenza';
-  if (type.startsWith('extra_capacity')) return 'Capacità extra';
-  if (type.startsWith('shift_change')) return 'Cambio turno';
-  return 'Regola';
-}
-
 function buildSkippedRulesRollup(applyRules: Array<Record<string, unknown>>): SkippedRule[] {
   const out: SkippedRule[] = [];
   for (const entry of applyRules) {
     const type = typeof entry.type === 'string' ? entry.type : '';
     if (!type || !isSkippedRuleEntry(type)) continue;
-    const target = skipTargetOf(entry);
+    const target = skipRuleTarget(entry);
     const rawReason = typeof entry.reason === 'string' && entry.reason.trim()
       ? entry.reason
       : 'motivo non specificato';
-    const reasonIt = SKIP_REASON_IT[rawReason] ?? rawReason;
-    const kind = skipKindLabel(type);
-    const message = target
-      ? `${kind} ${target} ignorata: ${reasonIt}.`
-      : `${kind} ignorata: ${reasonIt}.`;
-    out.push({ type, ...(target ? { target } : {}), reason: rawReason, message });
+    out.push({
+      type,
+      ...(target ? { target } : {}),
+      reason: rawReason,
+      message: formatSkippedRule(entry),
+    });
   }
   return out;
 }
