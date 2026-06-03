@@ -163,6 +163,77 @@ describe('ReplanModal fresh-solve primary path (real caller shape)', () => {
     });
   });
 
+  // Wave 17 M3 — the fresh-solve route returns ok:true and passes
+  // solveResult.status straight through, so an INFEASIBLE solve arrives as
+  // { ok:true, result:{ status:'INFEASIBLE', solution:{} } }. The modal must
+  // NOT render a green "Piano ricalcolato ... Stato: INFEASIBLE" (a solve that
+  // produced no plan is not a success); it must say the constraint makes the
+  // plan infeasible, distinct from an extraction failure, and NOT push the
+  // empty result to the dashboard.
+  it('reports INFEASIBLE as a failure, not a successful replan, and applies no result', async () => {
+    const onResult = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          code: 'solved_fresh',
+          cutoff_min: null,
+          frozen_count: 0,
+          result: {
+            status: 'INFEASIBLE',
+            method: 'deterministic-template',
+            solution: {},
+            kpis: {},
+            objective_value: null,
+            warnings: [],
+            cost_usd: 0,
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal open onClose={() => {}} companySlug="acme" originalSolution={BASELINE} onResult={onResult} />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'macchina M1 è rotta, risolvi');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    // Failure message names infeasibility, NOT a green "ricalcolato".
+    await waitFor(() =>
+      expect(screen.getByText(/non.*soluzione|infeasible|non è risolvibile|vincoli incompatibili/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Piano ricalcolato/i)).not.toBeInTheDocument();
+    // It must be distinct from the extraction-failure copy.
+    expect(screen.queryByText(/estrazione vincolo fallita/i)).not.toBeInTheDocument();
+    // The empty INFEASIBLE result must NOT be applied to the dashboard.
+    expect(onResult).not.toHaveBeenCalled();
+  });
+
+  // Wave 17 M3 regression — a healthy OPTIMAL replan must STILL render the
+  // success message even when the test fixture uses an empty solution map
+  // (the existing fresh-caller fixtures do this). The guard must key on the
+  // failure status, not on emptiness, so it does not swallow real successes.
+  it('still reports OPTIMAL as a successful replan (no false-failure)', async () => {
+    const onResult = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(freshOkResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal open onClose={() => {}} companySlug="acme" originalSolution={BASELINE} onResult={onResult} />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'macchina M1 è rotta');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    await waitFor(() => expect(onResult).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(/ricalcolato/i)).toBeInTheDocument();
+  });
+
   // Wave 16.5-RE2 — ask-flow. When the BFF returns code 'needs_day', the modal
   // must ask which plan-day it is and NOT propagate any result to the
   // dashboard (no recalculation). Mirrors the BFF guarantee that no solve ran.

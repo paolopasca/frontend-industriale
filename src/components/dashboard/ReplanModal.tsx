@@ -347,6 +347,39 @@ export function ReplanModal({
         return;
       }
       const r = payload.result;
+      // Wave 17 M3 — distinguish a genuine INFEASIBLE/failed solve from the
+      // extraction failure handled above. The fresh-solve route returns ok:true
+      // and passes solveResult.status straight through (reschedule-fresh.ts),
+      // so an INFEASIBLE solve arrives here as a "successful" envelope with an
+      // empty solution. Mirrors the apply-whatif aborted_unsupported guard
+      // (apply-whatif.ts:1162-1194): a solve that produced no usable plan must
+      // be reported as a failure, never as a green "Piano ricalcolato".
+      //
+      // Fail-closed and NARROW: we key on the status (anything not OPTIMAL/
+      // FEASIBLE is a failure), NOT on solution emptiness — a healthy OPTIMAL
+      // replan must still render success. This is a DIFFERENT message from the
+      // extraction-failure copy so the manager knows the request WAS understood
+      // but the constraints make the plan unsolvable. We do NOT push the empty
+      // result to the dashboard (no onResult), matching the needs_day contract.
+      const replanStatus = (r.status ?? '').toUpperCase();
+      const replanSucceeded = replanStatus === 'OPTIMAL' || replanStatus === 'FEASIBLE';
+      if (!replanSucceeded) {
+        const infeasibleLike = replanStatus === 'INFEASIBLE';
+        const failMsg = infeasibleLike
+          ? 'Ho capito la richiesta, ma con questo vincolo il piano non ha soluzione (INFEASIBLE): le commesse non stanno nei tempi/risorse disponibili. Prova a rilassare il vincolo (es. spostare una scadenza o liberare una macchina).'
+          : `Il ricalcolo non ha prodotto un piano valido (stato: ${r.status || 'sconosciuto'}). Riprova o riformula il vincolo.`;
+        setMessages(prev => [
+          ...prev,
+          {
+            id: `${Date.now()}-fa`,
+            role: 'assistant',
+            content: failMsg,
+            timestamp: Date.now(),
+            action: 'error',
+          },
+        ]);
+        return;
+      }
       // Message reflects what actually happened. The "giorni precedenti
       // congelati" claim MUST be gated on the ACTUAL frozen_count the BFF
       // returns, not on day_anchor alone: the defensive path (reschedule-fresh
