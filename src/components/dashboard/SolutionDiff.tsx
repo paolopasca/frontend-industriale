@@ -162,7 +162,34 @@ type CanonicalKpiKey =
   | 'weighted_tardiness'
   | 'late_orders_count';
 
-function normalizeKpis(input: Record<string, unknown>): Record<string, number> {
+// Derive on-time rate (fraction 0..1) from a solver solution map. Each
+// solution[jid] carries `ritardo_min` (tardiness); a job is on time when it is
+// 0. Returns null when the solution has no jobs (caller keeps "—" rather than
+// fabricating 100%). Mirrors the baseline/aiInputs.ts on-time computation.
+function deriveOnTimeFromSolution(solution: unknown): number | null {
+  if (!solution || typeof solution !== 'object' || Array.isArray(solution)) return null;
+  let total = 0;
+  let onTime = 0;
+  for (const job of Object.values(solution as Record<string, unknown>)) {
+    if (!job || typeof job !== 'object') continue;
+    const tard = Number((job as { ritardo_min?: unknown }).ritardo_min);
+    if (!Number.isFinite(tard)) continue;
+    total += 1;
+    if (tard <= 0) onTime += 1;
+  }
+  if (total === 0) return null;
+  return onTime / total;
+}
+
+// `solution` (optional) lets us recover KPIs the raw solver kpis dict omits —
+// notably on_time_rate, which the FJSP solver does not emit (it lives per-job
+// as ritardo_min in the solution map). It is only consulted as a last resort
+// when the kpis dict carries no on-time signal, so callers that already have a
+// complete kpis dict are unaffected.
+function normalizeKpis(
+  input: Record<string, unknown>,
+  solution?: unknown,
+): Record<string, number> {
   const out: Record<string, number> = {};
   const pick = (key: string): number | null => {
     if (!Object.prototype.hasOwnProperty.call(input, key)) return null;
@@ -199,7 +226,11 @@ function normalizeKpis(input: Record<string, unknown>): Record<string, number> {
   );
   set('weighted_tardiness', pick('weighted_tardiness') ?? pick('ritardo_pesato_totale'));
   set('late_orders_count', pick('late_orders_count') ?? pick('ordersLate'));
-  set('on_time_rate', pick('on_time_rate') ?? pick('highPriorityOnTime'));
+  // on_time_rate: prefer the explicit kpi (fraction), then the dashboard
+  // baseline alias (highPriorityOnTime), and only as a last resort derive it
+  // from the solver solution's per-job ritardo_min. The candidate side has no
+  // on-time kpi, so without the derivation its column shows "—" (Wave 17 M1).
+  set('on_time_rate', pick('on_time_rate') ?? pick('highPriorityOnTime') ?? deriveOnTimeFromSolution(solution));
   set('machine_utilization_max', pick('machine_utilization_max') ?? pick('peakUtilization'));
   set('machine_utilization_avg', pick('machine_utilization_avg') ?? pick('avgUtilization'));
   // carico_macchine is a dict mid->minutes from the FJSP solver; reduce to
@@ -229,9 +260,11 @@ function normalizeKpis(input: Record<string, unknown>): Record<string, number> {
 function buildRows(
   baselineKpis: Record<string, unknown>,
   candidateKpis: Record<string, unknown>,
+  baselineSolution?: unknown,
+  candidateSolution?: unknown,
 ): KpiRow[] {
-  const normBase = normalizeKpis(baselineKpis);
-  const normCand = normalizeKpis(candidateKpis);
+  const normBase = normalizeKpis(baselineKpis, baselineSolution);
+  const normCand = normalizeKpis(candidateKpis, candidateSolution);
   const keys = new Set<string>([...Object.keys(normBase), ...Object.keys(normCand)]);
   const rows: KpiRow[] = [];
   for (const key of keys) {
@@ -529,8 +562,10 @@ export function SolutionDiff({
     () => buildRows(
       (baseline.kpis ?? {}) as Record<string, unknown>,
       (candidate.kpis ?? {}) as Record<string, unknown>,
+      baseline.solution,
+      candidate.solution,
     ),
-    [baseline.kpis, candidate.kpis],
+    [baseline.kpis, candidate.kpis, baseline.solution, candidate.solution],
   );
 
   const {
