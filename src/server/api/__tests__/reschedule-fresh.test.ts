@@ -109,6 +109,188 @@ describe('POST /api/reschedule-fresh', () => {
     expect(body.result.kpis).toEqual({ makespan_min: 1500 });
   });
 
+  it('merges cumulative priorRules with the freshly-extracted rule before solving (Wave 17 H1)', async () => {
+    // The manager already accepted "M-2 ferma 0-480" + priority COM-007 in
+    // earlier What-If turns (the ledger). Now they Ripianifica with "M-1 rotta".
+    // The fresh solve MUST honour BOTH the new disruption AND the accumulated
+    // prior constraints — otherwise Ripianifica silently drops every previously
+    // accepted rule (the cumulative-constraint failure this fixes).
+    vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
+      result: 'hit',
+      confidence: 0.9,
+      payload: { unavailable_machines: { 'M-1': [{ start_min: 0, end_min: 240 }] } },
+      rationale: 'macchina rotta -> blocco finestra',
+      pattern_id: 'machine_unavailability_v1',
+      confirmation_message: null,
+    });
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL',
+          method: 'deterministic-template',
+          solution: { fasi: [] },
+          kpis: { makespan_min: 1500 },
+          objective_value: 1500,
+          warnings: [],
+          cost_usd: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await invokeRoute(
+      makeRequest(
+        {
+          slug: 'acme',
+          message: 'M-1 e rotta',
+          priorRules: {
+            unavailable_machines: { 'M-2': [{ start_min: 0, end_min: 480 }] },
+            priority_orders: ['COM-007'],
+          },
+        },
+        'ip-fresh-merge',
+      ),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+
+    // The solve-template call must carry the MERGED rules.
+    const solveCall = fetchMock.mock.calls.find(
+      ([url]) => typeof url === 'string' && url.includes('/api/public/solve-template'),
+    );
+    expect(solveCall, 'expected a POST to /api/public/solve-template').toBeTruthy();
+    const sentRules = JSON.parse((solveCall![1] as RequestInit).body as string).rules;
+    // Fresh disruption present…
+    expect(sentRules.unavailable_machines['M-1']).toEqual([{ start_min: 0, end_min: 240 }]);
+    // …AND the accumulated prior constraints survived.
+    expect(sentRules.unavailable_machines['M-2']).toEqual([{ start_min: 0, end_min: 480 }]);
+    expect(sentRules.priority_orders).toEqual(['COM-007']);
+
+    // The echoed applied_rules carries ONLY the NEW rule (pre-merge): the
+    // client ledger already holds the priors, so the solver gets the merged set
+    // but the ledger only needs the delta (mirrors apply-whatif's contract).
+    // Echoing the merged set here would double-append M-2 on the next turn.
+    expect(body.applied_rules.unavailable_machines['M-1']).toBeTruthy();
+    expect(body.applied_rules.unavailable_machines['M-2']).toBeUndefined();
+    expect(body.applied_rules.priority_orders).toBeUndefined();
+  });
+
+  it('surfaces skipped_rules from the solver wave7 audit (Wave 17 M2 — fresh path)', async () => {
+    // Fresh is the PRODUCTION reschedule path. A rule the solver skips
+    // (wave7.apply_rules) must reach the client as a per-rule reason rollup,
+    // never be dropped (anti-silent-no-op).
+    vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
+      result: 'hit',
+      confidence: 0.9,
+      payload: { unavailable_machines: { 'M-1': [{ start_min: 0, end_min: 240 }] } },
+      rationale: 'macchina rotta',
+      pattern_id: 'machine_unavailability_v1',
+      confirmation_message: null,
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL',
+          method: 'deterministic-template',
+          solution: { 'COM-001': { fasi: [] } },
+          kpis: { makespan_min: 1500 },
+          objective_value: 1500,
+          warnings: [],
+          cost_usd: 0,
+          wave7: {
+            locked_count: 0,
+            apply_rules: [
+              { type: 'unavailable_machine_block', machine_id: 'M-1', count: 1 },
+              { type: 'operator_unavailable_skipped', operator_id: 'OP-9', reason: 'window_after_horizon' },
+            ],
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    ));
+
+    const res = await invokeRoute(
+      makeRequest({ slug: 'acme', message: 'M-1 e rotta' }, 'ip-fresh-skip'),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    // The rollup must be present, manager-facing, and carry the real reason.
+    expect(Array.isArray(body.skipped_rules)).toBe(true);
+    expect(body.skipped_rules).toHaveLength(1);
+    const op = body.skipped_rules[0];
+    expect(op.type).toBe('operator_unavailable_skipped');
+    expect(op.target).toBe('OP-9');
+    expect(op.reason).toBe('window_after_horizon');
+    expect(op.message).toMatch(/OP-9/);
+  });
+
+  it('discloses a carried-forward priorRule the solver no longer binds (Wave 17 F-5 — extra_capacity on non-dual-resource)', async () => {
+    // The devil's exact F-5 scenario: a cumulative priorRule (extra_capacity)
+    // is folded in but no longer binds on this dataset (FJSP / non-dual-resource)
+    // → solver audits extra_capacity_skipped. It must be DISCLOSED, not silently
+    // dropped while the manager sees a green "Piano ricalcolato".
+    vi.mocked(extractConstraintFromBackend).mockResolvedValueOnce({
+      result: 'hit',
+      confidence: 0.9,
+      payload: { unavailable_machines: { 'M-1': [{ start_min: 0, end_min: 240 }] } },
+      rationale: 'macchina rotta',
+      pattern_id: 'machine_unavailability_v1',
+      confirmation_message: null,
+    });
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'OPTIMAL',
+          method: 'deterministic-template',
+          solution: { 'COM-001': { fasi: [] } },
+          kpis: { makespan_min: 1500 },
+          objective_value: 1500,
+          warnings: [],
+          cost_usd: 0,
+          wave7: {
+            locked_count: 0,
+            apply_rules: [
+              { type: 'unavailable_machine_block', machine_id: 'M-1', count: 1 },
+              { type: 'extra_capacity_skipped', reason: 'dataset_not_dual_resource' },
+            ],
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await invokeRoute(
+      makeRequest(
+        {
+          slug: 'acme',
+          message: 'M-1 e rotta',
+          // The non-binding rule carried forward from an earlier What-If.
+          priorRules: { extra_capacity: { 'turno-1': 2 } },
+        },
+        'ip-fresh-f5',
+      ),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    // The merged rules DID carry extra_capacity to the solver…
+    const sentRules = JSON.parse(
+      (fetchMock.mock.calls.find(([u]) => typeof u === 'string' && u.includes('/api/public/solve-template'))![1] as RequestInit).body as string,
+    ).rules;
+    expect(sentRules.extra_capacity).toEqual({ 'turno-1': 2 });
+    // …and because the solver skipped it, the disclosure is surfaced (not silent).
+    expect(Array.isArray(body.skipped_rules)).toBe(true);
+    const cap = body.skipped_rules.find((r: { type: string }) => r.type === 'extra_capacity_skipped');
+    expect(cap).toBeTruthy();
+    expect(cap.reason).toBe('dataset_not_dual_resource');
+    expect(cap.message).toMatch(/capacità extra|doppia risorsa/i);
+    expect(cap.message).not.toMatch(/frozen_phase_lock/);
+  });
+
   it('returns extract_miss when BOTH the extractor and the interpreter decline', async () => {
     // Wave 16.6 §A: on extractor MISS the route now gives the closed-set Haiku
     // interpreter a second pass. When the interpreter ALSO declines

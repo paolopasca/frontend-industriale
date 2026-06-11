@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ReplanModal } from '../ReplanModal';
+import { appendRule, clearLedger } from '@/lib/appliedRulesLedger';
 
 /**
  * Wave 16.5 B1 (devil-advocate refinement) — seam test / regression guard.
@@ -99,6 +100,60 @@ describe('ReplanModal fresh-solve primary path (real caller shape)', () => {
     expect('cushionMin' in body).toBe(false);
   });
 
+  // Wave 17 H1 (TD-022) — Ripianifica must carry the cumulative applied-rules
+  // ledger as priorRules so previously-accepted What-If constraints survive the
+  // fresh solve (the BFF folds them UNDER the new disruption). Without this the
+  // re-solve drops them silently.
+  it('sends the folded ledger as priorRules when the ledger is non-empty', async () => {
+    clearLedger('acme');
+    // Two prior accepted What-If turns: a machine ban + a priority order.
+    appendRule('acme', {
+      source: 'whatif',
+      rules: { unavailable_machines: { 'M-2': [{ start_min: 0, end_min: 480 }] } },
+    });
+    appendRule('acme', { source: 'whatif', rules: { priority_orders: ['COM-007'] } });
+
+    const fetchMock = vi.fn().mockResolvedValue(freshOkResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal open onClose={() => {}} companySlug="acme" originalSolution={BASELINE} onResult={() => {}} />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'macchina M1 è rotta, risolvi');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    // The cumulative ledger, folded, is sent so the BFF can re-apply it.
+    expect(body.priorRules).toBeTruthy();
+    expect(body.priorRules.unavailable_machines['M-2']).toEqual([{ start_min: 0, end_min: 480 }]);
+    expect(body.priorRules.priority_orders).toEqual(['COM-007']);
+    clearLedger('acme');
+  });
+
+  it('omits priorRules when the ledger is empty (lean legacy body)', async () => {
+    clearLedger('acme');
+    const fetchMock = vi.fn().mockResolvedValue(freshOkResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal open onClose={() => {}} companySlug="acme" originalSolution={BASELINE} onResult={() => {}} />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'macchina M1 è rotta');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    // No empty {} bloat — the field is absent entirely.
+    expect('priorRules' in body).toBe(false);
+  });
+
   it('surfaces the result as a full replan from the horizon start', async () => {
     const fetchMock = vi.fn().mockResolvedValue(freshOkResponse());
     vi.stubGlobal('fetch', fetchMock);
@@ -161,6 +216,119 @@ describe('ReplanModal fresh-solve primary path (real caller shape)', () => {
     expect(onResult.mock.calls[0][1]).toEqual({
       unavailable_machines: { 'M-1': [{ start_min: 0, end_min: 480 }] },
     });
+  });
+
+  // Wave 17 M3 — the fresh-solve route returns ok:true and passes
+  // solveResult.status straight through, so an INFEASIBLE solve arrives as
+  // { ok:true, result:{ status:'INFEASIBLE', solution:{} } }. The modal must
+  // NOT render a green "Piano ricalcolato ... Stato: INFEASIBLE" (a solve that
+  // produced no plan is not a success); it must say the constraint makes the
+  // plan infeasible, distinct from an extraction failure, and NOT push the
+  // empty result to the dashboard.
+  it('reports INFEASIBLE as a failure, not a successful replan, and applies no result', async () => {
+    const onResult = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          code: 'solved_fresh',
+          cutoff_min: null,
+          frozen_count: 0,
+          result: {
+            status: 'INFEASIBLE',
+            method: 'deterministic-template',
+            solution: {},
+            kpis: {},
+            objective_value: null,
+            warnings: [],
+            cost_usd: 0,
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal open onClose={() => {}} companySlug="acme" originalSolution={BASELINE} onResult={onResult} />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'macchina M1 è rotta, risolvi');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    // Failure message names infeasibility, NOT a green "ricalcolato".
+    await waitFor(() =>
+      expect(screen.getByText(/non.*soluzione|infeasible|non è risolvibile|vincoli incompatibili/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Piano ricalcolato/i)).not.toBeInTheDocument();
+    // It must be distinct from the extraction-failure copy.
+    expect(screen.queryByText(/estrazione vincolo fallita/i)).not.toBeInTheDocument();
+    // The empty INFEASIBLE result must NOT be applied to the dashboard.
+    expect(onResult).not.toHaveBeenCalled();
+  });
+
+  // Wave 17 M3 regression — a healthy OPTIMAL replan must STILL render the
+  // success message even when the test fixture uses an empty solution map
+  // (the existing fresh-caller fixtures do this). The guard must key on the
+  // failure status, not on emptiness, so it does not swallow real successes.
+  it('still reports OPTIMAL as a successful replan (no false-failure)', async () => {
+    const onResult = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(freshOkResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal open onClose={() => {}} companySlug="acme" originalSolution={BASELINE} onResult={onResult} />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'macchina M1 è rotta');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    await waitFor(() => expect(onResult).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(/ricalcolato/i)).toBeInTheDocument();
+  });
+
+  // Wave 17 M2 (fresh path) — reschedule-fresh returns skipped_rules when the
+  // SOLVER dropped a rule. Since fresh is the PRODUCTION reschedule path, the
+  // manager must SEE which rule was ignored and why (anti-silent-no-op), even
+  // though the plan itself solved OPTIMAL.
+  it('renders skipped_rules from the fresh solve to the manager', async () => {
+    const onResult = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          code: 'solved_fresh',
+          cutoff_min: null,
+          frozen_count: 0,
+          applied_rules: { unavailable_machines: { 'M-1': [{ start_min: 0, end_min: 240 }] } },
+          skipped_rules: [
+            { type: 'operator_unavailable_skipped', target: 'OP-9', reason: 'window_after_horizon', message: "Indisponibilità operatore OP-9 ignorata: finestra oltre l'orizzonte di pianificazione." },
+          ],
+          result: {
+            status: 'OPTIMAL', method: 'deterministic-template', solution: { 'COM-001': { fasi: [] } },
+            kpis: {}, objective_value: 0, warnings: [], cost_usd: 0,
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal open onClose={() => {}} companySlug="acme" originalSolution={BASELINE} onResult={onResult} />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'M-1 rotta e OP-9 assente');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    // The solve succeeded (onResult fired) AND the skipped rule is shown.
+    await waitFor(() => expect(onResult).toHaveBeenCalledTimes(1));
+    expect(
+      screen.getByText(/ignorata: finestra oltre l'orizzonte/i),
+    ).toBeInTheDocument();
   });
 
   // Wave 16.5-RE2 — ask-flow. When the BFF returns code 'needs_day', the modal
@@ -265,5 +433,138 @@ describe('ReplanModal fresh-solve primary path (real caller shape)', () => {
     );
     // The lie must be absent: no "giorni precedenti congelati" claim.
     expect(screen.queryByText(/giorni precedenti congelati/i)).not.toBeInTheDocument();
+  });
+});
+
+// Wave 17 B-2 — the WARM-START reschedule path (chatReschedule →
+// POST /api/analysis/{sid}/reschedule). Driven by solverMethod='codegen-pipeline'
+// (usesFreshSolve=false). This is the path the BE's analysis_reschedule contract
+// targets: the cumulative ledger must be sent as `rules`, and the response's
+// skipped_rules must be SHOWN to the manager (anti-silent-no-op), not dropped.
+describe('ReplanModal warm-start path (chatReschedule real caller shape)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    // chatReschedule needs a session or a valid run; seed the slug-scoped session.
+    window.localStorage.setItem('daino:acme:daino_last_session_id', 'sess-1');
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    window.localStorage.clear();
+  });
+
+  // Route the fetch mock by URL: /api/auth/login (autoLogin) vs the reschedule.
+  function makeFetchMock(rescheduleBody: Record<string, unknown>) {
+    return vi.fn().mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.includes('/api/auth/login')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: 'tok' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify(rescheduleBody), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    });
+  }
+
+  it('sends the cumulative ledger as `rules` in the POST to /api/analysis/{sid}/reschedule', async () => {
+    clearLedger('acme');
+    appendRule('acme', {
+      source: 'whatif',
+      rules: { unavailable_machines: { 'M-2': [{ start_min: 0, end_min: 480 }] } },
+    });
+    appendRule('acme', { source: 'whatif', rules: { priority_orders: ['COM-007'] } });
+
+    const fetchMock = makeFetchMock({
+      status: 'OPTIMAL',
+      solution: { 'COM-001': { fasi: [] } },
+      kpis: { makespan_min: 1400 },
+      objective_value: 1400,
+      warnings: [],
+      applied_rules: [{ type: 'priority_orders_applied' }],
+      skipped_rules: [],
+      cost_usd: 0,
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal
+        open
+        onClose={() => {}}
+        companySlug="acme"
+        originalSolution={BASELINE}
+        solverMethod="codegen-pipeline"
+        onResult={() => {}}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'M-1 è rotta');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    await waitFor(() => {
+      const rescheduleCall = fetchMock.mock.calls.find(
+        ([u]) => typeof u === 'string' && u.includes('/api/analysis/sess-1/reschedule'),
+      );
+      expect(rescheduleCall, 'expected POST to the session reschedule endpoint').toBeTruthy();
+    });
+    const rescheduleCall = fetchMock.mock.calls.find(
+      ([u]) => typeof u === 'string' && u.includes('/api/analysis/sess-1/reschedule'),
+    )!;
+    const body = JSON.parse((rescheduleCall[1] as RequestInit).body as string);
+    // The cumulative ledger, folded, is sent as `rules` (BE merges it).
+    expect(body.rules).toBeTruthy();
+    expect(body.rules.unavailable_machines['M-2']).toEqual([{ start_min: 0, end_min: 480 }]);
+    expect(body.rules.priority_orders).toEqual(['COM-007']);
+    clearLedger('acme');
+  });
+
+  it('shows the skipped_rules reasons to the manager (anti-silent-no-op)', async () => {
+    clearLedger('acme');
+    const fetchMock = makeFetchMock({
+      status: 'OPTIMAL',
+      solution: { 'COM-001': { fasi: [] } },
+      kpis: { makespan_min: 1400 },
+      objective_value: 1400,
+      warnings: [],
+      applied_rules: [{ type: 'unavailable_machine_block', machine_id: 'M-1' }],
+      // A rule the BE could NOT bind — must be surfaced, not swallowed.
+      skipped_rules: [
+        { type: 'priority_order_skipped', reason: 'job_id not in current dataset' },
+      ],
+      cost_usd: 0,
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(
+      <ReplanModal
+        open
+        onClose={() => {}}
+        companySlug="acme"
+        originalSolution={BASELINE}
+        solverMethod="codegen-pipeline"
+        onResult={() => {}}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/macchina M1/i), 'priorità COM-999');
+    await user.click(screen.getByRole('button', { name: /Invia/i }));
+
+    // The manager must SEE that a rule was ignored AND the specific reason —
+    // not a clean green "Piano ricalcolato" (anti-silent-no-op). Match the
+    // skip line specifically (the reason gloss), which the user echo cannot
+    // collide with.
+    await waitFor(() =>
+      expect(
+        screen.getByText(/ignorata: commessa non presente nel piano/i),
+      ).toBeInTheDocument(),
+    );
   });
 });

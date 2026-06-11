@@ -362,6 +362,120 @@ export function mergeLedgerRules(
   return acc;
 }
 
+// ── skipped-rule presentation (Wave 17 H1/M2) ───────────────────────
+// Single source of truth for turning a BE/BFF skipped-rule audit entry
+// (`{type, reason?, machine_id?|operator_id?|job_id?|shift_id?}`) into a
+// manager-facing Italian line. Shared by the apply-whatif BFF rollup and the
+// ReplanModal reschedule path so both surface IDENTICAL wording (anti-drift).
+// Fail-OPEN: an unmapped reason falls back to the raw reason string — never
+// hidden, so a new BE reason still surfaces something truthful.
+export const SKIP_REASON_IT: Record<string, string> = {
+  'machine_id not in current dataset': 'macchina non presente nel piano corrente',
+  already_blocked_by_window_or_maintenance: 'già bloccata da una finestra o manutenzione esistente',
+  dual_resource_disabled: 'gestione operatori non attiva su questo dataset',
+  time_config_day_length_missing: 'durata giornata non configurata',
+  missing_or_sentinel_operator_id: 'operatore non identificato',
+  operator_id_not_in_dataset: 'operatore non presente nel piano corrente',
+  invalid_time_window: 'finestra oraria non valida',
+  missing_date: 'data mancante',
+  date_not_parseable_or_start_date_missing: 'data non interpretabile',
+  window_after_horizon: "finestra oltre l'orizzonte di pianificazione",
+  window_clipped_to_empty: 'finestra ridotta a vuoto',
+  overlaps_already_applied_window_same_operator: 'finestra già coperta per lo stesso operatore',
+  'job_id not in current dataset': 'commessa non presente nel piano corrente',
+  dataset_not_dual_resource: 'dataset senza doppia risorsa (capacità extra non applicabile)',
+  missing_shift_id: 'turno non specificato',
+  unknown_shift_id: 'turno non riconosciuto',
+  invalid_extra_operators: 'numero operatori extra non valido',
+  no_shift_types_in_dataset: 'nessun tipo di turno definito nel dataset',
+  // Wave 17 #3 — the remaining shift_change_skipped reasons (f_apply_rules.py
+  // 1004-1061), previously fail-open to English for Italian managers.
+  shift_entry_not_dict: 'formato del turno non valido',
+  no_bounds_provided: 'nessun orario di inizio o fine indicato',
+  invalid_range: 'intervallo orario non valido (fine prima o uguale all\'inizio)',
+  end_exceeds_day_length: 'orario di fine oltre la durata della giornata',
+};
+
+export function skipKindLabel(type: string): string {
+  if (type.startsWith('unavailable_machine')) return 'Blocco macchina';
+  if (type.startsWith('operator_unavailable')) return 'Indisponibilità operatore';
+  if (type.startsWith('priority_order')) return 'Priorità commessa';
+  if (type.startsWith('deadline_change')) return 'Cambio scadenza';
+  if (type.startsWith('extra_capacity')) return 'Capacità extra';
+  if (type.startsWith('shift_change')) return 'Cambio turno';
+  return 'Regola';
+}
+
+export function skipRuleTarget(entry: Record<string, unknown>): string | undefined {
+  for (const key of ['machine_id', 'operator_id', 'job_id', 'shift_id', 'id'] as const) {
+    const v = entry[key];
+    if (typeof v === 'string' && v.trim()) return v;
+  }
+  return undefined;
+}
+
+/** One manager-facing skipped-rule line. */
+export function formatSkippedRule(entry: { type?: unknown; reason?: unknown; [k: string]: unknown }): string {
+  const type = typeof entry.type === 'string' ? entry.type : '';
+  const target = skipRuleTarget(entry as Record<string, unknown>);
+  const rawReason = typeof entry.reason === 'string' && entry.reason.trim()
+    ? entry.reason
+    : 'motivo non specificato';
+  const reasonIt = SKIP_REASON_IT[rawReason] ?? rawReason;
+  const kind = skipKindLabel(type);
+  return target ? `${kind} ${target} ignorata: ${reasonIt}.` : `${kind} ignorata: ${reasonIt}.`;
+}
+
+/** A rolled-up skipped-rule entry (type + target + reason + manager message). */
+export interface SkippedRule {
+  type: string;
+  target?: string;
+  reason: string;
+  message: string;
+}
+
+// A backend wave7.apply_rules entry is a "skip" (not an applied/effective entry)
+// when its type marks it skipped/failed/passthrough. `_noop` is included: the
+// rule was accepted but had ZERO effect (e.g. machine already blocked), which
+// the manager should still see rather than count as applied.
+export function isSkippedRuleEntry(type: string): boolean {
+  return (
+    type.endsWith('_skipped')
+    || type.endsWith('_noop')
+    || type.endsWith('_data_layer_passthrough')
+    || type === 'apply_rules_failed'
+  );
+}
+
+/**
+ * Build the manager-facing per-rule reason rollup from a backend
+ * wave7.apply_rules audit log. Shared by the apply-whatif BFF route and the
+ * reschedule-fresh route so both surfaces render IDENTICAL skip wording
+ * (anti-drift, Wave 17 M2/B-2). Returns [] when nothing was skipped.
+ */
+export function buildSkippedRulesRollup(
+  applyRules: Array<Record<string, unknown>>,
+): SkippedRule[] {
+  const out: SkippedRule[] = [];
+  if (!Array.isArray(applyRules)) return out;
+  for (const entry of applyRules) {
+    if (!entry || typeof entry !== 'object') continue;
+    const type = typeof entry.type === 'string' ? entry.type : '';
+    if (!type || !isSkippedRuleEntry(type)) continue;
+    const target = skipRuleTarget(entry);
+    const rawReason = typeof entry.reason === 'string' && entry.reason.trim()
+      ? entry.reason
+      : 'motivo non specificato';
+    out.push({
+      type,
+      ...(target ? { target } : {}),
+      reason: rawReason,
+      message: formatSkippedRule(entry),
+    });
+  }
+  return out;
+}
+
 // ── presentation ────────────────────────────────────────────────────
 // Wave 16.6 (Option A) — a human-readable summary of the cumulative
 // priorRules carried into the next What-If, so the manager SEES which

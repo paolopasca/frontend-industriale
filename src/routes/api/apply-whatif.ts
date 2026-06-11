@@ -9,7 +9,7 @@ import { translateWhatIfToConstraint } from '@/server/llm/constraint-translator'
 import { interpretInstruction } from '@/server/llm/instruction-interpreter';
 import { buildFrozenPhases, detectScenarioStartMin, detectScenarioPhraseMatches, type FrozenPhase } from '@/server/llm/frozen-window-builder';
 import { buildSolutionContext, dayLengthMinFromBaseline, type SolutionContext } from '@/lib/solutionContext';
-import { mergeRuleSlots } from '@/lib/appliedRulesLedger';
+import { mergeRuleSlots, buildSkippedRulesRollup, isSkippedRuleEntry } from '@/lib/appliedRulesLedger';
 import { resolveMachineAlias, resolveOrderAlias, resolveShiftAlias } from '@/lib/entityResolver';
 import { resolveTemplate } from '@/lib/api';
 
@@ -278,6 +278,26 @@ function countSolutionPhases(solution: unknown): number {
   }
   return total;
 }
+
+// Wave 17 M2 — manager-facing per-rule reason rollup.
+//
+// The backend's wave7.apply_rules log carries typed audit entries
+// (f_apply_rules.py): `{type: "<rule>_block"|"<rule>_skipped"|..., reason?,
+// machine_id?|operator_id?|job_id?|shift_id?}`. A rule can pass the BFF
+// closed-set translator gate yet still be SKIPPED at the solver layer (e.g.
+// extra_capacity on a non-dual-resource dataset, an operator window after the
+// horizon, an already-blocked machine). Today the UI only sees a bare
+// `skipped_rules_count` and renders a HARDCODED "conflict_with_frozen_phase_lock"
+// reason — wrong for every other skip class, and a near-silent no-op (the
+// manager can't tell WHICH constraint was dropped or WHY). This builds an
+// explicit, human-readable rollup so the UI can show "OP-9 ignorato: finestra
+// oltre l'orizzonte" instead.
+//
+// The rollup builder, reason→Italian map, target extraction and message
+// formatting all live in @/lib/appliedRulesLedger (buildSkippedRulesRollup /
+// formatSkippedRule / skipRuleTarget) as the SINGLE source of truth shared with
+// the reschedule paths — every surface renders identical wording (anti-drift,
+// Wave 17 B-2). isSkippedRuleEntry (which entries count as skips) lives there too.
 
 // Wave 16.6 §E — explicit clock-time start anchor with no enforcing slot.
 // Utterances like "anticipa COM-007 a domani alle 8" or "fai partire COM-001
@@ -1222,16 +1242,27 @@ export const Route = createFileRoute('/api/apply-whatif')({
               // would inflate the count. We split into applied vs
               // skipped/passthrough so the UI can render either total.
               const applyRules = wave7Env?.apply_rules ?? [];
+              // Wave 17 F-4 — "applied" is the EXACT complement of "skipped" over
+              // the apply_rules set: every non-empty-typed entry that the rollup
+              // does NOT classify as a skip. Defining it via isSkippedRuleEntry
+              // (the shared classifier) guarantees the count and the rollup array
+              // can never diverge. Previously the two lists were maintained
+              // separately and isAppliedEntry missed `_noop`, so a zero-effect
+              // *_block_noop was BOTH counted as applied AND listed as skipped —
+              // "0 ignorate" contradicting the skip shown, greening a no-op.
               const isAppliedEntry = (entry: Record<string, unknown>): boolean => {
                 const t = typeof entry.type === 'string' ? entry.type : '';
                 if (t === '') return false;
-                if (t.endsWith('_skipped')) return false;
-                if (t === 'apply_rules_failed') return false;
-                if (t.endsWith('_data_layer_passthrough')) return false;
-                return true;
+                return !isSkippedRuleEntry(t);
               };
               const modifiedCount = applyRules.filter(isAppliedEntry).length;
               const skippedRulesCount = applyRules.length - modifiedCount;
+              // Wave 17 M2 — per-rule reason rollup (manager-facing). Surfaces
+              // the REAL reason each rule was skipped at the solver layer instead
+              // of a bare count + a hardcoded "conflict_with_frozen_phase_lock"
+              // string in the UI. Anti-silent-no-op: a rule the solver dropped is
+              // now visible WITH its reason, never folded into a green "applied".
+              const skippedRules = buildSkippedRulesRollup(applyRules);
               write('solved', {
                 newSolution: solveResult.solution ?? {},
                 newKpis,
@@ -1249,6 +1280,8 @@ export const Route = createFileRoute('/api/apply-whatif')({
                 locked_count: lockedCount,
                 modified_count: modifiedCount,
                 skipped_rules_count: skippedRulesCount,
+                // Wave 17 M2 — per-rule reason rollup; [] when nothing skipped.
+                skipped_rules: skippedRules,
                 dataset_overrides_summary: datasetOverridesSummary,
                 locked_phases: lockedPhasesOut,
                 // Wave 16.6 §C — echo the NEW scenario's rule slot (pre-merge,

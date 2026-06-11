@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { chatReschedule, autoLogin, type ChatRescheduleResponse } from '@/lib/api';
 import type { SolverMethod } from '@/components/onboarding/SolverMethodSelect';
 import { getSlugScoped, setSlugScoped, migrateLegacyKeys } from '@/lib/storage';
+import { mergeLedgerRules, formatSkippedRule } from '@/lib/appliedRulesLedger';
 
 interface Message {
   id: string;
@@ -188,10 +189,17 @@ export function ReplanModal({
       const sessionId = getSlugScoped(SESSION_KEY, companySlug);
       const runIdRaw = getSlugScoped(RUN_KEY, companySlug);
       const runId = runIdRaw ? Number(runIdRaw) : null;
+      // Wave 17 H1/TD-022 — send the cumulative applied-rules ledger so the BE
+      // re-applies every previously-accepted What-If constraint on top of the
+      // run's own rules (request wins on conflict). Same source as the
+      // fresh-solve path (runFreshReschedule). Empty ledger → field omitted by
+      // chatReschedule so the legacy wire shape is unchanged.
+      const priorRules = mergeLedgerRules(companySlug);
       const res = await chatReschedule({
         message: text,
         sessionId,
         runId: Number.isFinite(runId) && (runId ?? 0) > 0 ? runId : null,
+        rules: priorRules,
       });
       // Wave 16.4 C4 / Wave 16.5 B2 — when the warm-start path cannot find
       // the session/run, attach a fresh-fallback hint so the user can opt
@@ -216,7 +224,23 @@ export function ReplanModal({
         action: res.action,
         freshFallbackText: isSessionNotFound ? text : undefined,
       };
-      setMessages(prev => [...prev, assistantMsg]);
+      // Wave 17 H1/TD-022 — anti-silent-no-op: when the BE reports rules it
+      // could NOT apply (skipped_rules), the manager MUST see WHICH and WHY,
+      // never a clean green "Piano ricalcolato". Append a distinct line per
+      // skipped rule using the shared formatter (same wording as What-If).
+      const skipped = Array.isArray(res.skipped_rules) ? res.skipped_rules : [];
+      const skipMsgs: Message[] = skipped.length > 0
+        ? [{
+            id: `${Date.now()}-skip`,
+            role: 'assistant',
+            content:
+              `Attenzione — ${skipped.length === 1 ? 'una regola non è stata applicata' : `${skipped.length} regole non sono state applicate`}:\n`
+              + skipped.map((r) => `• ${formatSkippedRule(r)}`).join('\n'),
+            timestamp: Date.now(),
+            action: 'error',
+          }]
+        : [];
+      setMessages(prev => [...prev, assistantMsg, ...skipMsgs]);
 
       if (res.action === 'reschedule' && onResult) {
         // Shape matches /api/public/solve-template so adaptResult works.
@@ -275,6 +299,12 @@ export function ReplanModal({
     setBusy(true);
     setBusyLabel('Ricalcolo completo del piano da inizio orizzonte… (~25 s)');
     try {
+      // Wave 17 H1 (TD-022) — fold the cumulative applied-rules ledger into a
+      // single solver-`rules` payload and send it as priorRules so Ripianifica
+      // re-applies every previously-ACCEPTED What-If constraint alongside the
+      // new disruption. Without this the fresh solve dropped them silently. Only
+      // sent when non-empty so a first Ripianifica keeps the lean legacy body.
+      const priorRules = mergeLedgerRules(companySlug);
       const res = await fetch('/api/reschedule-fresh', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -287,6 +317,7 @@ export function ReplanModal({
           // currentTimeMin — day-0 is deadline-anchored, not wall-clock, so a
           // derived cutoff would be wrong (see the note above loadStored).
           baselineSolution: originalSolution,
+          ...(Object.keys(priorRules).length > 0 ? { priorRules } : {}),
         }),
       });
       if (!res.ok) {
@@ -303,6 +334,8 @@ export function ReplanModal({
         frozen_count?: number;
         // Wave 16.6 §C — the extracted rule slot that produced the plan.
         applied_rules?: Record<string, unknown>;
+        // Wave 17 M2 — per-rule reason rollup for rules the solver skipped.
+        skipped_rules?: Array<{ type: string; target?: string; reason?: string; message: string }>;
         result?: {
           status: string;
           method: string;
@@ -347,6 +380,39 @@ export function ReplanModal({
         return;
       }
       const r = payload.result;
+      // Wave 17 M3 — distinguish a genuine INFEASIBLE/failed solve from the
+      // extraction failure handled above. The fresh-solve route returns ok:true
+      // and passes solveResult.status straight through (reschedule-fresh.ts),
+      // so an INFEASIBLE solve arrives here as a "successful" envelope with an
+      // empty solution. Mirrors the apply-whatif aborted_unsupported guard
+      // (apply-whatif.ts:1162-1194): a solve that produced no usable plan must
+      // be reported as a failure, never as a green "Piano ricalcolato".
+      //
+      // Fail-closed and NARROW: we key on the status (anything not OPTIMAL/
+      // FEASIBLE is a failure), NOT on solution emptiness — a healthy OPTIMAL
+      // replan must still render success. This is a DIFFERENT message from the
+      // extraction-failure copy so the manager knows the request WAS understood
+      // but the constraints make the plan unsolvable. We do NOT push the empty
+      // result to the dashboard (no onResult), matching the needs_day contract.
+      const replanStatus = (r.status ?? '').toUpperCase();
+      const replanSucceeded = replanStatus === 'OPTIMAL' || replanStatus === 'FEASIBLE';
+      if (!replanSucceeded) {
+        const infeasibleLike = replanStatus === 'INFEASIBLE';
+        const failMsg = infeasibleLike
+          ? 'Ho capito la richiesta, ma con questo vincolo il piano non ha soluzione (INFEASIBLE): le commesse non stanno nei tempi/risorse disponibili. Prova a rilassare il vincolo (es. spostare una scadenza o liberare una macchina).'
+          : `Il ricalcolo non ha prodotto un piano valido (stato: ${r.status || 'sconosciuto'}). Riprova o riformula il vincolo.`;
+        setMessages(prev => [
+          ...prev,
+          {
+            id: `${Date.now()}-fa`,
+            role: 'assistant',
+            content: failMsg,
+            timestamp: Date.now(),
+            action: 'error',
+          },
+        ]);
+        return;
+      }
       // Message reflects what actually happened. The "giorni precedenti
       // congelati" claim MUST be gated on the ACTUAL frozen_count the BFF
       // returns, not on day_anchor alone: the defensive path (reschedule-fresh
@@ -365,6 +431,22 @@ export function ReplanModal({
       } else {
         reschedMsg = `Piano ricalcolato da inizio orizzonte. Stato: ${r.status}.`;
       }
+      // Wave 17 M2 (fresh path = PRODUCTION) — anti-silent-no-op: when the
+      // solver skipped a rule (payload.skipped_rules), the manager MUST see
+      // WHICH and WHY even though the plan solved. Same wording as What-If /
+      // the warm path (shared formatter; messages are BE-provided).
+      const freshSkipped = Array.isArray(payload.skipped_rules) ? payload.skipped_rules : [];
+      const freshSkipMsgs: Message[] = freshSkipped.length > 0
+        ? [{
+            id: `${Date.now()}-fskip`,
+            role: 'assistant',
+            content:
+              `Attenzione — ${freshSkipped.length === 1 ? 'una regola non è stata applicata' : `${freshSkipped.length} regole non sono state applicate`}:\n`
+              + freshSkipped.map((s) => `• ${s.message || formatSkippedRule(s)}`).join('\n'),
+            timestamp: Date.now(),
+            action: 'error',
+          }]
+        : [];
       setMessages(prev => [
         ...prev,
         {
@@ -374,6 +456,7 @@ export function ReplanModal({
           timestamp: Date.now(),
           action: 'reschedule',
         },
+        ...freshSkipMsgs,
       ]);
       if (onResult) {
         onResult({

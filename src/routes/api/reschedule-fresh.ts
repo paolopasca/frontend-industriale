@@ -13,6 +13,7 @@ import {
   type FrozenPhase,
 } from '@/server/llm/frozen-window-builder';
 import { resolveTemplate, type ResolveTemplateFrozenPhase } from '@/lib/api';
+import { mergeRuleSlots, buildSkippedRulesRollup } from '@/lib/appliedRulesLedger';
 
 /**
  * Wave 16.4 C4 / Wave 16.5 B1+B3 — fresh re-solve.
@@ -57,6 +58,14 @@ const BodySchema = z.object({
   // Absent → no cutoff → full fresh solve with no frozen past.
   currentTimeMin: z.number().int().min(0).max(10_000_000).optional(),
   cushionMin: z.number().int().min(0).max(1_440).default(30),
+  // Wave 17 H1 (TD-022) — cumulative applied-rules ledger, folded into a single
+  // solver-`rules` payload by the client (mergeLedgerRules). Carries every
+  // previously-ACCEPTED What-If constraint (priority_orders, deadline_changes,
+  // unavailable_machines, operator_unavailability, extra_capacity, shift_changes)
+  // so Ripianifica re-applies them alongside the new disruption instead of
+  // silently dropping them. Same field name + shape as apply-whatif's priorRules.
+  // Optional → a first Ripianifica with an empty ledger behaves exactly as before.
+  priorRules: z.record(z.string(), z.unknown()).optional(),
 });
 
 function jsonError(status: number, code: string, message: string): Response {
@@ -276,6 +285,17 @@ export const Route = createFileRoute('/api/reschedule-fresh')({
           }
         }
 
+        // Wave 17 H1 (TD-022) — fold the cumulative ledger UNDER the new
+        // disruption (NEW-WINS): the freshly-extracted rule is the newer payload
+        // (`b`), so re-issuing a constraint for the same target corrects the
+        // accumulated one, while disjoint prior constraints (a different machine
+        // ban, an accepted priority order) survive. Without this, Ripianifica
+        // solved with ONLY the new rule and silently dropped every previously
+        // accepted What-If. Mirrors apply-whatif.ts:994
+        // (mergeRuleSlots(input.priorRules, rulesForSolve)). Pure — when
+        // priorRules is absent this returns the fresh rule unchanged.
+        const mergedRules = mergeRuleSlots(input.priorRules, rules);
+
         const problemType = input.problemType ?? 'fjsp';
 
         // Step 2 — frozen window. Re-solving from scratch must NOT reshuffle
@@ -336,12 +356,19 @@ export const Route = createFileRoute('/api/reschedule-fresh')({
           const solveResult = await resolveTemplate(
             input.slug,
             problemType,
-            rules,
+            mergedRules,
             cutoffMin,
             frozenPhases as ResolveTemplateFrozenPhase[],
             undefined, // datasetOverrides: extract-constraint emits rules only.
             undefined, // frozenLockMode: backend default 'hard'.
             true, // forceColdStart: a fresh solve must ignore the stale warm-start plan.
+          );
+          // Wave 17 M2 (fresh path) — surface a manager-facing rollup of any
+          // rule the SOLVER skipped (wave7.apply_rules) so Ripianifica never
+          // silently drops a constraint. Same shared builder + wording as the
+          // What-If flow (anti-drift). [] when nothing was skipped.
+          const skippedRules = buildSkippedRulesRollup(
+            (solveResult.wave7?.apply_rules ?? []) as Array<Record<string, unknown>>,
           );
           return new Response(
             JSON.stringify({
@@ -350,6 +377,8 @@ export const Route = createFileRoute('/api/reschedule-fresh')({
               extracted_pattern_id: extracted.pattern_id,
               cutoff_min: cutoffMin ?? null,
               cutoff_source: cutoffSource,
+              // Wave 17 M2 — per-rule skipped-reason rollup (manager-facing).
+              skipped_rules: skippedRules,
               // Echo the resolved day anchor so the client can render
               // "ricalcolato dal giorno N (giorni precedenti congelati)".
               day_anchor: dayAnchor,
@@ -357,6 +386,10 @@ export const Route = createFileRoute('/api/reschedule-fresh')({
               // Wave 16.6 §C — the extracted rule slot that produced this plan.
               // The client appends it to the applied-rules ledger so the next
               // What-If / Ripianifica re-applies it (cumulative constraints).
+              // Wave 17 H1 — this is the NEW rule PRE-MERGE (NOT mergedRules):
+              // the client ledger already holds priorRules, so echoing the merged
+              // set would re-append them. The solver got the merged set; the
+              // ledger only needs the delta. Mirrors apply-whatif.ts:1261.
               applied_rules: rules,
               result: {
                 status: solveResult.status,

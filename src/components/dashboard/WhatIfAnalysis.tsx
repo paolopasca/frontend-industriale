@@ -114,6 +114,10 @@ interface ApplySolvedPayload {
   // machine, capacity/shift routed to wrong layer). Pair with
   // modified_count to give "N applicate (M ignorate)" granularity.
   skipped_rules_count?: number;
+  // Wave 17 M2 — per-rule reason rollup (manager-facing). Each entry carries
+  // the audit type, the offending target (machine/operator/commessa), the
+  // machine-readable reason and a human-readable Italian message.
+  skipped_rules?: Array<{ type: string; target?: string; reason: string; message: string }>;
   // Wave 7 — Italian audit lines describing the dataset overrides
   // applied by Strategy A (empty for strategy B/C).
   dataset_overrides_summary?: string[];
@@ -210,6 +214,10 @@ export function WhatIfAnalysis({
   const [lockedCount, setLockedCount] = useState<number | null>(null);
   const [modifiedCount, setModifiedCount] = useState<number | null>(null);
   const [skippedRulesCount, setSkippedRulesCount] = useState<number | null>(null);
+  // Wave 17 M2 — per-rule reason rollup for the skipped rules.
+  const [skippedRules, setSkippedRules] = useState<
+    Array<{ type: string; target?: string; reason: string; message: string }>
+  >([]);
   const [frozenCount, setFrozenCount] = useState<number | null>(null);
   const [intentId, setIntentId] = useState<string | null>(null);
   const [strategy, setStrategy] = useState<'A' | 'B' | 'C' | 'unsupported' | null>(null);
@@ -287,6 +295,7 @@ export function WhatIfAnalysis({
     setLockedCount(null);
     setModifiedCount(null);
     setSkippedRulesCount(null);
+    setSkippedRules([]);
     setFrozenCount(null);
     setIntentId(null);
     setStrategy(null);
@@ -425,6 +434,7 @@ export function WhatIfAnalysis({
     setLockedCount(null);
     setModifiedCount(null);
     setSkippedRulesCount(null);
+    setSkippedRules([]);
     setFrozenCount(null);
     setIntentId(null);
     setStrategy(null);
@@ -575,6 +585,15 @@ export function WhatIfAnalysis({
           if (typeof payload.modified_count === 'number') setModifiedCount(payload.modified_count);
           if (typeof payload.skipped_rules_count === 'number') {
             setSkippedRulesCount(payload.skipped_rules_count);
+          }
+          // Wave 17 M2 — the per-rule reason rollup (defensive: array only).
+          if (Array.isArray(payload.skipped_rules)) {
+            setSkippedRules(
+              payload.skipped_rules.filter(
+                (r): r is { type: string; target?: string; reason: string; message: string } =>
+                  !!r && typeof r === 'object' && typeof (r as { message?: unknown }).message === 'string',
+              ),
+            );
           }
           if (typeof payload.frozen_count === 'number') setFrozenCount(payload.frozen_count);
           if (typeof payload.cutoff_min === 'number') setSolverCutoffMin(payload.cutoff_min);
@@ -1135,6 +1154,7 @@ export function WhatIfAnalysis({
             lockedCount={lockedCount ?? undefined}
             modifiedCount={modifiedCount ?? undefined}
             skippedRulesCount={skippedRulesCount ?? undefined}
+            skippedRules={skippedRules}
             frozenCount={frozenCount ?? undefined}
             intentId={intentId}
             strategy={strategy}

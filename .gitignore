@@ -39,3 +39,6 @@ dist-ssr
 # Playwright artifacts
 test-results/
 playwright-report/
+
+# Serena (code-intelligence) cache
+.serena/
