@@ -42,3 +42,6 @@ playwright-report/
 
 # Serena (code-intelligence) cache
 .serena/
+
+# Claude Code local (settings + worktree agent)
+.claude/
